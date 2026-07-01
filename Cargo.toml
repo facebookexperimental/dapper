@@ -1,0 +1,17 @@
+[workspace]
+members = [
+  "dapper_cli",
+  "dapper_config",
+  "dapper_control_api",
+  "dapper_control_proto",
+  "dapper_control_server",
+  "dapper_dap_protocol",
+  "dapper_mcp_server",
+  "dapper_proxy_server",
+  "dapper_session",
+  "dapper_tracing",
+]
+resolver = "2"
+
+[workspace.package]
+license = "MIT"

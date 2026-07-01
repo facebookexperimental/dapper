@@ -1,0 +1,204 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+//
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+syntax = "proto3";
+
+package dapper.control;
+
+message EvalRequest {
+  string command = 1;
+  optional int64 frame_id = 2;
+}
+
+message EvalResponse {
+  string response = 1;
+}
+
+message StopRequest {}
+message StopResponse {};
+
+message ThreadsRequest {}
+message ThreadsResponse {
+  // Deprecated: no longer populated by the server.
+  string threads = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message StackTraceRequest {
+  int64 thread_id = 1;
+  optional int64 start_frame = 2;
+  optional int64 levels = 3;
+}
+message StackTraceResponse {
+  // Deprecated: no longer populated by the server.
+  string stack_trace = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message ScopesRequest {
+  int64 frame_id = 1;
+}
+message ScopesResponse {
+  // Deprecated: no longer populated by the server.
+  string scopes = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message VariablesRequest {
+  int64 variables_reference = 1;
+}
+message VariablesResponse {
+  // Deprecated: no longer populated by the server.
+  string variables = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+enum NavigationType {
+  NAVIGATION_TYPE_STEP_IN = 0;
+  NAVIGATION_TYPE_STEP_OVER = 1;
+  NAVIGATION_TYPE_STEP_OUT = 2;
+  NAVIGATION_TYPE_CONTINUE = 3;
+  NAVIGATION_TYPE_PAUSE = 4;
+  // Reverse-debugging variants: gated on the adapter advertising the DAP
+  // capability supportsStepBack.
+  //
+  // Wire compatibility: protobuf enums are forward-compatible at the wire
+  // level, but dapper's gRPC server uses NavigationType::try_from to decode
+  // (see dapper_control_api/src/grpc.rs `navigate`) and rejects unknown
+  // variants with "Invalid navigation type". Coordinate the server upgrade
+  // before clients begin emitting values 5 or 6.
+  NAVIGATION_TYPE_STEP_BACK = 5;
+  NAVIGATION_TYPE_REVERSE_CONTINUE = 6;
+}
+
+message NavigateRequest {
+  int64 thread_id = 1;
+  NavigationType navigation_type = 2;
+  // When true, all other suspended threads are not resumed.
+  // Requires the adapter to advertise `supportsSingleThreadExecutionRequests`.
+  optional bool single_thread = 3;
+}
+message NavigateResponse {
+  // Deprecated: no longer populated by the server.
+  string result = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message SetVariableRequest {
+  int64 variables_reference = 1;
+  string name = 2;
+  string value = 3;
+}
+message SetVariableResponse {
+  // Deprecated: no longer populated by the server.
+  string result = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message SourceBreakpoint {
+  int64 line = 1;
+  string condition = 2;
+  string log_message = 4;
+}
+
+message SetBreakpointsRequest {
+  string source_path = 1;
+  repeated int64 lines = 2;
+  bool clear_existing = 3;
+  repeated SourceBreakpoint breakpoints = 4;
+}
+message SetBreakpointsResponse {
+  // Deprecated: no longer populated by the server.
+  string result = 1;
+  string result_json = 2;
+  string context_json = 3;
+}
+
+message SetExceptionBreakpointsRequest {
+  // Adapter-advertised exception filter ids (e.g. "raised", "uncaught").
+  // Discover supported ids via Capabilities (`exceptionBreakpointFilters`).
+  repeated string filters = 1;
+  // When true, the request becomes the new active filter set verbatim.
+  // When false, the explicit list is merged with the currently-installed
+  // set; existing conditions on re-specified filters are preserved.
+  bool clear_existing = 2;
+}
+
+message SetExceptionBreakpointsResponse {
+  string result_json = 1;
+  string context_json = 2;
+}
+
+message RawDapRequest {
+  string command = 1;
+  string arguments_json = 2;
+  bool wait_for_event = 3;
+  uint64 timeout_seconds = 4;
+}
+message RawDapResponse {
+  bool success = 1;
+  string response_json = 2;
+  string error_message = 3;
+}
+
+message CapabilitiesRequest {}
+message CapabilitiesResponse {
+  string capabilities_json = 1;
+}
+
+message StatusRequest {}
+message StatusResponse {
+  string result_json = 1;
+  string context_json = 2;
+}
+
+service DapperControlPlane {
+  // Evaluate a REPL command
+  rpc EvalRepl(EvalRequest) returns (EvalResponse);
+
+  // Request the server to shutdown
+  rpc Stop(StopRequest) returns (StopResponse);
+
+  // List all available threads in the debugged process
+  rpc Threads(ThreadsRequest) returns (ThreadsResponse);
+
+  // Get stack trace for a specific thread
+  rpc StackTrace(StackTraceRequest) returns (StackTraceResponse);
+
+  // Get scopes for a specific stack frame
+  rpc Scopes(ScopesRequest) returns (ScopesResponse);
+
+  // Get variables for a specific variables reference
+  rpc Variables(VariablesRequest) returns (VariablesResponse);
+
+  // Navigate debugger execution (step in/over/out or continue) for a specific
+  // thread
+  rpc Navigate(NavigateRequest) returns (NavigateResponse);
+
+  // Set a variable value in a specific variables reference
+  rpc SetVariable(SetVariableRequest) returns (SetVariableResponse);
+
+  // Set breakpoints at specific lines in a source file
+  rpc SetBreakpoints(SetBreakpointsRequest) returns (SetBreakpointsResponse);
+
+  // Set the active exception breakpoint filters at the debug adapter
+  rpc SetExceptionBreakpoints(SetExceptionBreakpointsRequest)
+      returns (SetExceptionBreakpointsResponse);
+
+  // Send a raw DAP request with command and JSON arguments
+  rpc SendDapRequest(RawDapRequest) returns (RawDapResponse);
+
+  // Query the debug adapter's capabilities
+  rpc Capabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+
+  // Get session status and context (execution state, stop reason, etc.)
+  rpc Status(StatusRequest) returns (StatusResponse);
+}

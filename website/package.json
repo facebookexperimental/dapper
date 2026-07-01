@@ -1,0 +1,49 @@
+{
+  "name": "dapper-website",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "docusaurus": "docusaurus",
+    "start": "unset FB_INTERNAL && INTERNAL_STATIC_DOCS=0 docusaurus start",
+    "start-internal": "INTERNAL_STATIC_DOCS=1 FB_INTERNAL=1 docusaurus start",
+    "build": "INTERNAL_STATIC_DOCS=1 FB_INTERNAL=1 docusaurus build",
+    "build-external": "unset FB_INTERNAL && INTERNAL_STATIC_DOCS=0 docusaurus build",
+    "swizzle": "docusaurus swizzle",
+    "deploy": "docusaurus deploy",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.7.0",
+    "@docusaurus/preset-classic": "3.7.0",
+    "@docusaurus/theme-mermaid": "3.7.0",
+    "@mdx-js/react": "3.1.0",
+    "clsx": "^1.1.1",
+    "docusaurus-plugin-internaldocs-fb": "1.19.3",
+    "prism-react-renderer": "^2.3.1",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "3.7.0",
+    "@docusaurus/tsconfig": "3.7.0",
+    "@docusaurus/types": "3.7.0",
+    "typescript": "^5.8.2"
+  },
+  "resolutions": {
+    "webpack": "5.105.2",
+    "webpack-sources": "3.3.3"
+  },
+  "browserslist": {
+    "production": [
+      ">0.5%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}

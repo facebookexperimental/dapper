@@ -1,0 +1,204 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+.heroBanner {
+  padding: 6rem 0 4rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 120%, rgba(15, 118, 110, 0.12) 0%, transparent 60%),
+    linear-gradient(165deg, #f0fdfa 0%, #ccfbf1 100%);
+}
+
+.heroBanner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(15, 118, 110, 0.3) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.heroBanner::after {
+  content: '';
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(15, 118, 110, 0.25) 0%, transparent 70%);
+  filter: blur(50px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+html[data-theme='dark'] .heroBanner {
+  background:
+    radial-gradient(circle at 50% 120%, rgba(45, 212, 191, 0.05) 0%, transparent 60%),
+    linear-gradient(165deg, #0a0e14 0%, #0a1214 100%);
+}
+
+html[data-theme='dark'] .heroBanner::before {
+  background-image: radial-gradient(circle, rgba(45, 212, 191, 0.12) 1px, transparent 1px);
+}
+
+html[data-theme='dark'] .heroBanner::after {
+  background: radial-gradient(circle, rgba(45, 212, 191, 0.08) 0%, transparent 70%);
+}
+
+.heroTitle {
+  font-family: 'Georgia', serif;
+  font-size: 3.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  position: relative;
+  z-index: 1;
+}
+
+.heroSubtitle {
+  color: #042f2e;
+  display: inline-block;
+  font-size: 1.55rem;
+  font-weight: 650;
+  line-height: 1.35;
+  padding: 0.2rem 0.35rem;
+  position: relative;
+  z-index: 1;
+}
+
+.heroSubtitle::before {
+  background: rgba(15, 118, 110, 0.2);
+  border-radius: 999px;
+  content: '';
+  filter: blur(18px);
+  inset: -0.15rem -1.4rem;
+  position: absolute;
+  z-index: -1;
+}
+
+html[data-theme='dark'] .heroSubtitle {
+  color: #ccfbf1;
+}
+
+html[data-theme='dark'] .heroSubtitle::before {
+  background: rgba(45, 212, 191, 0.15);
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.heroButtonPrimary {
+  background-color: #0f766e;
+  border-color: #0f766e;
+  border-width: 1px;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 118, 110, 0.25);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.heroButtonPrimary:hover,
+.heroButtonPrimary:focus-visible {
+  background-color: #115e59;
+  border-color: #115e59;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(15, 118, 110, 0.35);
+}
+
+.heroButtonPrimary:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 3px;
+}
+
+html[data-theme='dark'] .heroButtonPrimary {
+  background-color: #2dd4bf;
+  border-color: #2dd4bf;
+  color: #042f2e;
+}
+
+html[data-theme='dark'] .heroButtonPrimary:hover,
+html[data-theme='dark'] .heroButtonPrimary:focus-visible {
+  background-color: #5eead4;
+  border-color: #5eead4;
+  color: #042f2e;
+  box-shadow: 0 4px 14px rgba(45, 212, 191, 0.25);
+}
+
+html[data-theme='dark'] .heroButtonPrimary:focus-visible {
+  outline-color: rgba(45, 212, 191, 0.4);
+}
+
+.heroButton {
+  background-color: #ffffff;
+  border-color: #0f766e;
+  border-width: 1px;
+  color: #0f766e;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.heroButton:hover,
+.heroButton:focus-visible {
+  background-color: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+}
+
+.heroButton:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 3px;
+}
+
+html[data-theme='dark'] .heroButton {
+  background-color: transparent;
+  border-color: #5eead4;
+  color: #5eead4;
+}
+
+html[data-theme='dark'] .heroButton:hover,
+html[data-theme='dark'] .heroButton:focus-visible {
+  background-color: rgba(45, 212, 191, 0.12);
+  border-color: #2dd4bf;
+  color: #2dd4bf;
+}
+
+html[data-theme='dark'] .heroButton:focus-visible {
+  outline-color: rgba(45, 212, 191, 0.4);
+}
+
+@media screen and (max-width: 966px) {
+  .heroBanner {
+    padding: 3rem 1rem;
+  }
+
+  .heroTitle {
+    font-size: 2.5rem;
+  }
+
+  .heroBanner::after {
+    width: 320px;
+    height: 320px;
+  }
+
+  .buttons {
+    flex-wrap: wrap;
+  }
+}

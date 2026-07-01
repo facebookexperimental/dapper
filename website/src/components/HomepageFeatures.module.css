@@ -1,0 +1,111 @@
+/**
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+.features {
+  padding: 3.5rem 0;
+  background: linear-gradient(180deg, #f0fdfa 0%, #ffffff 100%);
+}
+
+html[data-theme='dark'] .features {
+  background: linear-gradient(180deg, #0a0e14 0%, #0f1319 100%);
+}
+
+.feature {
+  margin-bottom: 1.5rem;
+}
+
+.featureCard {
+  position: relative;
+  padding: 2rem;
+  border-radius: 12px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  height: 100%;
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.featureCard::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #0f766e, #2dd4bf);
+}
+
+.featureCard:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(15, 118, 110, 0.15);
+  border-color: var(--ifm-color-primary);
+}
+
+html[data-theme='dark'] .featureCard {
+  background: rgba(15, 19, 25, 0.6);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme='dark'] .featureCard::before {
+  background: linear-gradient(180deg, #0f766e, #5eead4);
+}
+
+html[data-theme='dark'] .featureCard:hover {
+  box-shadow: 0 8px 24px rgba(45, 212, 191, 0.08);
+  border-color: rgba(45, 212, 191, 0.3);
+}
+
+.featureHeader {
+  align-items: center;
+  display: flex;
+  gap: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.featureIcon {
+  align-items: center;
+  background: rgba(15, 118, 110, 0.12);
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 10px;
+  color: var(--ifm-color-primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 3rem;
+  justify-content: center;
+  width: 3rem;
+}
+
+.featureIcon svg {
+  fill: none;
+  height: 1.5rem;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 1.5rem;
+}
+
+.featureTitle {
+  font-size: 1.15rem;
+  margin-bottom: 0;
+}
+
+.featureDescription {
+  color: var(--ifm-color-emphasis-700);
+  margin-bottom: 0;
+  line-height: 1.6;
+}
+
+html[data-theme='dark'] .featureIcon {
+  background: rgba(45, 212, 191, 0.1);
+  border-color: rgba(45, 212, 191, 0.2);
+}

@@ -1404,7 +1404,7 @@ impl ServerHandler for McpHandler {
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         if let Some(peer_info) = context.peer.peer_info() {
-            match serde_json::to_string(peer_info) {
+            match serde_json::to_string(&*peer_info) {
                 Ok(peer_info_json) => {
                     tracing::info!(
                         mcp_client_name = %peer_info.client_info.name,

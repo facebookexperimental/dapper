@@ -55,7 +55,11 @@ fn default_max_depth() -> u32 {
 
 /// A declarative child-session profile: an ordered list of rules plus an
 /// optional message used when no rule applies.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+///
+/// Deserializes from either an explicit `{ rules, unsupportedMessage }` object
+/// or a bundled preset name (e.g. `"debugpy"`/`"lldb-dap"`), which expands to
+/// the same shape (see the custom `Deserialize` impl).
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildSessionProfile {
     /// Evaluated in order; first applicable wins, empty list fails closed. A
@@ -68,6 +72,116 @@ pub struct ChildSessionProfile {
     /// "no matching child-session rule" message is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsupported_message: Option<String>,
+}
+
+/// The `unsupportedMessage` carried by the `lldb-dap` preset. With a stdio
+/// parent the preset's only rule is action-incompatible, so the reverse request
+/// fails closed with this declarative message rather than a Rust branch.
+pub const LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE: &str = "startDebugging unsupported for lldb-dap profile with stdio parent backend; lldb-dap session handoff requires a reusable tcp/uds server endpoint";
+
+impl ChildSessionProfile {
+    /// The bundled `debugpy` preset: a connect-back rule. debugpy with
+    /// `subProcess: true` emits `attach` with `configuration.connect.{host,port}`,
+    /// so the child attaches there (no `parentBackend` constraint).
+    pub fn debugpy_preset() -> Self {
+        ChildSessionProfile {
+            rules: vec![ChildSessionRule {
+                when: RuleCondition {
+                    request: Some("attach".to_string()),
+                    exists: vec![
+                        "configuration.connect.host".to_string(),
+                        "configuration.connect.port".to_string(),
+                    ],
+                    parent_backend: vec![],
+                },
+                child_backend: ChildBackendTemplate::Tcp {
+                    host: "${configuration.connect.host}".to_string(),
+                    port: PortTemplate::Template("${configuration.connect.port}".to_string()),
+                },
+                debug_request: DebugRequestTemplate {
+                    request: "${request}".to_string(),
+                    arguments: serde_json::Value::String("${configuration}".to_string()),
+                },
+            }],
+            unsupported_message: None,
+        }
+    }
+
+    /// The bundled `lldb-dap` preset: reuse the parent's reusable tcp/uds server
+    /// for the handoff (lldb-dap resolves the handed-off target IDs in the same
+    /// adapter process). A stdio parent has no applicable rule, so the
+    /// declarative `unsupportedMessage` explains the fail-closed case.
+    pub fn lldb_dap_preset() -> Self {
+        ChildSessionProfile {
+            rules: vec![ChildSessionRule {
+                when: RuleCondition {
+                    request: None,
+                    exists: vec![],
+                    parent_backend: vec![BackendKind::Tcp, BackendKind::Uds],
+                },
+                child_backend: ChildBackendTemplate::ParentBackend,
+                debug_request: DebugRequestTemplate {
+                    request: "${request}".to_string(),
+                    arguments: serde_json::Value::String("${configuration}".to_string()),
+                },
+            }],
+            unsupported_message: Some(LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE.to_string()),
+        }
+    }
+
+    /// Expand a named preset to its explicit rule set, or `None` for an unknown
+    /// name. Used by the `Deserialize` impl so a config can name a bundled preset
+    /// instead of inlining rules.
+    fn from_preset_name(name: &str) -> Option<Self> {
+        match name {
+            "debugpy" => Some(Self::debugpy_preset()),
+            "lldb-dap" => Some(Self::lldb_dap_preset()),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ChildSessionProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Accept a preset name (bare string) or an explicit { rules,
+        // unsupportedMessage } object; a preset expands to the same shape, so the
+        // rest of the engine stays preset-agnostic. Branch on a parsed `Value`
+        // (not `#[serde(untagged)]`) so a malformed object yields serde's precise
+        // field error, not "did not match any variant".
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Explicit {
+            #[serde(default)]
+            rules: Vec<ChildSessionRule>,
+            #[serde(default)]
+            unsupported_message: Option<String>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(name) => {
+                ChildSessionProfile::from_preset_name(&name).ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "unknown child-session profile preset '{name}'; expected \"debugpy\", \"lldb-dap\", or an explicit {{ rules, unsupportedMessage }} object"
+                    ))
+                })
+            }
+            serde_json::Value::Object(_) => {
+                let e: Explicit =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ChildSessionProfile {
+                    rules: e.rules,
+                    unsupported_message: e.unsupported_message,
+                })
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "childSessions profile must be a preset name (\"debugpy\"/\"lldb-dap\") or an explicit {{ rules, unsupportedMessage }} object, got {other}"
+            ))),
+        }
+    }
 }
 
 /// A single child-session rule: when `when` matches the reverse request and is
@@ -1084,5 +1198,189 @@ mod tests {
             resolve_child_session(&parent, &args),
             Err(ResolveError::InvalidTemplateValue { .. })
         ));
+    }
+
+    #[test]
+    fn test_debugpy_preset_expands_to_explicit_rules() {
+        // A bare preset name deserializes to the same explicit rule set as the
+        // constructor — the preset is purely a deserialization-time convenience.
+        let profile: ChildSessionProfile = serde_json::from_str("\"debugpy\"").unwrap();
+        assert_eq!(profile, ChildSessionProfile::debugpy_preset());
+
+        assert_eq!(profile.rules.len(), 1);
+        let rule = &profile.rules[0];
+        assert_eq!(rule.when.request.as_deref(), Some("attach"));
+        assert_eq!(
+            rule.when.exists,
+            vec![
+                "configuration.connect.host".to_string(),
+                "configuration.connect.port".to_string()
+            ]
+        );
+        // No parentBackend constraint — applies regardless of the parent backend.
+        assert!(rule.when.parent_backend.is_empty());
+        assert_eq!(
+            rule.child_backend,
+            ChildBackendTemplate::Tcp {
+                host: "${configuration.connect.host}".to_string(),
+                port: PortTemplate::Template("${configuration.connect.port}".to_string()),
+            }
+        );
+        assert!(profile.unsupported_message.is_none());
+    }
+
+    #[test]
+    fn test_lldb_dap_preset_expands_to_explicit_rules() {
+        let profile: ChildSessionProfile = serde_json::from_str("\"lldb-dap\"").unwrap();
+        assert_eq!(profile, ChildSessionProfile::lldb_dap_preset());
+
+        assert_eq!(profile.rules.len(), 1);
+        let rule = &profile.rules[0];
+        assert!(rule.when.request.is_none());
+        assert!(rule.when.exists.is_empty());
+        assert_eq!(
+            rule.when.parent_backend,
+            vec![BackendKind::Tcp, BackendKind::Uds]
+        );
+        assert_eq!(rule.child_backend, ChildBackendTemplate::ParentBackend);
+        // The exact stdio-parent failure string is data, not a Rust branch.
+        assert_eq!(
+            profile.unsupported_message.as_deref(),
+            Some(LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn test_unknown_preset_name_errors() {
+        let err = serde_json::from_str::<ChildSessionProfile>("\"bogus\"").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown child-session profile preset"),
+            "error should name the unknown preset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_malformed_explicit_profile_surfaces_field_error() {
+        // A malformed explicit object surfaces serde's precise type error
+        // rather than a generic untagged "did not match any variant" — this is
+        // why the Deserialize impl branches on a Value instead of an untagged
+        // enum.
+        let err = serde_json::from_str::<ChildSessionProfile>(r#"{ "rules": "not-an-array" }"#)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("did not match any variant"),
+            "should not be the generic untagged-enum error, got: {msg}"
+        );
+        assert!(
+            msg.contains("invalid type") || msg.contains("sequence"),
+            "error should describe the malformed field shape, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_profile_wrong_json_type_errors() {
+        // Neither a preset name nor an object -> a clear, actionable error.
+        let err = serde_json::from_str::<ChildSessionProfile>("42").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("preset name") || msg.contains("explicit"),
+            "error should explain the accepted forms, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_explicit_profile_object_still_deserializes() {
+        // Backward compatibility: an explicit { rules, unsupportedMessage }
+        // object continues to deserialize after presets were added.
+        let profile: ChildSessionProfile =
+            serde_json::from_str(r#"{ "rules": [], "unsupportedMessage": "custom message" }"#)
+                .unwrap();
+        assert!(profile.rules.is_empty());
+        assert_eq!(
+            profile.unsupported_message.as_deref(),
+            Some("custom message")
+        );
+    }
+
+    #[test]
+    fn test_named_preset_in_full_config_resolves() {
+        // A config can name the preset inline; it resolves end-to-end exactly
+        // like the equivalent explicit rule.
+        let parent: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "stdio", "cmd": "python", "args": ["-m", "debugpy.adapter"] },
+                "childSessions": { "autoSpawn": true, "maxDepth": 1, "maxChildren": 4, "profile": "debugpy" }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parent.child_sessions.as_ref().unwrap().profile,
+            ChildSessionProfile::debugpy_preset()
+        );
+
+        let args = start_debugging_args(serde_json::json!({
+            "request": "attach",
+            "configuration": { "connect": { "host": "127.0.0.1", "port": 5678 } }
+        }));
+        let child = resolve_child_session(&parent, &args).expect("debugpy preset resolves");
+        match &child.spawn_config {
+            SpawnConfig::Tcp(tcp) => assert_eq!(tcp.addr, "127.0.0.1:5678".parse().unwrap()),
+            other => panic!("expected tcp spawn config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lldb_dap_preset_stdio_parent_fails_closed() {
+        // lldb-dap handoff needs a reusable tcp/uds server; with a stdio parent
+        // the preset's only rule is action-incompatible, so resolution fails
+        // closed carrying the declarative unsupportedMessage.
+        let parent: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" },
+                "childSessions": { "autoSpawn": true, "maxDepth": 1, "maxChildren": 4, "profile": "lldb-dap" }
+            }"#,
+        )
+        .unwrap();
+
+        // The rule is statically incompatible with a stdio parent, so the
+        // capability gate would not advertise support for it either.
+        let rule = &parent.child_sessions.as_ref().unwrap().profile.rules[0];
+        assert!(!can_resolve_for_parent_backend(rule, &parent.spawn_config));
+
+        let args = start_debugging_args(serde_json::json!({
+            "request": "attach",
+            "configuration": { "session": { "debuggerId": 1, "targetId": 2 } }
+        }));
+        match resolve_child_session(&parent, &args) {
+            Err(ResolveError::NoMatchingRule(msg)) => {
+                assert_eq!(msg, LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE);
+            }
+            other => panic!("expected NoMatchingRule with the declarative message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_lldb_dap_preset_tcp_parent_resolves() {
+        // With a reusable tcp parent the preset's parentBackend rule applies and
+        // the child reuses the parent's server endpoint verbatim.
+        let parent: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "tcp", "cmd": "", "addr": "127.0.0.1:9000" },
+                "childSessions": { "autoSpawn": true, "maxDepth": 1, "maxChildren": 4, "profile": "lldb-dap" }
+            }"#,
+        )
+        .unwrap();
+
+        let args = start_debugging_args(serde_json::json!({
+            "request": "attach",
+            "configuration": { "session": { "debuggerId": 1, "targetId": 2 } }
+        }));
+        let child = resolve_child_session(&parent, &args).expect("lldb-dap tcp parent resolves");
+        match &child.spawn_config {
+            SpawnConfig::Tcp(tcp) => assert_eq!(tcp.addr, "127.0.0.1:9000".parse().unwrap()),
+            other => panic!("expected tcp spawn config inherited from parent, got {other:?}"),
+        }
     }
 }

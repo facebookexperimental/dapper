@@ -91,4 +91,16 @@ Child spawning is **off by default** and is configured declaratively under `chil
 
 Each rule's `when` clause is matched against the reverse request (first match wins); `${...}` templates substitute values from the request into the child's backend and debug request. `maxDepth` bounds how many generations of descendants may spawn (`1` allows one generation; `0` disables spawning), and `maxChildren` caps concurrent direct children. A reverse request with no matching rule fails closed — Dapper never spawns a session it cannot resolve.
 
+Instead of writing the rules out, `profile` may name a bundled preset that expands to the same rules:
+
+```json
+{
+  "spawnConfig": { "type": "stdio", "cmd": "/path/to/debugpy-adapter" },
+  "debugRequest": { "request": "launch", "program": "/path/to/program" },
+  "childSessions": { "autoSpawn": true, "profile": "debugpy" }
+}
+```
+
+The `"debugpy"` preset is the connect-back rule shown above — it attaches each child to the `configuration.connect` host/port the adapter hands back, so it works regardless of how the parent adapter is reached. The `"lldb-dap"` preset reuses the parent's own server endpoint for the target handoff, so it applies **only when the parent backend is `tcp` or `uds`**; with a stdio parent it has no applicable rule, so the capability is not advertised and any `startDebugging` fails closed with an explanatory message.
+
 > **Trust model.** Enabling `autoSpawn` lets the debug adapter trigger local child `dapper` processes on this machine according to the configured profile. It is opt-in (default off) and should be enabled only for adapters and configs you trust — especially for `tcp` and `uds` parent backends, where the adapter endpoint may be a shared or remote server whose reverse requests would then cause Dapper to spawn local processes. Child-session spawning is currently supported on Unix only; on other platforms the capability is not advertised and reverse requests fail closed.

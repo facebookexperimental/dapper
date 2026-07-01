@@ -23,8 +23,11 @@ use dapper_dap_protocol::requests::SetFunctionBreakpointsArguments;
 use dapper_session::config::DebugRequest;
 use tracing::warn;
 
-pub fn initialize(overrides: Option<&serde_json::Value>) -> anyhow::Result<Request> {
-    let args: InitializeRequestArguments = if let Some(overrides) = overrides {
+pub fn initialize(
+    overrides: Option<&serde_json::Value>,
+    supports_start_debugging: bool,
+) -> anyhow::Result<Request> {
+    let mut args: InitializeRequestArguments = if let Some(overrides) = overrides {
         serde_json::from_value(overrides.clone())
             .context("Failed to parse initialize args override")?
     } else {
@@ -42,6 +45,13 @@ pub fn initialize(overrides: Option<&serde_json::Value>) -> anyhow::Result<Reque
             ..Default::default()
         }
     };
+
+    // dapper owns this capability: the gate is authoritative regardless of any
+    // `initialize_args` override. We force the field (rather than only setting it
+    // when gated on) so it stays fail-closed both ways — a user-supplied
+    // `supportsStartDebuggingRequest: true` can't make us advertise support we
+    // can't honor, and a full override can't silently drop it when enabled.
+    args.supports_start_debugging_request = supports_start_debugging.then_some(true);
 
     Ok(Request::new(RequestCommand::Initialize(args)))
 }
@@ -183,11 +193,12 @@ mod tests {
 
     #[test]
     fn test_initialize_defaults() {
-        let req = initialize(None).unwrap();
+        let req = initialize(None, false).unwrap();
         match req.command {
             RequestCommand::Initialize(args) => {
                 assert_eq!(args.adapter_id, "dapper");
                 assert_eq!(args.supports_variable_type, Some(true));
+                assert_eq!(args.supports_start_debugging_request, None);
             }
             _ => panic!("Expected Initialize command"),
         }
@@ -201,12 +212,51 @@ mod tests {
             "columnsStartAt1": true,
             "pathFormat": "path"
         });
-        let req = initialize(Some(&overrides)).unwrap();
+        let req = initialize(Some(&overrides), false).unwrap();
         match req.command {
             RequestCommand::Initialize(args) => {
                 assert_eq!(args.adapter_id, "cppdbg");
                 assert_eq!(args.supports_variable_type, None);
                 assert_eq!(args.client_id, None);
+            }
+            _ => panic!("Expected Initialize command"),
+        }
+    }
+
+    #[test]
+    fn test_start_debugging_capability_is_gate_authoritative() {
+        // The gate — not the override — decides whether the capability is
+        // advertised. An override that sets it true must NOT survive when the
+        // gate is off (fail-closed), and a full override can't drop it when on.
+        let override_on = serde_json::json!({
+            "adapterID": "dapper",
+            "supportsStartDebuggingRequest": true
+        });
+
+        // Gate off + override true -> forced off (None).
+        let req = initialize(Some(&override_on), false).unwrap();
+        match req.command {
+            RequestCommand::Initialize(args) => assert_eq!(
+                args.supports_start_debugging_request, None,
+                "an override must not advertise the capability when the gate is off"
+            ),
+            _ => panic!("Expected Initialize command"),
+        }
+
+        // Gate on + override true -> on.
+        let req = initialize(Some(&override_on), true).unwrap();
+        match req.command {
+            RequestCommand::Initialize(args) => {
+                assert_eq!(args.supports_start_debugging_request, Some(true))
+            }
+            _ => panic!("Expected Initialize command"),
+        }
+
+        // Gate on, no override -> on (a full override branch can't drop it).
+        let req = initialize(None, true).unwrap();
+        match req.command {
+            RequestCommand::Initialize(args) => {
+                assert_eq!(args.supports_start_debugging_request, Some(true))
             }
             _ => panic!("Expected Initialize command"),
         }

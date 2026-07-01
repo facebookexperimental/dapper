@@ -34,6 +34,7 @@ use dapper_dap_protocol::responses::UnknownResponseBody;
 use dapper_session::Port;
 use dapper_session::SessionId;
 use dapper_session::config::DebugSessionConfig;
+use dapper_session::config::can_resolve_for_parent_backend;
 use dapper_session::config::resolve_child_session;
 // Re-exported so `client.rs` can build the same partition+gating-aware
 // setExceptionBreakpoints request that the headless install path uses,
@@ -306,6 +307,30 @@ impl SessionInitializer {
         self.start_time.map(|t| t.elapsed()).unwrap_or_default()
     }
 
+    /// Whether to advertise the `supportsStartDebuggingRequest` capability. Only
+    /// when we can honor it: a supervisor channel is installed (`current_exe`
+    /// can fail, leaving none) and, on Unix, spawning is enabled with positive
+    /// budgets and at least one rule whose action fits the parent backend. The
+    /// per-rule `when` clauses are request-dependent, so they're not checked here
+    /// — `resolve_child_session` still fails closed if none match.
+    fn supports_start_debugging(&self) -> bool {
+        if !cfg!(unix) {
+            return false;
+        }
+        if self.child_spawn_tx.is_none() {
+            return false;
+        }
+        self.config.child_sessions.as_ref().is_some_and(|c| {
+            c.auto_spawn
+                && c.max_depth > 0
+                && c.max_children > 0
+                && c.profile
+                    .rules
+                    .iter()
+                    .any(|rule| can_resolve_for_parent_backend(rule, &self.config.spawn_config))
+        })
+    }
+
     /// Receive the next message, processing any that need special handling.
     /// Stashes debug responses, handles dapper events, then returns the message.
     async fn recv_message(
@@ -362,14 +387,8 @@ impl SessionInitializer {
                 }
                 _ => {}
             },
-            // Headless sessions have no DAP client to satisfy an adapter's
-            // reverse requests, and the proxy routes them here. `startDebugging`
-            // is handled by spawning a child session when child sessions are
-            // configured; every other reverse request (and any `startDebugging`
-            // that isn't spawnable) gets a failure Response so the adapter never
-            // blocks. A reverse request can arrive because a caller advertised
-            // support via `initialize_args` overrides (a compliant adapter then
-            // sends one) or because a non-compliant adapter sent one unprompted.
+            // Headless mode has no DAP client; route the adapter's reverse
+            // requests (`startDebugging` → spawn a child; else → fail closed).
             dap::Message::Request(request) => {
                 self.handle_reverse_request(channel, request).await?;
             }
@@ -406,15 +425,10 @@ impl SessionInitializer {
         request: &dap::Request,
         args: &StartDebuggingRequestArguments,
     ) -> anyhow::Result<()> {
-        // Gate in the handler itself — a non-compliant adapter can send this
-        // even when the capability isn't advertised, so we don't rely on the
-        // capability gate alone. `max_children > 0` is part of the gate (and not
-        // just a spawn-path cap) so a deliberate `maxChildren: 0` config declines
-        // cleanly here rather than falling through to the no-channel branch
-        // below — `setup_child_supervisor` installs no channel for a zero cap, so
-        // that branch would otherwise misreport a legitimate config as missing a
-        // supervisor. This mirrors the `supports_start_debugging` capability
-        // gate, which also requires `max_children > 0`.
+        // Gate in the handler too — a non-compliant adapter can send this even
+        // unadvertised. `max_children > 0` is part of the gate so a deliberate
+        // `maxChildren: 0` declines here rather than hitting the no-channel
+        // branch below (no channel is installed for a zero cap).
         let enabled = self
             .config
             .child_sessions
@@ -676,7 +690,10 @@ impl SessionInitializer {
         channel: &mut DuplexChannel<dap::Message>,
     ) -> anyhow::Result<()> {
         debug!("Sending initialize request");
-        let request = requests::initialize(self.config.initialize_args.as_ref())?;
+        let request = requests::initialize(
+            self.config.initialize_args.as_ref(),
+            self.supports_start_debugging(),
+        )?;
         let response = self.request(channel, request).await?;
         response.check_success()?;
         // Capture capabilities only on success — DAP doesn't define the
@@ -2294,5 +2311,126 @@ mod tests {
             "autoSpawn with no supervisor channel must fail closed"
         );
         assert!(matches!(resp.body, ResponseBody::StartDebugging));
+    }
+
+    // ----- supportsStartDebuggingRequest capability gate -----
+
+    #[test]
+    fn test_supports_start_debugging_gate() {
+        // The capability is advertised only when this process holds a supervisor
+        // channel AND the config/profile gates pass; install a dummy channel so
+        // each case below exercises its specific config gate, not the
+        // missing-channel gate (covered separately at the end).
+        fn with_channel(config: DebugSessionConfig) -> SessionInitializer {
+            SessionInitializer::new(config).with_child_spawn_tx(mpsc::channel(1).0)
+        }
+
+        // debugpy-style config: autoSpawn + a tcp connect-back rule (a literal
+        // backend, compatible with any parent) -> advertised on Unix.
+        assert_eq!(
+            with_channel(child_spawn_config()).supports_start_debugging(),
+            cfg!(unix),
+            "debugpy-style config should advertise on Unix"
+        );
+
+        // No child_sessions -> never advertised.
+        assert!(
+            !with_channel(launch_config(vec![], false)).supports_start_debugging(),
+            "config without child_sessions must not advertise"
+        );
+
+        // autoSpawn off -> not advertised.
+        let off: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "stdio", "cmd": "python" },
+                "childSessions": {
+                    "autoSpawn": false,
+                    "profile": { "rules": [{
+                        "when": {},
+                        "childBackend": { "type": "inheritParentStdio" },
+                        "debugRequest": { "request": "${request}", "arguments": "${configuration}" }
+                    }] }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(!with_channel(off).supports_start_debugging());
+
+        // maxDepth 0 -> not advertised.
+        let depth0: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "stdio", "cmd": "python" },
+                "childSessions": {
+                    "autoSpawn": true,
+                    "maxDepth": 0,
+                    "profile": { "rules": [{
+                        "when": {},
+                        "childBackend": { "type": "inheritParentStdio" },
+                        "debugRequest": { "request": "${request}", "arguments": "${configuration}" }
+                    }] }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(!with_channel(depth0).supports_start_debugging());
+
+        // autoSpawn on but no rule whose action fits the parent backend
+        // (parentBackend rule + stdio parent) -> not advertised.
+        let incompatible: DebugSessionConfig = serde_json::from_str(
+            r#"{
+                "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" },
+                "childSessions": {
+                    "autoSpawn": true,
+                    "profile": { "rules": [{
+                        "when": { "parentBackend": ["tcp", "uds"] },
+                        "childBackend": { "type": "parentBackend" },
+                        "debugRequest": { "request": "${request}", "arguments": "${configuration}" }
+                    }] }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(
+            !with_channel(incompatible).supports_start_debugging(),
+            "a stdio parent with only a parentBackend rule must not advertise"
+        );
+
+        // Valid config but NO supervisor channel installed (e.g.
+        // `setup_child_supervisor` returned None because `current_exe()` failed)
+        // -> not advertised, even though the config/profile gates would pass.
+        assert!(
+            !SessionInitializer::new(child_spawn_config()).supports_start_debugging(),
+            "valid config without a supervisor channel must not advertise"
+        );
+    }
+
+    #[test]
+    fn test_initialize_advertises_capability_only_when_enabled() {
+        let enabled = super::requests::initialize(None, true).unwrap();
+        match enabled.command {
+            RequestCommand::Initialize(args) => {
+                assert_eq!(args.supports_start_debugging_request, Some(true));
+            }
+            other => panic!("expected Initialize, got {other:?}"),
+        }
+
+        let disabled = super::requests::initialize(None, false).unwrap();
+        match disabled.command {
+            RequestCommand::Initialize(args) => {
+                assert_eq!(args.supports_start_debugging_request, None);
+            }
+            other => panic!("expected Initialize, got {other:?}"),
+        }
+
+        // Applied even on the full-override path, so an override can't drop it.
+        let overridden =
+            super::requests::initialize(Some(&serde_json::json!({ "adapterID": "x" })), true)
+                .unwrap();
+        match overridden.command {
+            RequestCommand::Initialize(args) => {
+                assert_eq!(args.supports_start_debugging_request, Some(true));
+            }
+            other => panic!("expected Initialize, got {other:?}"),
+        }
     }
 }

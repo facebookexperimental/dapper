@@ -195,7 +195,7 @@ impl ProxyServer {
 
         let (event_channel, event_channel_rx) = EventChannel::new_pair();
 
-        let debug_session_tracker = DebugSessionTracker::new(session_id, sessions)
+        let debug_session_tracker = DebugSessionTracker::new(session_id, config.clone(), sessions)
             .with_parent_session_id(parent_session_id);
 
         Self {

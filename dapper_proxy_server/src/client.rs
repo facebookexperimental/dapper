@@ -1127,6 +1127,7 @@ mod tests {
         let (event_channel, _event_rx) = EventChannel::new_pair();
         let tracker = DebugSessionTracker::new(
             "test-session".into(),
+            DapperConfig::default(),
             Some(dapper_session::SessionStore::at(
                 dapper_session::get_user_temp_dir().join("client_test_sessions"),
             )),

@@ -65,9 +65,13 @@ impl DebugSessionTracker {
     ///
     /// # Arguments
     /// * `session_id` - Unique identifier for this debug session
+    /// * `config` - Dapper configuration (the caller's single loaded copy)
     /// * `sessions` - Session store for session files, if one is available
-    pub fn new(session_id: SessionId, sessions: Option<SessionStore>) -> Self {
-        let config = DapperConfig::load_or_default();
+    pub fn new(
+        session_id: SessionId,
+        config: DapperConfig,
+        sessions: Option<SessionStore>,
+    ) -> Self {
         let inner = Arc::new(Mutex::new(DebugSessionTrackerInner::new(
             &session_id,
             config.context.max_output_lines,
@@ -543,7 +547,7 @@ mod tests {
     }
 
     fn test_tracker_with_id(session_id: SessionId) -> DebugSessionTracker {
-        DebugSessionTracker::new(session_id, Some(test_store()))
+        DebugSessionTracker::new(session_id, DapperConfig::default(), Some(test_store()))
     }
 
     fn test_tracker() -> DebugSessionTracker {

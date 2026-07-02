@@ -456,7 +456,7 @@ mod tests {
     fn test_session_info_creation() {
         let session_info = SessionInfo::generate(
             "test-session-id".into(),
-            Port::new(12345),
+            Port::try_new(12345),
             Some("test-scope".into()),
             Some(RequestType::Launch),
             None,
@@ -476,7 +476,7 @@ mod tests {
     fn test_session_file_write_and_delete() {
         let session_info = SessionInfo::generate(
             "test-session-id".into(),
-            Port::new(12345),
+            Port::try_new(12345),
             Some("test-scope".into()),
             Some(RequestType::Attach),
             None,
@@ -493,7 +493,7 @@ mod tests {
     fn test_current_process_is_alive() {
         let session = SessionInfo::generate(
             "test-session-id".into(),
-            Port::new(12345),
+            Port::try_new(12345),
             None,
             Some(RequestType::Launch),
             None,
@@ -509,7 +509,7 @@ mod tests {
         let bound_port = listener.local_addr().unwrap().port();
         let session = SessionInfo::generate(
             "test-session-id".into(),
-            Port::new(bound_port),
+            Port::try_new(bound_port),
             None,
             Some(RequestType::Attach),
             None,
@@ -524,7 +524,7 @@ mod tests {
 
         let session1 = SessionInfo::generate(
             "session1-id".into(),
-            Port::new(11111),
+            Port::try_new(11111),
             Some(test_scope.clone()),
             Some(RequestType::Launch),
             None,
@@ -533,7 +533,7 @@ mod tests {
 
         let session2 = SessionInfo::generate(
             "session2-id".into(),
-            Port::new(22222),
+            Port::try_new(22222),
             Some(test_scope.clone()),
             Some(RequestType::Attach),
             None,
@@ -558,7 +558,7 @@ mod tests {
         // generate() produces a root session with no parent linkage.
         let mut session = SessionInfo::generate(
             "child-session-id".into(),
-            Port::new(12345),
+            Port::try_new(12345),
             Some("test-scope".into()),
             Some(RequestType::Launch),
             None,
@@ -602,7 +602,7 @@ mod tests {
         let parent = SessionId::new("parent-session-id");
         let session = SessionInfo::generate(
             "child-session-id".into(),
-            Port::new(12345),
+            Port::try_new(12345),
             Some("test-scope".into()),
             Some(RequestType::Attach),
             None,

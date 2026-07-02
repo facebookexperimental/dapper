@@ -1811,7 +1811,7 @@ mod tests {
         // port as occupied, and use the current pid (via generate) so the
         // process looks alive -> is_active() == true.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = Port::new(listener.local_addr().unwrap().port()).unwrap();
+        let port = Port::try_new(listener.local_addr().unwrap().port()).unwrap();
         let live = SessionInfo::generate(sid.clone(), Some(port), None, None, None);
         assert!(
             live.is_active(),
@@ -1877,14 +1877,14 @@ mod tests {
 
         let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
         // Port 1: no dapper session listens here, so resolve-by-port fails.
-        let handler = McpHandler::new(Some(Port::new(1).unwrap()), None, &toolset);
+        let handler = McpHandler::new(Some(Port::try_new(1).unwrap()), None, &toolset);
         let sid = SessionId::from("control-port-session");
         let client = Arc::new(DapperControlPlaneClient::new(None, None));
 
         // Seed a *live* matching cached session; if the fast path were taken it
         // would return this client. The control_port gate must prevent that.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = Port::new(listener.local_addr().unwrap().port()).unwrap();
+        let port = Port::try_new(listener.local_addr().unwrap().port()).unwrap();
         let live = SessionInfo::generate(sid.clone(), Some(port), None, None, None);
         assert!(
             live.is_active(),

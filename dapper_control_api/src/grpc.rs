@@ -78,7 +78,7 @@ where
             let port = listener.local_addr()?.port();
             tracing::info!("Bound control plane port: {}", port);
             let actual_port =
-                Port::new(port).ok_or(anyhow::anyhow!("bound port should be non-zero"))?;
+                Port::try_new(port).ok_or(anyhow::anyhow!("bound port should be non-zero"))?;
             (listener, actual_port)
         }
         Err(e) => {
@@ -1247,7 +1247,7 @@ mod tests {
         SessionInfo {
             session_id: id.into(),
             pid: 0,
-            control_plane_port: port.and_then(Port::new),
+            control_plane_port: port.and_then(Port::try_new),
             started_at: 0,
             command_line_args: vec![],
             current_working_directory: None,

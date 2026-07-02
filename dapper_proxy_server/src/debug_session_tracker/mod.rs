@@ -1618,7 +1618,7 @@ mod tests {
                 }),
                 ClientType::Main,
             );
-            tracker.register_control_plane(Port::new(12345), Some("test-scope".into()));
+            tracker.register_control_plane(Port::try_new(12345), Some("test-scope".into()));
             let info = tracker
                 .get_session_info()
                 .expect("session should be finalized");

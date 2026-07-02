@@ -26,7 +26,7 @@ pub struct Mcp {
     /// deterministic) or a tighter --scope-id / DAPPER_SCOPE_ID to disambiguate.
     /// Tools also accept a `session_id` argument for per-call targeting.
     #[arg(long)]
-    control_port: Option<u16>,
+    control_port: Option<Port>,
     /// Scope identifier to target a specific session.
     /// Filters auto-discovery. May also be set via DAPPER_SCOPE_ID.
     #[arg(long, env = "DAPPER_SCOPE_ID")]
@@ -51,11 +51,7 @@ impl Mcp {
             self.toolset.into()
         };
 
-        let control_port = self
-            .control_port
-            .map(|port| Port::new(port).ok_or(anyhow::anyhow!("Invalid control port")))
-            .transpose()?;
-        dapper_mcp_server::serve(control_port, self.scope_id, toolset).await
+        dapper_mcp_server::serve(self.control_port, self.scope_id, toolset).await
     }
 }
 
@@ -85,6 +81,16 @@ mod tests {
             let mcp = Mcp::try_parse_from(["mcp", "--scope-id", "cli-scope"]).unwrap();
             assert_eq!(mcp.scope_id, Some(ScopeId::new("cli-scope")));
         });
+    }
+
+    #[test]
+    fn control_port_parses_and_rejects_zero() {
+        let mcp = Mcp::try_parse_from(["mcp", "--control-port", "8080"]).unwrap();
+        assert_eq!(mcp.control_port.map(|p| p.get()), Some(8080));
+        assert!(
+            Mcp::try_parse_from(["mcp", "--control-port", "0"]).is_err(),
+            "port 0 must be rejected at parse time"
+        );
     }
 
     #[test]

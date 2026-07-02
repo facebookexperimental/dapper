@@ -265,7 +265,7 @@ pub struct Debug {
     /// candidate list when more than one is active. Pass --control-port (always
     /// deterministic) or a tighter --scope-id / DAPPER_SCOPE_ID to disambiguate.
     #[arg(long)]
-    control_port: Option<u16>,
+    control_port: Option<Port>,
     /// Scope identifier to target a specific session.
     /// Filters auto-discovery and the `sessions` listing. May also be set via DAPPER_SCOPE_ID.
     #[arg(long, env = "DAPPER_SCOPE_ID")]
@@ -277,11 +277,7 @@ pub struct Debug {
 
 impl Debug {
     pub async fn run(self, config: DapperConfig) -> anyhow::Result<()> {
-        let control_port = self
-            .control_port
-            .map(|port| Port::new(port).ok_or(anyhow::anyhow!("Invalid control port")))
-            .transpose()?;
-        let client = DapperControlPlaneClient::new(control_port, self.scope_id.clone());
+        let client = DapperControlPlaneClient::new(self.control_port, self.scope_id.clone());
 
         match self.command {
             DebugCommands::Status {} => {
@@ -293,7 +289,7 @@ impl Debug {
                 safe_println(format_args!("{}", render(&result, &config)?));
             }
             DebugCommands::Config {} => {
-                let session = if let Some(port) = control_port {
+                let session = if let Some(port) = self.control_port {
                     SessionInfo::iter_active_sessions(self.scope_id.clone())
                         .context("Error listing sessions")?
                         .find(|s| s.control_plane_port.map(|p| p.get()) == Some(port.get()))

@@ -17,6 +17,7 @@ use dapper_dap_protocol::requests::RequestCommand;
 use dapper_session::SessionId;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::backend::Backend;
 use crate::client::ClientId;
@@ -265,17 +266,32 @@ impl ProxyServer {
             self.debug_session_tracker.clone(),
         );
 
-        tokio::select! {
-            result = tokio::spawn(client_to_backend_task) => {
-                Self::handle_task_completion("Client to backend", result);
-            }
-            result = tokio::spawn(backend_to_main_client_and_listeners_task) => {
-                Self::handle_task_completion("Backend to main client and listeners", result);
-            }
-            result = tokio::spawn(client_requests_task) => {
-                Self::handle_task_completion("Client requests", result);
-            }
+        // The first task to finish (normally the main client disconnecting)
+        // tears the whole proxy down. A `select!` over spawned JoinHandles
+        // would leak the losing tasks: `handle_client_requests` keeps a
+        // clone of the shared backend writer alive, so the adapter's stdin
+        // never closes and the `backend.handle` await below can hang
+        // forever. A JoinSet lets us abort the survivors.
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move { ("Client to backend", client_to_backend_task.await) });
+        tasks.spawn(async move {
+            (
+                "Backend to main client and listeners",
+                backend_to_main_client_and_listeners_task.await,
+            )
+        });
+        tasks.spawn(async move { ("Client requests", client_requests_task.await) });
+
+        match tasks.join_next().await {
+            Some(Ok((task_name, result))) => Self::handle_task_completion(task_name, Ok(result)),
+            Some(Err(e)) => Self::handle_task_completion("Proxy pipeline", Err(e)),
+            None => {}
         }
+
+        // Abort the remaining tasks and wait for them to finish so the
+        // shared backend writer is dropped before waiting on the adapter.
+        tasks.shutdown().await;
+
         if let Some(handle) = self.backend.handle {
             handle.await??;
         }

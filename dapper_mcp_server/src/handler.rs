@@ -216,13 +216,12 @@ impl JsonSchema for BreakpointSpec {
 }
 
 impl TryFrom<serde_json::Value> for BreakpointSpec {
-    type Error = String;
+    type Error = anyhow::Error;
 
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
         match &value {
             serde_json::Value::Object(_) => {
-                let obj: BreakpointSpecObject =
-                    serde_json::from_value(value).map_err(|e| e.to_string())?;
+                let obj: BreakpointSpecObject = serde_json::from_value(value)?;
                 Ok(obj.into())
             }
             serde_json::Value::String(s) => {
@@ -230,7 +229,7 @@ impl TryFrom<serde_json::Value> for BreakpointSpec {
                     return BreakpointSpec::try_from(parsed);
                 }
                 let line: i64 = s.parse().map_err(|_| {
-                    format!(
+                    anyhow::anyhow!(
                         "invalid breakpoint spec: expected a JSON object like \
                          {{\"line\": 10}} or a line number, got {s:?}"
                     )
@@ -238,13 +237,14 @@ impl TryFrom<serde_json::Value> for BreakpointSpec {
                 Ok(BreakpointSpec::from_line(line))
             }
             serde_json::Value::Number(n) => {
-                let line = n.as_i64().ok_or("breakpoint line must be an integer")?;
+                let line = n
+                    .as_i64()
+                    .ok_or_else(|| anyhow::anyhow!("breakpoint line must be an integer"))?;
                 Ok(BreakpointSpec::from_line(line))
             }
-            _ => Err(
-                "invalid breakpoint spec: expected a JSON object like {\"line\": 10}, \
+            _ => anyhow::bail!(
+                "invalid breakpoint spec: expected a JSON object like {{\"line\": 10}}, \
                  a line number, or a JSON string"
-                    .to_string(),
             ),
         }
     }
@@ -1198,7 +1198,7 @@ Response is JSON from the debug adapter."#
         let raw_bytes = match hex_string_to_bytes(&request.0.inner.data) {
             Ok(bytes) => bytes,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(e)]));
+                return Ok(CallToolResult::error(vec![Content::text(format!("{e:#}"))]));
             }
         };
         let b64_data = base64::engine::general_purpose::STANDARD.encode(&raw_bytes);
@@ -1528,11 +1528,11 @@ fn format_exception_breakpoint_filters(filters: &[serde_json::Value]) -> String 
 /// that's a protocol-level failure the caller should surface as a tool error rather
 /// than a successful response. All other "no data" cases (None payload, unreadable
 /// bytes) render as informational text inside `Ok`.
-fn format_memory_read(body: &ReadMemoryResponseBody) -> Result<String, String> {
+fn format_memory_read(body: &ReadMemoryResponseBody) -> anyhow::Result<String> {
     let data = match &body.data {
         Some(b64) => base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .map_err(|e| format!("address {}: {}", body.address, e))?,
+            .map_err(|e| anyhow::anyhow!("address {}: {}", body.address, e))?,
         None => {
             return Ok(match body.unreadable_bytes {
                 Some(n) => format!("Address: {}\n{} byte(s) unreadable.", body.address, n),
@@ -1602,29 +1602,31 @@ fn parse_address(s: &str) -> Option<u64> {
 }
 
 /// Convert a hex string (e.g., "48656C6C6F") into raw bytes.
-fn hex_string_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+fn hex_string_to_bytes(hex: &str) -> anyhow::Result<Vec<u8>> {
     let hex = hex
         .strip_prefix("0x")
         .or_else(|| hex.strip_prefix("0X"))
         .unwrap_or(hex);
-    if !hex.is_ascii() {
-        return Err("hex string must contain only ASCII characters".to_string());
-    }
-    if !hex.len().is_multiple_of(2) {
-        return Err("hex string must have an even number of digits".to_string());
-    }
+    anyhow::ensure!(
+        hex.is_ascii(),
+        "hex string must contain only ASCII characters"
+    );
+    anyhow::ensure!(
+        hex.len().is_multiple_of(2),
+        "hex string must have an even number of digits"
+    );
     let byte_len = hex.len() / 2;
-    if byte_len > MAX_WRITE_BYTES {
-        return Err(format!(
-            "hex payload of {} bytes exceeds maximum of {} bytes",
-            byte_len, MAX_WRITE_BYTES
-        ));
-    }
+    anyhow::ensure!(
+        byte_len <= MAX_WRITE_BYTES,
+        "hex payload of {} bytes exceeds maximum of {} bytes",
+        byte_len,
+        MAX_WRITE_BYTES
+    );
     (0..hex.len())
         .step_by(2)
         .map(|i| {
             u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|_| format!("invalid hex at position {}: {:?}", i, &hex[i..i + 2]))
+                .map_err(|_| anyhow::anyhow!("invalid hex at position {}: {:?}", i, &hex[i..i + 2]))
         })
         .collect()
 }
@@ -2555,19 +2557,19 @@ mod tests {
 
     #[test]
     fn hex_string_to_bytes_rejects_odd_length() {
-        let err = hex_string_to_bytes("123").unwrap_err();
+        let err = hex_string_to_bytes("123").unwrap_err().to_string();
         assert!(err.contains("even number"), "got: {err}");
     }
 
     #[test]
     fn hex_string_to_bytes_rejects_non_ascii() {
-        let err = hex_string_to_bytes("é4").unwrap_err();
+        let err = hex_string_to_bytes("é4").unwrap_err().to_string();
         assert!(err.contains("ASCII"), "got: {err}");
     }
 
     #[test]
     fn hex_string_to_bytes_rejects_bad_digit() {
-        let err = hex_string_to_bytes("ZZZZ").unwrap_err();
+        let err = hex_string_to_bytes("ZZZZ").unwrap_err().to_string();
         assert!(err.contains("invalid hex"), "got: {err}");
         assert!(err.contains("position 0"), "got: {err}");
     }
@@ -2576,7 +2578,7 @@ mod tests {
     fn hex_string_to_bytes_rejects_oversized_payload() {
         // 2 hex chars = 1 byte; produce MAX_WRITE_BYTES + 1 bytes worth.
         let oversize = "AA".repeat(MAX_WRITE_BYTES + 1);
-        let err = hex_string_to_bytes(&oversize).unwrap_err();
+        let err = hex_string_to_bytes(&oversize).unwrap_err().to_string();
         assert!(err.contains("exceeds maximum"), "got: {err}");
     }
 
@@ -2621,7 +2623,7 @@ mod tests {
     fn format_memory_read_decode_failure_is_err() {
         // "%%%" is not valid base64.
         let body = make_body("0x10", Some("%%%"), None);
-        let err = format_memory_read(&body).unwrap_err();
+        let err = format_memory_read(&body).unwrap_err().to_string();
         assert!(
             err.contains("0x10"),
             "error should reference address: {err}"

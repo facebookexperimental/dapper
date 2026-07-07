@@ -155,6 +155,24 @@ pub struct NavigateRequest {
     single_thread: Option<bool>,
 }
 
+#[derive(Debug, serde::Deserialize, JsonSchema)]
+struct BreakpointSpecObject {
+    /// The line number where the breakpoint should be set.
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    #[schemars(schema_with = "integer_schema")]
+    line: i64,
+    /// An optional expression that controls when a breakpoint is hit. The breakpoint only stops execution when this expression evaluates to true.
+    #[serde(default)]
+    #[schemars(schema_with = "optional_schema::<String>")]
+    condition: Option<String>,
+    /// If specified, the debugger will log this message instead of stopping at the breakpoint. Expressions within {} are interpolated.
+    #[serde(default, rename = "logMessage")]
+    #[schemars(schema_with = "optional_schema::<String>")]
+    log_message: Option<String>,
+}
+
+/// Lenient wrapper around `BreakpointSpecObject`: also accepts the other shapes LLM clients
+/// send (bare line numbers, stringified JSON).
 #[derive(Debug, serde::Deserialize)]
 #[serde(try_from = "serde_json::Value")]
 pub struct BreakpointSpec {
@@ -163,28 +181,33 @@ pub struct BreakpointSpec {
     log_message: Option<String>,
 }
 
+impl From<BreakpointSpecObject> for BreakpointSpec {
+    fn from(obj: BreakpointSpecObject) -> Self {
+        Self {
+            line: obj.line,
+            condition: obj.condition,
+            log_message: obj.log_message,
+        }
+    }
+}
+
+impl BreakpointSpec {
+    fn from_line(line: i64) -> Self {
+        Self {
+            line,
+            condition: None,
+            log_message: None,
+        }
+    }
+}
+
 impl JsonSchema for BreakpointSpec {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "BreakpointSpec".into()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        #[derive(JsonSchema)]
-        #[allow(dead_code)]
-        struct BreakpointSpecSchema {
-            /// The line number where the breakpoint should be set.
-            #[schemars(schema_with = "integer_schema")]
-            line: i64,
-            /// An optional expression that controls when a breakpoint is hit. The breakpoint only stops execution when this expression evaluates to true.
-            #[serde(default)]
-            #[schemars(schema_with = "optional_schema::<String>")]
-            condition: Option<String>,
-            /// If specified, the debugger will log this message instead of stopping at the breakpoint. Expressions within {} are interpolated.
-            #[serde(default)]
-            #[schemars(rename = "logMessage", schema_with = "optional_schema::<String>")]
-            log_message: Option<String>,
-        }
-        BreakpointSpecSchema::json_schema(generator)
+        BreakpointSpecObject::json_schema(generator)
     }
 }
 
@@ -192,18 +215,12 @@ impl TryFrom<serde_json::Value> for BreakpointSpec {
     type Error = String;
 
     fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
-        #[derive(serde::Deserialize)]
-        struct Inner {
-            #[serde(deserialize_with = "deserialize_string_or_int")]
-            line: i64,
-            #[serde(default)]
-            condition: Option<String>,
-            #[serde(default, rename = "logMessage")]
-            log_message: Option<String>,
-        }
-
         match &value {
-            serde_json::Value::Object(_) => {}
+            serde_json::Value::Object(_) => {
+                let obj: BreakpointSpecObject =
+                    serde_json::from_value(value).map_err(|e| e.to_string())?;
+                Ok(obj.into())
+            }
             serde_json::Value::String(s) => {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(s) {
                     return BreakpointSpec::try_from(parsed);
@@ -214,35 +231,18 @@ impl TryFrom<serde_json::Value> for BreakpointSpec {
                          {{\"line\": 10}} or a line number, got {s:?}"
                     )
                 })?;
-                return Ok(BreakpointSpec {
-                    line,
-                    condition: None,
-                    log_message: None,
-                });
+                Ok(BreakpointSpec::from_line(line))
             }
             serde_json::Value::Number(n) => {
                 let line = n.as_i64().ok_or("breakpoint line must be an integer")?;
-                return Ok(BreakpointSpec {
-                    line,
-                    condition: None,
-                    log_message: None,
-                });
+                Ok(BreakpointSpec::from_line(line))
             }
-            _ => {
-                return Err(
-                    "invalid breakpoint spec: expected a JSON object like {\"line\": 10}, \
-                     a line number, or a JSON string"
-                        .to_string(),
-                );
-            }
+            _ => Err(
+                "invalid breakpoint spec: expected a JSON object like {\"line\": 10}, \
+                 a line number, or a JSON string"
+                    .to_string(),
+            ),
         }
-
-        let inner: Inner = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        Ok(BreakpointSpec {
-            line: inner.line,
-            condition: inner.condition,
-            log_message: inner.log_message,
-        })
     }
 }
 

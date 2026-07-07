@@ -415,16 +415,21 @@ pub struct ThreadSnapshotRequest {
 
 #[tool_router]
 impl McpHandler {
-    pub fn new(env: McpServerEnv, toolset: &Toolset) -> Self {
-        let mut tool_router = Self::tool_router();
-
-        // Strip tools not in the active toolset (always-available tools are kept)
-        let always_available: [&str; 4] = [
+    /// Tools available in every toolset.
+    fn always_available_tools() -> [&'static str; 4] {
+        [
             DebugTool::Status.into(),
             DebugTool::Capabilities.into(),
             DebugTool::Sessions.into(),
             DebugTool::Config.into(),
-        ];
+        ]
+    }
+
+    pub fn new(env: McpServerEnv, toolset: &Toolset) -> Self {
+        let mut tool_router = Self::tool_router();
+
+        // Strip tools not in the active toolset (always-available tools are kept)
+        let always_available = Self::always_available_tools();
         let all_tools: Vec<_> = tool_router.map.keys().cloned().collect();
         for tool in all_tools {
             if !toolset.contains_tool(tool.as_ref()) && !always_available.contains(&tool.as_ref()) {
@@ -2714,5 +2719,30 @@ mod tests {
         let (floored_depth, floored_threads) = clamp_snapshot_limits(&req);
         assert_eq!(floored_depth, 1, "stack_depth of 0 must floor at 1");
         assert_eq!(floored_threads, 1, "max_threads of 0 must floor at 1");
+    }
+
+    /// The toolset filter in `McpHandler::new` matches router keys (derived
+    /// from `#[tool]` method names) against `DebugTool` strum names. A
+    /// mismatch silently strips the tool from every toolset, so pin the two
+    /// lists to each other in both directions.
+    #[test]
+    fn tool_routes_and_debug_tool_variants_match() {
+        use strum::VariantNames;
+
+        let router = McpHandler::tool_router();
+        let always_available = McpHandler::always_available_tools();
+        for name in router.map.keys() {
+            assert!(
+                DebugTool::VARIANTS.contains(&name.as_ref())
+                    || always_available.contains(&name.as_ref()),
+                "tool '{name}' has no DebugTool variant and would be stripped from every toolset"
+            );
+        }
+        for variant in DebugTool::VARIANTS {
+            assert!(
+                router.map.contains_key(*variant),
+                "DebugTool variant '{variant}' has no #[tool] route — typo in the strum name?"
+            );
+        }
     }
 }

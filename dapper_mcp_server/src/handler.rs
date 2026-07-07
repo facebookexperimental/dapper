@@ -6,7 +6,11 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::sync::RwLock;
+use std::sync::RwLockReadGuard;
+use std::sync::RwLockWriteGuard;
 use std::time::Instant;
 
 use base64::Engine as _;
@@ -428,13 +432,26 @@ impl McpHandler {
         }
     }
 
-    fn set_last_session_id(&self, session_id: &SessionId) -> anyhow::Result<()> {
-        let mut last = self
-            .last_session_id
+    fn last_session(&self) -> MutexGuard<'_, Option<SessionId>> {
+        self.last_session_id
             .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire last_session_id lock: {}", e))?;
-        *last = Some(session_id.clone());
-        Ok(())
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cached(&self) -> RwLockReadGuard<'_, Option<CachedClient>> {
+        self.cached_client
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn cached_mut(&self) -> RwLockWriteGuard<'_, Option<CachedClient>> {
+        self.cached_client
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_last_session_id(&self, session_id: &SessionId) {
+        *self.last_session() = Some(session_id.clone());
     }
 
     /// Resolve the target session from an optional explicit session ID.
@@ -457,19 +474,13 @@ impl McpHandler {
                             .map_or(String::new(), |s| format!(" in scope '{}'", s))
                     )
                 })?;
-            self.set_last_session_id(id)?;
+            self.set_last_session_id(id);
             Ok(session)
         } else {
-            let from_last = {
-                let last = self.last_session_id.lock().map_err(|e| {
-                    anyhow::anyhow!("Failed to acquire last_session_id lock: {}", e)
-                })?;
-
-                last.as_ref().and_then(|id| {
-                    self.sessions
-                        .find_active_session_with_id(self.scope_id.clone(), id)
-                })
-            };
+            let from_last = self.last_session().as_ref().and_then(|id| {
+                self.sessions
+                    .find_active_session_with_id(self.scope_id.clone(), id)
+            });
 
             if let Some(session) = from_last {
                 Ok(session)
@@ -483,7 +494,7 @@ impl McpHandler {
                     &self.scope_id,
                     Some("MCP tool calls also accept a session_id argument."),
                 )?;
-                self.set_last_session_id(&session.session_id)?;
+                self.set_last_session_id(&session.session_id);
                 Ok(session)
             }
         }
@@ -517,11 +528,7 @@ impl McpHandler {
         if self.control_port.is_none() {
             let want_id: Option<SessionId> = match session_id {
                 Some(id) => Some(id.clone()),
-                None => self
-                    .last_session_id
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("Failed to acquire last_session_id lock: {}", e))?
-                    .clone(),
+                None => self.last_session().clone(),
             };
             if let Some(want) = want_id {
                 // Pull the matching client + a snapshot of its session out from
@@ -529,10 +536,7 @@ impl McpHandler {
                 // probe does syscalls (and on some platforms `is_process_alive`
                 // spawns a subprocess), which should not be held under the lock.
                 let candidate = {
-                    let cache = self
-                        .cached_client
-                        .read()
-                        .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
+                    let cache = self.cached();
                     cache
                         .as_ref()
                         .filter(|cached| cached.session.session_id == want)
@@ -558,16 +562,11 @@ impl McpHandler {
         let session = self.resolve_session(session_id)?;
         let resolved_id = session.session_id.clone();
 
-        let reused = {
-            let cache = self
-                .cached_client
-                .read()
-                .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
-            cache
-                .as_ref()
-                .filter(|cached| cached.session.session_id == resolved_id)
-                .map(|cached| Arc::clone(&cached.client))
-        };
+        let reused = self
+            .cached()
+            .as_ref()
+            .filter(|cached| cached.session.session_id == resolved_id)
+            .map(|cached| Arc::clone(&cached.client));
 
         let client = match reused {
             Some(client) => client,
@@ -579,11 +578,7 @@ impl McpHandler {
                         self.scope_id.clone(),
                     ),
                 });
-                let mut cache = self
-                    .cached_client
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
-                *cache = Some(CachedClient {
+                *self.cached_mut() = Some(CachedClient {
                     client: Arc::clone(&client),
                     session,
                 });
@@ -1364,10 +1359,7 @@ impl ServerHandler for McpHandler {
         // Read the proxy session ID from the cached client (set by get_client
         // during tool execution). This lets us correlate MCP tool calls back to
         // the proxy session they targeted.
-        let cached = self.cached_client.read().unwrap_or_else(|e| {
-            tracing::debug!("Failed to read cached_client for telemetry: {}", e);
-            e.into_inner()
-        });
+        let cached = self.cached();
         let proxy_session_id = cached
             .as_ref()
             .map(|c| c.session.session_id.as_str())

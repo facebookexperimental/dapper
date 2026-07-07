@@ -5,8 +5,10 @@
 
 use clap::Parser;
 use clap::builder::TypedValueParser;
+use dapper_config::DapperConfig;
 use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
+use dapper_mcp_server::McpServerEnv;
 use dapper_mcp_server::Toolset;
 use dapper_session::Port;
 use dapper_session::ScopeId;
@@ -41,7 +43,7 @@ pub struct Mcp {
 }
 
 impl Mcp {
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, config: DapperConfig) -> anyhow::Result<()> {
         let toolset = if !self.enable_tools.is_empty() {
             tracing::info!(
                 "Using tools from CLI --enable-tool flags: {:?}",
@@ -52,8 +54,13 @@ impl Mcp {
             self.toolset.into()
         };
 
-        let sessions = SessionStore::default_location()?;
-        dapper_mcp_server::serve(self.control_port, self.scope_id, toolset, sessions).await
+        let env = McpServerEnv {
+            control_port: self.control_port,
+            scope_id: self.scope_id,
+            sessions: SessionStore::default_location()?,
+            config,
+        };
+        dapper_mcp_server::serve(env, toolset).await
     }
 }
 

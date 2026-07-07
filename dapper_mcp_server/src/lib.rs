@@ -11,6 +11,7 @@ mod handler;
 
 mod server;
 
+pub use handler::McpServerEnv;
 pub use server::serve;
 pub use toolsets::BuiltinToolset;
 pub use toolsets::DebugTool;

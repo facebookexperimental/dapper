@@ -69,7 +69,7 @@ impl Commands {
         match self {
             Commands::Debug(cmd) => cmd.run(config).await,
             Commands::Proxy(cmd) => cmd.run(session_id).await,
-            Commands::Mcp(cmd) => cmd.run().await,
+            Commands::Mcp(cmd) => cmd.run(config).await,
             Commands::Help { .. } => {
                 unreachable!("Help is dispatched in the binary entry point before Commands::run")
             }

@@ -61,6 +61,18 @@ struct CachedClient {
     session: SessionInfo,
 }
 
+/// Everything an `McpHandler` needs from its environment.
+pub struct McpServerEnv {
+    /// Fixed control plane port; when set, session discovery is bypassed.
+    pub control_port: Option<Port>,
+    /// Scope filter for session discovery.
+    pub scope_id: Option<ScopeId>,
+    /// Where to discover active sessions.
+    pub sessions: SessionStore,
+    /// Rendering and context configuration.
+    pub config: DapperConfig,
+}
+
 #[derive(Clone)]
 pub struct McpHandler {
     control_port: Option<Port>,
@@ -388,12 +400,7 @@ pub struct ThreadSnapshotRequest {
 
 #[tool_router]
 impl McpHandler {
-    pub fn new(
-        control_port: Option<Port>,
-        scope_id: Option<ScopeId>,
-        toolset: &Toolset,
-        sessions: SessionStore,
-    ) -> Self {
+    pub fn new(env: McpServerEnv, toolset: &Toolset) -> Self {
         let mut tool_router = Self::tool_router();
 
         // Strip tools not in the active toolset (always-available tools are kept)
@@ -411,11 +418,11 @@ impl McpHandler {
         }
 
         Self {
-            control_port,
-            scope_id,
-            sessions,
+            control_port: env.control_port,
+            scope_id: env.scope_id,
+            sessions: env.sessions,
             tool_router,
-            config: DapperConfig::load_or_default(),
+            config: env.config,
             cached_client: Arc::new(RwLock::new(None)),
             last_session_id: Arc::new(Mutex::new(None)),
         }
@@ -1812,9 +1819,20 @@ mod tests {
         )))
     }
 
+    /// A handler environment that cannot touch the developer's real sessions
+    /// or configuration.
+    fn isolated_env() -> McpServerEnv {
+        McpServerEnv {
+            control_port: None,
+            scope_id: None,
+            sessions: isolated_store(),
+            config: DapperConfig::default(),
+        }
+    }
+
     fn full_toolset_handler() -> McpHandler {
         let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
-        McpHandler::new(None, None, &toolset, isolated_store())
+        McpHandler::new(isolated_env(), &toolset)
     }
 
     /// The cache-first fast path in `get_client` must return the cached client
@@ -1902,10 +1920,11 @@ mod tests {
         let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
         // Port 1: no dapper session listens here, so resolve-by-port fails.
         let handler = McpHandler::new(
-            Some(Port::try_new(1).unwrap()),
-            None,
+            McpServerEnv {
+                control_port: Some(Port::try_new(1).unwrap()),
+                ..isolated_env()
+            },
             &toolset,
-            isolated_store(),
         );
         let sid = SessionId::from("control-port-session");
         let client = Arc::new(DapperControlPlaneClient::discover(isolated_store(), None));
@@ -2098,7 +2117,7 @@ mod tests {
             crate::toolsets::BuiltinToolset::Raw,
         ] {
             let toolset = crate::toolsets::Toolset::from(*builtin);
-            let handler = McpHandler::new(None, None, &toolset, isolated_store());
+            let handler = McpHandler::new(isolated_env(), &toolset);
             assert!(
                 handler
                     .tool_router

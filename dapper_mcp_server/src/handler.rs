@@ -1242,8 +1242,7 @@ Response is JSON from the debug adapter."#
             }
         };
 
-        let stack_depth = req.stack_depth.clamp(1, MAX_STACK_DEPTH);
-        let max_threads = (req.max_threads.max(1) as usize).min(MAX_THREADS_HARD_CAP);
+        let (stack_depth, max_threads) = clamp_snapshot_limits(&req);
 
         let total_thread_count = threads_result.threads.len();
         let truncated = total_thread_count > max_threads;
@@ -1307,6 +1306,13 @@ Response is JSON from the debug adapter."#
             "serde_json::Value always serializes successfully",
         )))
     }
+}
+
+/// Clamp a snapshot request's limits to their hard caps.
+fn clamp_snapshot_limits(req: &ThreadSnapshotRequest) -> (i64, usize) {
+    let stack_depth = req.stack_depth.clamp(1, MAX_STACK_DEPTH);
+    let max_threads = (req.max_threads.max(1) as usize).min(MAX_THREADS_HARD_CAP);
+    (stack_depth, max_threads)
 }
 
 impl ServerHandler for McpHandler {
@@ -2681,26 +2687,32 @@ mod tests {
     /// Hard caps protect against pathological inputs even if the deserializer accepts them.
     #[test]
     fn thread_snapshot_clamping_constants() {
-        // Sanity-check the constants used by debug_thread_snapshot: large requested
-        // values are clamped to MAX_STACK_DEPTH / MAX_THREADS_HARD_CAP rather than
-        // passed through to the DAP adapter.
-        let huge_depth: i64 = 100_000;
-        let clamped_depth = huge_depth.clamp(1, MAX_STACK_DEPTH);
+        // Large requested values are clamped to MAX_STACK_DEPTH / MAX_THREADS_HARD_CAP rather than
+        // passed through to the adapter — asserted against the same function debug_thread_snapshot
+        // uses.
+        let req: ThreadSnapshotRequest = serde_json::from_value(json!({
+            "stack_depth": 100_000,
+            "max_threads": 100_000,
+        }))
+        .unwrap();
+        let (clamped_depth, clamped_threads) = clamp_snapshot_limits(&req);
         assert_eq!(
             clamped_depth, MAX_STACK_DEPTH,
             "stack_depth must clamp to MAX_STACK_DEPTH"
         );
-
-        let huge_threads: i64 = 100_000;
-        let clamped_threads = (huge_threads.max(1) as usize).min(MAX_THREADS_HARD_CAP);
         assert_eq!(
             clamped_threads, MAX_THREADS_HARD_CAP,
             "max_threads must clamp to MAX_THREADS_HARD_CAP"
         );
 
         // Negative / zero requests floor at 1, not 0 (avoids empty stack request).
-        let zero_threads: i64 = 0;
-        let clamped_zero = (zero_threads.max(1) as usize).min(MAX_THREADS_HARD_CAP);
-        assert_eq!(clamped_zero, 1, "max_threads of 0 must floor at 1");
+        let req: ThreadSnapshotRequest = serde_json::from_value(json!({
+            "stack_depth": 0,
+            "max_threads": 0,
+        }))
+        .unwrap();
+        let (floored_depth, floored_threads) = clamp_snapshot_limits(&req);
+        assert_eq!(floored_depth, 1, "stack_depth of 0 must floor at 1");
+        assert_eq!(floored_threads, 1, "max_threads of 0 must floor at 1");
     }
 }

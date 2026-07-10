@@ -127,16 +127,7 @@ impl fmt::Display for RawDapResult {
 }
 
 fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    s.get(..max_bytes).unwrap_or_else(|| {
-        s.char_indices()
-            .take_while(|(idx, _)| *idx < max_bytes)
-            .last()
-            .map(|(idx, c)| &s[..idx + c.len_utf8()])
-            .unwrap_or("")
-    })
+    &s[..s.floor_char_boundary(max_bytes)]
 }
 
 pub fn truncate_response(json: String) -> String {
@@ -659,6 +650,17 @@ mod tests {
     use dapper_dap_protocol::responses::UnknownResponseBody;
 
     use super::*;
+
+    #[test]
+    fn truncate_at_char_boundary_rounds_down_to_char() {
+        let s = "a★b";
+        assert_eq!(truncate_at_char_boundary(s, 2), "a");
+        assert_eq!(truncate_at_char_boundary(s, 3), "a");
+        assert_eq!(truncate_at_char_boundary(s, 4), "a★");
+        assert_eq!(truncate_at_char_boundary(s, s.len()), s);
+        assert_eq!(truncate_at_char_boundary(s, s.len() + 1), s);
+        assert_eq!(truncate_at_char_boundary("", 0), "");
+    }
 
     #[test]
     fn display_unknown_response_body_only() {

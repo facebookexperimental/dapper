@@ -61,36 +61,40 @@ impl MessageRemapper {
         }
     }
 
-    pub fn map(&self, client_seq: ClientSeq, backend_seq: BackendSeq) -> BackendSeq {
+    /// Apply `f` under the lock, returning `None` if the mutex is poisoned.
+    fn with_inner_opt<R>(
+        &self,
+        op: &str,
+        f: impl FnOnce(&mut MessageRemapperInner) -> R,
+    ) -> Option<R> {
         match self.inner.lock() {
-            Ok(mut inner) => {
-                if let Some(old_backend_seq) = inner.forward.insert(client_seq, backend_seq) {
-                    inner.reverse.remove(&old_backend_seq);
-                }
-                inner.reverse.insert(backend_seq, client_seq);
-                backend_seq
-            }
+            Ok(mut inner) => Some(f(&mut inner)),
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire MessageRemapper lock for map");
-                backend_seq
+                tracing::warn!(error = %e, "Failed to acquire MessageRemapper lock for {op}");
+                None
             }
         }
     }
 
+    pub fn map(&self, client_seq: ClientSeq, backend_seq: BackendSeq) -> BackendSeq {
+        self.with_inner_opt("map", |inner| {
+            if let Some(old_backend_seq) = inner.forward.insert(client_seq, backend_seq) {
+                inner.reverse.remove(&old_backend_seq);
+            }
+            inner.reverse.insert(backend_seq, client_seq);
+        });
+        backend_seq
+    }
+
     pub fn unmap(&self, backend_seq: BackendSeq) -> Option<ClientSeq> {
-        match self.inner.lock() {
-            Ok(mut inner) => {
-                let client_seq = inner.reverse.remove(&backend_seq);
-                if let Some(client_seq) = client_seq {
-                    inner.forward.remove(&client_seq);
-                }
-                client_seq
+        self.with_inner_opt("unmap", |inner| {
+            let client_seq = inner.reverse.remove(&backend_seq);
+            if let Some(client_seq) = client_seq {
+                inner.forward.remove(&client_seq);
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire MessageRemapper lock for unmap");
-                None
-            }
-        }
+            client_seq
+        })
+        .flatten()
     }
 
     /// Read-only forward lookup: client seq → backend seq.
@@ -103,13 +107,10 @@ impl MessageRemapper {
     /// latter is logged at warn). Callers treat both the same way: they
     /// cannot translate the reference and proceed defensively.
     pub fn lookup_backend(&self, client_seq: ClientSeq) -> Option<BackendSeq> {
-        match self.inner.lock() {
-            Ok(inner) => inner.forward.get(&client_seq).copied(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire MessageRemapper lock for lookup_backend");
-                None
-            }
-        }
+        self.with_inner_opt("lookup_backend", |inner| {
+            inner.forward.get(&client_seq).copied()
+        })
+        .flatten()
     }
 }
 

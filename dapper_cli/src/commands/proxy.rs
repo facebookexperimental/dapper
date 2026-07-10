@@ -204,10 +204,9 @@ async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend<Me
 }
 
 impl Proxy {
-    pub async fn run(self, session_id: &SessionId) -> anyhow::Result<()> {
+    pub async fn run(self, session_id: &SessionId, config: DapperConfig) -> anyhow::Result<()> {
         let control_port = Port::try_new(self.control_port);
         tracing::info!(self.control_port, "Starting dapper proxy");
-        let dapper_config = DapperConfig::load_or_default();
         let sessions = match SessionStore::default_location() {
             Ok(store) => Some(store),
             Err(e) => {
@@ -242,7 +241,7 @@ impl Proxy {
         // Create the proxy server
         let proxy_server = ProxyServer::new(
             backend,
-            dapper_config,
+            config,
             sessions.clone(),
             session_id.clone(),
             self.parent_session_id.clone(),

@@ -68,7 +68,7 @@ impl Commands {
 
         match self {
             Commands::Debug(cmd) => cmd.run(config).await,
-            Commands::Proxy(cmd) => cmd.run(session_id).await,
+            Commands::Proxy(cmd) => cmd.run(session_id, config).await,
             Commands::Mcp(cmd) => cmd.run(config).await,
             Commands::Help { .. } => {
                 unreachable!("Help is dispatched in the binary entry point before Commands::run")
@@ -79,5 +79,39 @@ impl Commands {
         })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    /// Pins the `--json` override the proxy path now also relies on.
+    #[test]
+    fn resolve_config_applies_json_override() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let config_dir = dir.path().to_str().expect("temp path is utf-8");
+        temp_env::with_vars(
+            [
+                ("DAPPER_CONFIG_DIR", Some(config_dir)),
+                ("DAPPER_OUTPUT_JSON", None),
+            ],
+            || {
+                assert_eq!(
+                    Cli::parse_from(["dapper", "--json", "help"])
+                        .resolve_config()
+                        .output_format,
+                    dapper_config::OutputFormat::Json,
+                );
+                assert_eq!(
+                    Cli::parse_from(["dapper", "help"])
+                        .resolve_config()
+                        .output_format,
+                    dapper_config::OutputFormat::Plaintext,
+                );
+            },
+        );
     }
 }

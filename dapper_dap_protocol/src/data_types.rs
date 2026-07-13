@@ -3,8 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::fmt;
-
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::Serialize;
@@ -62,7 +60,10 @@ impl Default for IntOrString {
     Eq,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into
 )]
 #[serde(transparent)]
 pub struct Seq(pub i64);
@@ -81,24 +82,6 @@ impl Seq {
     }
 }
 
-impl fmt::Display for Seq {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<i64> for Seq {
-    fn from(id: i64) -> Self {
-        Self(id)
-    }
-}
-
-impl From<Seq> for i64 {
-    fn from(id: Seq) -> Self {
-        id.0
-    }
-}
-
 #[derive(
     Debug,
     Clone,
@@ -108,7 +91,10 @@ impl From<Seq> for i64 {
     Eq,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct ThreadId(pub i64);
@@ -120,24 +106,6 @@ impl ThreadId {
     /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
-    }
-}
-
-impl fmt::Display for ThreadId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<i64> for ThreadId {
-    fn from(id: i64) -> Self {
-        Self(id)
-    }
-}
-
-impl From<ThreadId> for i64 {
-    fn from(id: ThreadId) -> Self {
-        id.0
     }
 }
 
@@ -166,7 +134,10 @@ impl std::str::FromStr for ThreadId {
     Eq,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct FrameId(pub i64);
@@ -178,24 +149,6 @@ impl FrameId {
     /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
-    }
-}
-
-impl fmt::Display for FrameId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<i64> for FrameId {
-    fn from(id: i64) -> Self {
-        Self(id)
-    }
-}
-
-impl From<FrameId> for i64 {
-    fn from(id: FrameId) -> Self {
-        id.0
     }
 }
 
@@ -224,7 +177,10 @@ impl std::str::FromStr for FrameId {
     Eq,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct VariablesReference(pub i64);
@@ -240,24 +196,6 @@ impl VariablesReference {
     /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
-    }
-}
-
-impl fmt::Display for VariablesReference {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<i64> for VariablesReference {
-    fn from(id: i64) -> Self {
-        Self(id)
-    }
-}
-
-impl From<VariablesReference> for i64 {
-    fn from(id: VariablesReference) -> Self {
-        id.0
     }
 }
 
@@ -286,7 +224,10 @@ impl std::str::FromStr for VariablesReference {
     Eq,
     Hash,
     Serialize,
-    Deserialize
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::Into
 )]
 #[serde(transparent)]
 pub struct BreakpointId(pub i64);
@@ -298,24 +239,6 @@ impl BreakpointId {
     /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
-    }
-}
-
-impl fmt::Display for BreakpointId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<i64> for BreakpointId {
-    fn from(id: i64) -> Self {
-        Self(id)
-    }
-}
-
-impl From<BreakpointId> for i64 {
-    fn from(id: BreakpointId) -> Self {
-        id.0
     }
 }
 

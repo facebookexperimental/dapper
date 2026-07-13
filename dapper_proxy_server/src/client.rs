@@ -257,11 +257,7 @@ impl ProxyClient {
     ) -> anyhow::Result<dapper_control_api::StackTraceResult> {
         let effective_start_frame = start_frame.unwrap_or(0);
         let effective_levels = levels.unwrap_or(self.config.stack_trace.max_frames as i64);
-        let frames_to_request = if effective_levels > 0 {
-            effective_levels + 1
-        } else {
-            0
-        };
+        let frames_to_request = helpers::levels_to_request(effective_levels);
 
         let request = dap::Request::new(RequestCommand::StackTrace(StackTraceArguments {
             thread_id,
@@ -280,12 +276,8 @@ impl ProxyClient {
             _ => Vec::new(),
         };
 
-        let frames_to_show = if frames_to_request > 0 {
-            all_frames.len().min(effective_levels as usize)
-        } else {
-            all_frames.len()
-        };
-        let has_more_frames = all_frames.len() > frames_to_show;
+        let (frames_to_show, has_more_frames) =
+            helpers::select_frames(all_frames.len(), effective_levels);
         let stack_frames: Vec<_> = all_frames.into_iter().take(frames_to_show).collect();
 
         let scopes = if effective_start_frame == 0
@@ -924,6 +916,23 @@ pub(crate) mod helpers {
 
     use super::*;
 
+    pub(crate) fn levels_to_request(effective_levels: i64) -> i64 {
+        if effective_levels > 0 {
+            effective_levels + 1
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn select_frames(total: usize, effective_levels: i64) -> (usize, bool) {
+        let show = if effective_levels > 0 {
+            total.min(effective_levels as usize)
+        } else {
+            total
+        };
+        (show, total > show)
+    }
+
     pub async fn wait_for_response(
         seq: Seq,
         messages: &mut broadcast::Receiver<Arc<dap::Message>>,
@@ -1111,6 +1120,38 @@ mod tests {
     use dapper_dap_protocol::responses::ThreadsResponseBody;
 
     use super::*;
+
+    #[test]
+    fn levels_to_request_adds_probe_frame_when_bounded() {
+        assert_eq!(helpers::levels_to_request(5), 6);
+        assert_eq!(helpers::levels_to_request(1), 2);
+        assert_eq!(
+            helpers::levels_to_request(0),
+            0,
+            "0 levels means unbounded: request 0 so the adapter returns all frames"
+        );
+        assert_eq!(helpers::levels_to_request(-1), 0);
+    }
+
+    #[test]
+    fn select_frames_detects_truncation() {
+        assert_eq!(
+            helpers::select_frames(6, 5),
+            (5, true),
+            "an extra frame beyond the requested count means more exist"
+        );
+        assert_eq!(
+            helpers::select_frames(5, 5),
+            (5, false),
+            "exactly the requested count means nothing was truncated"
+        );
+        assert_eq!(helpers::select_frames(3, 5), (3, false));
+        assert_eq!(
+            helpers::select_frames(9, 0),
+            (9, false),
+            "unbounded request shows everything and is never truncated"
+        );
+    }
 
     /// Create a `ProxyClient` with a `DebugSessionTracker` seeded with the
     /// given adapter capabilities. The server side of the channel is returned

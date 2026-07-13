@@ -198,11 +198,6 @@ impl ProxyClient {
         }
     }
 
-    pub async fn send_message_and_forget(&self, message: dap::Message) -> anyhow::Result<Seq> {
-        let ListenerPayload { seq, .. } = self.send_message(message).await?;
-        Ok(seq)
-    }
-
     pub async fn repl(&self, cmd: String, frame_id: Option<FrameId>) -> anyhow::Result<String> {
         let request = dap::Request::new(RequestCommand::Evaluate(EvaluateArguments {
             expression: cmd,

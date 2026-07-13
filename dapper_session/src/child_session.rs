@@ -13,6 +13,7 @@ use dapper_dap_protocol::requests::StartDebuggingRequestArguments;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::Port;
 use crate::config::DebugRequest;
 use crate::config::DebugSessionConfig;
 use crate::config::SpawnConfig;
@@ -253,7 +254,7 @@ pub enum ChildBackendTemplate {
 }
 
 /// A port in a `tcp` child backend: either a `${...}` template / numeric string,
-/// or a literal port number. The resolver coerces the resolved value to `u16`.
+/// or a literal port number. The resolver coerces the resolved value to a `Port`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum PortTemplate {
@@ -449,7 +450,7 @@ fn build_child_spawn_config(
         ChildBackendTemplate::Tcp { host, port } => {
             let host = resolve_string_template(host, context)?;
             let port = resolve_port(port, context)?;
-            let addr = crate::resolve_socket_addr(&host, port).map_err(|e| {
+            let addr = crate::resolve_socket_addr(&host, port.get()).map_err(|e| {
                 ResolveError::InvalidTemplateValue {
                     path: format!("{host}:{port}"),
                     reason: e.to_string(),
@@ -590,9 +591,9 @@ fn resolve_string_template(
     }
 }
 
-/// Resolve a `PortTemplate` into a `u16`, coercing a JSON number or numeric
+/// Resolve a `PortTemplate` into a `Port`, coercing a JSON number or numeric
 /// string (whether a rule literal or substituted from the reverse request).
-fn resolve_port(port: &PortTemplate, context: &serde_json::Value) -> Result<u16, ResolveError> {
+fn resolve_port(port: &PortTemplate, context: &serde_json::Value) -> Result<Port, ResolveError> {
     match port {
         // Validate the same as a coerced port (e.g. reject 0), one gate for both.
         PortTemplate::Literal(p) => coerce_port(&serde_json::Value::from(*p), "port"),
@@ -618,14 +619,14 @@ fn resolve_port(port: &PortTemplate, context: &serde_json::Value) -> Result<u16,
     }
 }
 
-fn coerce_port(value: &serde_json::Value, source: &str) -> Result<u16, ResolveError> {
+fn coerce_port(value: &serde_json::Value, source: &str) -> Result<Port, ResolveError> {
     let port = match value {
         serde_json::Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
         serde_json::Value::String(s) => s.parse::<u16>().ok(),
         _ => None,
     };
     // Port 0 is never a valid connect target.
-    port.filter(|p| *p != 0)
+    port.and_then(Port::try_new)
         .ok_or_else(|| ResolveError::InvalidTemplateValue {
             path: source.to_string(),
             reason: format!("expected a port number (1..=65535), got {value}"),

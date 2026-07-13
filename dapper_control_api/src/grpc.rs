@@ -6,6 +6,8 @@
 use std::result::Result;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 
 use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
@@ -588,6 +590,12 @@ impl DapperControlPlaneClient {
         }
     }
 
+    fn lock_cache(&self) -> MutexGuard<'_, Option<CachedConnection>> {
+        self.cached_connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     async fn get_client(
         &self,
     ) -> anyhow::Result<dapper_control_plane_client::DapperControlPlaneClient<Channel>> {
@@ -595,10 +603,7 @@ impl DapperControlPlaneClient {
 
         // Reuse cached connection if port matches
         {
-            let cache = self
-                .cached_connection
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
+            let cache = self.lock_cache();
             if let Some(cached) = cache.as_ref()
                 && cached.port == port.get()
             {
@@ -618,10 +623,7 @@ impl DapperControlPlaneClient {
             Endpoint::try_from(format!("http://127.0.0.1:{}", port.get()))?.connect_lazy();
 
         {
-            let mut cache = self
-                .cached_connection
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Failed to acquire cache lock: {}", e))?;
+            let mut cache = self.lock_cache();
             *cache = Some(CachedConnection {
                 channel: channel.clone(),
                 port: port.get(),
@@ -1277,6 +1279,23 @@ mod tests {
             debugger_args: None,
             parent_session_id: None,
         }
+    }
+
+    #[test]
+    fn lock_cache_recovers_from_poison() {
+        let client = DapperControlPlaneClient::for_port(Port::try_new(4321).unwrap());
+        // Poison the mutex: panic while holding the guard on another thread.
+        let cached = client.cached_connection.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = cached.lock().unwrap();
+                panic!("poison the mutex");
+            })
+            .join()
+            .is_err()
+        );
+        // The helper must recover the poisoned lock, not propagate the error.
+        assert!(client.lock_cache().is_none());
     }
 
     #[test]

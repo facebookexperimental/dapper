@@ -381,7 +381,7 @@ impl ProxyServer {
         remapper: MessageRemapper,
         debug_session_tracker: DebugSessionTracker,
     ) -> anyhow::Result<()> {
-        let event_seq_counter = AtomicI64::new(1);
+        let mut event_seq_counter: i64 = 1;
 
         loop {
             let mut message = tokio::select! {
@@ -407,7 +407,8 @@ impl ProxyServer {
             }
 
             // Assign sequence numbers for main client display
-            let next_seq = Seq(event_seq_counter.fetch_add(1, SeqCst));
+            let next_seq = Seq(event_seq_counter);
+            event_seq_counter += 1;
             match &mut message {
                 Message::Event(event) => {
                     event.seq = next_seq;

@@ -462,17 +462,6 @@ impl ProxyClient {
 
         response.check_success()?;
 
-        if !matches!(
-            navigation_type,
-            NavigationType::Continue | NavigationType::ReverseContinue | NavigationType::Pause
-        ) {
-            return Ok(dapper_session::NavigationResult {
-                result: NavigateResult::CommandExecuted,
-                navigation_type,
-                extra: Default::default(),
-            });
-        }
-
         let (timeout, timeout_seconds) = match navigation_type {
             NavigationType::Pause => (
                 self.config.navigate.pause_timeout(),
@@ -487,7 +476,16 @@ impl ProxyClient {
                 self.config.navigate.continue_timeout(),
                 self.config.navigate.continue_timeout_seconds,
             ),
-            _ => unreachable!(),
+            NavigationType::StepIn
+            | NavigationType::StepOver
+            | NavigationType::StepOut
+            | NavigationType::StepBack => {
+                return Ok(dapper_session::NavigationResult {
+                    result: NavigateResult::CommandExecuted,
+                    navigation_type,
+                    extra: Default::default(),
+                });
+            }
         };
 
         let result = match helpers::wait_for_events_timeout(

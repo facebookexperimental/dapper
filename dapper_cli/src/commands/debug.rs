@@ -293,7 +293,7 @@ impl Debug {
                     context: dapper_config::ContextConfig::all_enabled(),
                     ..config
                 };
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Config {} => {
                 let sessions = SessionStore::default_location()?;
@@ -315,10 +315,10 @@ impl Debug {
                     "debugger_args": session.debugger_args,
                     "dapper_config": config,
                 });
-                safe_println(format_args!(
+                try_println(format_args!(
                     "{}",
                     serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string())
-                ));
+                ))?;
             }
             DebugCommands::Stop {} => {
                 client.stop().await?;
@@ -332,11 +332,11 @@ impl Debug {
                     result,
                     context: None,
                 };
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Threads {} => {
                 let result = client.threads().await.context("Error getting threads")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::StackTrace {
                 thread_id,
@@ -347,14 +347,14 @@ impl Debug {
                     .stack_trace(thread_id, start_frame, levels)
                     .await
                     .context("Error getting stack trace")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Scopes { frame_id } => {
                 let result = client
                     .scopes(frame_id)
                     .await
                     .context("Error getting scopes")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Variables {
                 variables_reference,
@@ -363,7 +363,7 @@ impl Debug {
                     .variables(variables_reference)
                     .await
                     .context("Error getting variables")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Step {
                 step_type,
@@ -375,7 +375,7 @@ impl Debug {
                     .navigate(NavigationType::from(step_type), thread_id, single_thread)
                     .await
                     .with_context(|| format!("Error executing step {}", step_label))?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::SetVariable {
                 variables_reference,
@@ -386,7 +386,7 @@ impl Debug {
                     .set_variable(variables_reference, &name, &value)
                     .await
                     .context("Error setting variable")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Continue {
                 thread_id,
@@ -396,7 +396,7 @@ impl Debug {
                     .navigate(NavigationType::Continue, thread_id, single_thread)
                     .await
                     .context("Error executing continue")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::ReverseContinue {
                 thread_id,
@@ -406,14 +406,14 @@ impl Debug {
                     .navigate(NavigationType::ReverseContinue, thread_id, single_thread)
                     .await
                     .context("Error executing reverse-continue")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Pause { thread_id } => {
                 let result = client
                     .navigate(NavigationType::Pause, thread_id, None)
                     .await
                     .context("Error executing pause")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::SetBreakpoints {
                 source_path,
@@ -426,7 +426,7 @@ impl Debug {
                     .set_breakpoints(&source_path, clear_existing, &specs)
                     .await
                     .context("Error setting breakpoints")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::SetExceptionBreakpoints {
                 filters,
@@ -443,7 +443,7 @@ impl Debug {
                     .set_exception_breakpoints(&filters, clear_existing)
                     .await
                     .context("Error setting exception breakpoints")?;
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Sessions {} => {
                 let sessions: Vec<SessionInfo> = SessionStore::default_location()?
@@ -458,7 +458,7 @@ impl Debug {
                     result: sessions_result,
                     context: None,
                 };
-                safe_println(format_args!("{}", render(&result, &config)?));
+                print_rendered(&result, &config)?;
             }
             DebugCommands::Capabilities {} => {
                 let caps = client
@@ -466,12 +466,12 @@ impl Debug {
                     .await
                     .context("Error fetching capabilities")?;
                 match caps {
-                    Some(json) => safe_println(format_args!("{}", json)),
+                    Some(json) => try_println(format_args!("{}", json))?,
                     None => {
                         eprintln!(
                             "Adapter capabilities not yet available (initialize response not received)."
                         );
-                        safe_println(format_args!("null"));
+                        try_println(format_args!("null"))?;
                     }
                 }
             }
@@ -495,23 +495,28 @@ impl Debug {
                     OutputFormat::Json => result.render_json(),
                     OutputFormat::Plaintext => result.render(),
                 };
-                safe_println(format_args!("{}", output));
+                try_println(format_args!("{}", output))?;
             }
         }
         Ok(())
     }
 }
 
-fn safe_println(args: std::fmt::Arguments<'_>) {
+/// Print a line to stdout, returning write errors instead of panicking the
+/// way `println!` does; `Commands::run` maps a closed pipe to exit code 32.
+fn try_println(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    let result = handle.write_fmt(args).and_then(|_| handle.write_all(b"\n"));
-    if let Err(e) = result {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(32);
-        }
-        panic!("failed printing to stdout: {e}");
-    }
+    handle.write_fmt(args)?;
+    handle.write_all(b"\n")
+}
+
+fn print_rendered<T: std::fmt::Display + serde::Serialize>(
+    result: &ControlPlaneResult<T>,
+    config: &DapperConfig,
+) -> anyhow::Result<()> {
+    try_println(format_args!("{}", render(result, config)?))?;
+    Ok(())
 }
 
 #[cfg(test)]

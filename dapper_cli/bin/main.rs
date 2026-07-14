@@ -37,9 +37,9 @@ async fn main() -> Result<()> {
 
     let config = cli.resolve_config();
 
-    cli.command.run(&session_id, config).await?;
+    let exit_code = cli.command.run(&session_id, config).await?;
 
     // stdin is blocking, so we need to exit explicitly
     // TODO: find a better way to handle blocking stdin
-    std::process::exit(0);
+    std::process::exit(exit_code);
 }

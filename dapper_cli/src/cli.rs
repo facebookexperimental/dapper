@@ -59,27 +59,40 @@ pub enum Commands {
 }
 
 impl Commands {
-    /// Run a non-`Help` subcommand. The `Help` variant is dispatched
-    /// in the binary entry points *before* tracing/logging is set up,
-    /// so help rendering never touches disk or emits log lines — see
-    /// `dapper_cli/bin/main.rs` and `fb/dapper_fb_main/src/lib.rs`.
-    pub async fn run(self, session_id: &SessionId, config: DapperConfig) -> anyhow::Result<()> {
+    /// Run a non-`Help` subcommand, returning the process exit code for
+    /// the binary entry point to exit with. The `Help` variant is
+    /// dispatched in the binary entry points *before* tracing/logging is
+    /// set up, so help rendering never touches disk or emits log lines —
+    /// see `dapper_cli/bin/main.rs` and `fb/dapper_fb_main/src/lib.rs`.
+    pub async fn run(self, session_id: &SessionId, config: DapperConfig) -> anyhow::Result<i32> {
         tracing::info!("Dapper session: {}", session_id);
 
-        match self {
+        let result = match self {
             Commands::Debug(cmd) => cmd.run(config).await,
             Commands::Proxy(cmd) => cmd.run(session_id, config).await,
             Commands::Mcp(cmd) => cmd.run(config).await,
             Commands::Help { .. } => {
                 unreachable!("Help is dispatched in the binary entry point before Commands::run")
             }
-        }
-        .inspect_err(|err| {
-            tracing::error!("Dapper top-level error: {:#}", err);
-        })?;
+        };
 
-        Ok(())
+        match result {
+            Ok(()) => Ok(0),
+            // A closed stdout (e.g. `dapper debug ... | head`) is not a
+            // command failure: report the conventional exit code instead
+            // of an error trace. Both binaries funnel through here.
+            Err(err) if is_broken_pipe(&err) => Ok(32),
+            Err(err) => {
+                tracing::error!("Dapper top-level error: {:#}", err);
+                Err(err)
+            }
+        }
     }
+}
+
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 #[cfg(test)]

@@ -41,6 +41,9 @@ pub use render::render;
 pub use render::render_json;
 pub use render::render_plaintext;
 
+mod rendered_response;
+pub use rendered_response::RenderedResponse;
+
 mod protocol;
 pub use protocol::DapperControlPlane;
 
@@ -51,7 +54,6 @@ pub mod response;
 pub use response::NavigateResult;
 pub use response::NavigationResult;
 pub use response::RawDapResult;
-pub use response::RenderedResponse;
 pub use response::ScopesResult;
 pub use response::SessionsResult;
 pub use response::SetBreakpointsResult;

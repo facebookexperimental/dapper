@@ -92,7 +92,7 @@ impl RawDapResult {
     }
 
     pub fn render_json(&self) -> String {
-        serde_json::to_string(&self.to_json_value()).unwrap_or_else(|_| "{}".to_string())
+        self.to_json_value().to_string()
     }
 }
 
@@ -116,9 +116,8 @@ fn extract_event_body(event: &EventKind) -> Option<serde_json::Value> {
 
 impl fmt::Display for RawDapResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string_pretty(&self.to_json_value())
-            .unwrap_or_else(|_| "{}".to_string());
-        write!(f, "{}", json)
+        // `Value`'s `Display` is infallible; `{:#}` is its pretty format.
+        write!(f, "{:#}", self.to_json_value())
     }
 }
 

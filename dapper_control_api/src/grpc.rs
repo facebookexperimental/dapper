@@ -800,7 +800,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         let mut client = self.get_client().await?;
 
         let arguments_json = match arguments {
-            Some(v) => serde_json::to_string(&v)?,
+            Some(v) => v.to_string(),
             None => String::new(),
         };
 

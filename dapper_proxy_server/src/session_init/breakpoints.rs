@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use dapper_control_api::ExceptionFilterEntry;
+use dapper_session::ExceptionFilterEntry;
 use dapper_session::config::BreakpointSpec;
 
 /// Groups breakpoints by type for efficient DAP request generation.
@@ -32,7 +32,7 @@ impl BreakpointGroups {
     /// breakpoints are bucketed by file path, function-name breakpoints are
     /// collected together, and exception filters are converted to
     /// `ExceptionFilterEntry` via the shared conversion in
-    /// `dapper_control_api`.
+    /// `dapper_session`.
     pub fn from_breakpoints(breakpoints: &[BreakpointSpec]) -> Self {
         let mut groups = Self::default();
 

@@ -10,10 +10,10 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
-use dapper_control_api::BufferedOutput;
-use dapper_control_api::OutputEvent;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::enums::OutputCategory;
+use dapper_session::BufferedOutput;
+use dapper_session::OutputEvent;
 use dapper_session::SessionId;
 
 /// Returns the directory for dapper output logs (in the system temp directory)

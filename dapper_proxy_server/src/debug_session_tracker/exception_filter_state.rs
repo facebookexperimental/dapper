@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use dapper_control_api::ExceptionFilterEntry;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::requests::SetExceptionBreakpointsArguments;
+use dapper_session::ExceptionFilterEntry;
 
 #[derive(Debug, Default)]
 pub(super) struct ExceptionFilterState {

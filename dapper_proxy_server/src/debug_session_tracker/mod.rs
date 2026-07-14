@@ -16,8 +16,6 @@ pub use breakpoint_state::BreakpointDiff;
 pub(crate) use breakpoint_state::breakpoints_with_fallback;
 pub(crate) use breakpoint_state::resolved_source_path;
 use dapper_config::DapperConfig;
-pub use dapper_control_api::BreakpointInfo;
-pub use dapper_control_api::ExceptionFilterEntry;
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
@@ -26,6 +24,8 @@ use dapper_dap_protocol::protocol::Event;
 use dapper_dap_protocol::protocol::Message;
 use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::responses::ResponseBody;
+pub use dapper_session::BreakpointInfo;
+pub use dapper_session::ExceptionFilterEntry;
 use dapper_session::Port;
 use dapper_session::RequestType;
 use dapper_session::ScopeId;
@@ -369,14 +369,14 @@ impl DebugSessionTracker {
         }
     }
 
-    pub fn response_context(&self) -> Option<dapper_control_api::ResponseContext> {
+    pub fn response_context(&self) -> Option<dapper_session::ResponseContext> {
         if !self.config.context.enable {
             let session = if self.config.context.show_session {
                 self.with_inner_opt("response context", |inner| inner.session_info.clone())?
             } else {
                 None
             };
-            return Some(dapper_control_api::ResponseContext {
+            return Some(dapper_session::ResponseContext {
                 session,
                 ..Default::default()
             });
@@ -452,7 +452,7 @@ impl DebugSessionTracker {
             _ => vec![],
         };
 
-        Some(dapper_control_api::ResponseContext {
+        Some(dapper_session::ResponseContext {
             session,
             other_sessions,
             execution_state,

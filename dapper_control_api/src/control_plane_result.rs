@@ -3,10 +3,9 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use dapper_session::ResponseContext;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-
-use crate::ResponseContext;
 
 pub struct ControlPlaneResult<T> {
     pub result: T,
@@ -53,8 +52,9 @@ impl<T> ControlPlaneResult<T> {
 
 #[cfg(test)]
 mod tests {
+    use dapper_session::ThreadsResult;
+
     use super::*;
-    use crate::ThreadsResult;
 
     #[test]
     fn to_json_fields_structured() {

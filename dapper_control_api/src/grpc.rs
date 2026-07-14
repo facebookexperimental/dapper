@@ -235,7 +235,7 @@ where
                 single_thread,
             } = request.into_inner();
             let navigation_type_enum = match NavigationType::try_from(navigation_type) {
-                Ok(proto_navigation_type) => crate::NavigationType::from(proto_navigation_type),
+                Ok(proto_navigation_type) => navigation_type_from_proto(proto_navigation_type),
                 Err(_) => return Err(anyhow::anyhow!("Invalid navigation type")),
             };
             let cp_result = self
@@ -539,6 +539,41 @@ pub fn resolve_unique_session(
     }
 }
 
+/// Proto <-> domain conversions for `NavigationType`. Free functions: both
+/// types are foreign to this crate (proto from dapper_control_proto, domain
+/// from dapper_session), so `From` impls would violate the orphan rule.
+fn navigation_type_from_proto(
+    proto: dapper_control_proto::NavigationType,
+) -> dapper_session::NavigationType {
+    use dapper_control_proto::NavigationType as P;
+    use dapper_session::NavigationType as N;
+    match proto {
+        P::StepIn => N::StepIn,
+        P::StepOver => N::StepOver,
+        P::StepOut => N::StepOut,
+        P::Continue => N::Continue,
+        P::Pause => N::Pause,
+        P::StepBack => N::StepBack,
+        P::ReverseContinue => N::ReverseContinue,
+    }
+}
+
+fn navigation_type_to_proto(
+    navigation_type: dapper_session::NavigationType,
+) -> dapper_control_proto::NavigationType {
+    use dapper_control_proto::NavigationType as P;
+    use dapper_session::NavigationType as N;
+    match navigation_type {
+        N::StepIn => P::StepIn,
+        N::StepOver => P::StepOver,
+        N::StepOut => P::StepOut,
+        N::Continue => P::Continue,
+        N::Pause => P::Pause,
+        N::StepBack => P::StepBack,
+        N::ReverseContinue => P::ReverseContinue,
+    }
+}
+
 /// How the client locates the control plane: an exact port, or discovery of
 /// the unique active session from a store, re-resolved on each call.
 #[derive(Debug, Clone)]
@@ -656,7 +691,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         Ok(())
     }
 
-    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<crate::ThreadsResult>> {
+    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
         let mut client = self.get_client().await?;
         let resp = client.threads(ThreadsRequest {}).await?.into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
@@ -667,7 +702,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
-    ) -> anyhow::Result<ControlPlaneResult<crate::StackTraceResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::StackTraceResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .stack_trace(StackTraceRequest {
@@ -683,7 +718,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
     async fn scopes(
         &self,
         frame_id: FrameId,
-    ) -> anyhow::Result<ControlPlaneResult<crate::ScopesResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::ScopesResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .scopes(ScopesRequest {
@@ -697,7 +732,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
     async fn variables(
         &self,
         variables_reference: VariablesReference,
-    ) -> anyhow::Result<ControlPlaneResult<crate::VariablesResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::VariablesResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .variables(VariablesRequest {
@@ -710,12 +745,12 @@ impl DapperControlPlane for DapperControlPlaneClient {
 
     async fn navigate(
         &self,
-        navigation_type: crate::NavigationType,
+        navigation_type: dapper_session::NavigationType,
         thread_id: ThreadId,
         single_thread: Option<bool>,
-    ) -> anyhow::Result<ControlPlaneResult<crate::NavigationResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::NavigationResult>> {
         let mut client = self.get_client().await?;
-        let proto_navigation_type = dapper_control_proto::NavigationType::from(navigation_type);
+        let proto_navigation_type = navigation_type_to_proto(navigation_type);
 
         let resp = client
             .navigate(NavigateRequest {
@@ -733,7 +768,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         variables_reference: VariablesReference,
         name: &str,
         value: &str,
-    ) -> anyhow::Result<ControlPlaneResult<crate::SetVariableResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetVariableResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .set_variable(SetVariableRequest {
@@ -751,7 +786,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         source_path: &str,
         clear_existing: bool,
         breakpoint_specs: &[SourceBreakpoint],
-    ) -> anyhow::Result<ControlPlaneResult<crate::SetBreakpointsResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetBreakpointsResult>> {
         let mut client = self.get_client().await?;
         let breakpoints: Vec<dapper_control_proto::SourceBreakpoint> = breakpoint_specs
             .iter()
@@ -778,7 +813,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         &self,
         filters: &[String],
         clear_existing: bool,
-    ) -> anyhow::Result<ControlPlaneResult<crate::SetExceptionBreakpointsResult>> {
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetExceptionBreakpointsResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .set_exception_breakpoints(SetExceptionBreakpointsRequest {
@@ -796,7 +831,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         arguments: Option<serde_json::Value>,
         wait_for_event: bool,
         timeout_seconds: u64,
-    ) -> anyhow::Result<crate::RawDapResult> {
+    ) -> anyhow::Result<dapper_session::RawDapResult> {
         let mut client = self.get_client().await?;
 
         let arguments_json = match arguments {
@@ -839,7 +874,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         }
     }
 
-    async fn status(&self) -> anyhow::Result<ControlPlaneResult<crate::StatusResult>> {
+    async fn status(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::StatusResult>> {
         let mut client = self.get_client().await?;
         let resp = client.status(StatusRequest {}).await?.into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
@@ -861,6 +896,26 @@ mod tests {
     use dapper_session::SessionInfo;
 
     use super::*;
+
+    #[test]
+    fn navigation_type_proto_round_trip_preserves_variants() {
+        use dapper_session::NavigationType as N;
+        for navigation_type in [
+            N::StepIn,
+            N::StepOver,
+            N::StepOut,
+            N::Continue,
+            N::Pause,
+            N::StepBack,
+            N::ReverseContinue,
+        ] {
+            assert_eq!(
+                navigation_type_from_proto(navigation_type_to_proto(navigation_type)),
+                navigation_type,
+                "proto round trip should preserve the variant"
+            );
+        }
+    }
 
     struct TestServer {
         stop_was_called: Arc<AtomicBool>,
@@ -888,16 +943,18 @@ mod tests {
             Ok(())
         }
 
-        async fn threads(&self) -> anyhow::Result<ControlPlaneResult<crate::ThreadsResult>> {
+        async fn threads(
+            &self,
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
             Ok(ControlPlaneResult {
-                result: crate::ThreadsResult {
+                result: dapper_session::ThreadsResult {
                     threads: vec![Thread {
                         id: 1.into(),
                         name: "MainThread".to_string(),
                     }],
                     ..Default::default()
                 },
-                context: Some(crate::ResponseContext {
+                context: Some(dapper_session::ResponseContext {
                     session: Some(SessionInfo {
                         session_id: "test-session".into(),
                         session_type: Some("debugpy".to_string()),
@@ -923,9 +980,9 @@ mod tests {
             thread_id: ThreadId,
             _start_frame: Option<i64>,
             _levels: Option<i64>,
-        ) -> anyhow::Result<ControlPlaneResult<crate::StackTraceResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::StackTraceResult>> {
             Ok(ControlPlaneResult {
-                result: crate::StackTraceResult {
+                result: dapper_session::StackTraceResult {
                     stack_frames: vec![StackFrame {
                         id: 10.into(),
                         name: "main_entry".to_string(),
@@ -941,9 +998,9 @@ mod tests {
         async fn scopes(
             &self,
             frame_id: FrameId,
-        ) -> anyhow::Result<ControlPlaneResult<crate::ScopesResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::ScopesResult>> {
             Ok(ControlPlaneResult {
-                result: crate::ScopesResult {
+                result: dapper_session::ScopesResult {
                     scopes: vec![Scope {
                         name: "Locals".to_string(),
                         presentation_hint: Some(ScopePresentationHint::Locals),
@@ -960,9 +1017,9 @@ mod tests {
         async fn variables(
             &self,
             variables_reference: VariablesReference,
-        ) -> anyhow::Result<ControlPlaneResult<crate::VariablesResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::VariablesResult>> {
             Ok(ControlPlaneResult {
-                result: crate::VariablesResult {
+                result: dapper_session::VariablesResult {
                     variables: vec![Variable {
                         name: "x".to_string(),
                         value: "42".to_string(),
@@ -977,13 +1034,13 @@ mod tests {
 
         async fn navigate(
             &self,
-            navigation_type: crate::NavigationType,
+            navigation_type: dapper_session::NavigationType,
             _thread_id: ThreadId,
             _single_thread: Option<bool>,
-        ) -> anyhow::Result<ControlPlaneResult<crate::NavigationResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::NavigationResult>> {
             Ok(ControlPlaneResult {
-                result: crate::NavigationResult {
-                    result: crate::NavigateResult::CommandExecuted,
+                result: dapper_session::NavigationResult {
+                    result: dapper_session::NavigateResult::CommandExecuted,
                     navigation_type,
                     extra: Default::default(),
                 },
@@ -996,9 +1053,9 @@ mod tests {
             _variables_reference: VariablesReference,
             name: &str,
             _value: &str,
-        ) -> anyhow::Result<ControlPlaneResult<crate::SetVariableResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetVariableResult>> {
             Ok(ControlPlaneResult {
-                result: crate::SetVariableResult {
+                result: dapper_session::SetVariableResult {
                     name: name.to_string(),
                     ..Default::default()
                 },
@@ -1011,10 +1068,10 @@ mod tests {
             source_path: &str,
             clear_existing: bool,
             breakpoint_specs: &[SourceBreakpoint],
-        ) -> anyhow::Result<ControlPlaneResult<crate::SetBreakpointsResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetBreakpointsResult>> {
             let breakpoints = breakpoint_specs
                 .iter()
-                .map(|bp| crate::BreakpointInfo {
+                .map(|bp| dapper_session::BreakpointInfo {
                     line: bp.line,
                     verified: true,
                     ..Default::default()
@@ -1023,7 +1080,7 @@ mod tests {
             let new_count = breakpoints.len();
             let existing_count = if clear_existing { 0 } else { 1 };
             Ok(ControlPlaneResult {
-                result: crate::SetBreakpointsResult {
+                result: dapper_session::SetBreakpointsResult {
                     source_path: source_path.to_string(),
                     breakpoints,
                     new_count,
@@ -1038,7 +1095,8 @@ mod tests {
             &self,
             filters: &[String],
             _clear_existing: bool,
-        ) -> anyhow::Result<ControlPlaneResult<crate::SetExceptionBreakpointsResult>> {
+        ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetExceptionBreakpointsResult>>
+        {
             // Stateless mock: pretend nothing was previously installed.
             // Every requested filter is "new"; nothing was "existing". The
             // gRPC end-to-end test asserts these values against the
@@ -1048,7 +1106,7 @@ mod tests {
             // `dapper_proxy_server::client::tests::merge_exception_filters_*`.
             let installed = filters
                 .iter()
-                .map(|f| crate::ExceptionFilterEntry {
+                .map(|f| dapper_session::ExceptionFilterEntry {
                     filter: f.clone(),
                     condition: None,
                 })
@@ -1056,7 +1114,7 @@ mod tests {
             let new_count = filters.len();
             let existing_count = 0;
             Ok(ControlPlaneResult {
-                result: crate::SetExceptionBreakpointsResult {
+                result: dapper_session::SetExceptionBreakpointsResult {
                     installed,
                     new_count,
                     existing_count,
@@ -1072,7 +1130,7 @@ mod tests {
             _arguments: Option<serde_json::Value>,
             _wait_for_event: bool,
             _timeout_seconds: u64,
-        ) -> anyhow::Result<crate::RawDapResult> {
+        ) -> anyhow::Result<dapper_session::RawDapResult> {
             let body = match command {
                 "pause" => dapper_dap_protocol::responses::ResponseBody::Pause,
                 "threads" => {
@@ -1093,7 +1151,7 @@ mod tests {
                 ),
             };
 
-            Ok(crate::RawDapResult {
+            Ok(dapper_session::RawDapResult {
                 body,
                 event: None,
                 extra: Default::default(),
@@ -1106,9 +1164,9 @@ mod tests {
             ))
         }
 
-        async fn status(&self) -> anyhow::Result<ControlPlaneResult<crate::StatusResult>> {
+        async fn status(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::StatusResult>> {
             Ok(ControlPlaneResult {
-                result: crate::StatusResult::default(),
+                result: dapper_session::StatusResult::default(),
                 context: None,
             })
         }
@@ -1161,13 +1219,16 @@ mod tests {
         assert_eq!(variables.variables_reference, 7.into());
 
         let (navigate, _) = client
-            .navigate(crate::NavigationType::StepOver, 1.into(), None)
+            .navigate(dapper_session::NavigationType::StepOver, 1.into(), None)
             .await?
             .into_parts();
-        assert_eq!(navigate.navigation_type, crate::NavigationType::StepOver);
+        assert_eq!(
+            navigate.navigation_type,
+            dapper_session::NavigationType::StepOver
+        );
         assert!(matches!(
             navigate.result,
-            crate::NavigateResult::CommandExecuted
+            dapper_session::NavigateResult::CommandExecuted
         ));
 
         let (set_var, _) = client

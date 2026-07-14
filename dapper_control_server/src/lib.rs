@@ -14,17 +14,6 @@ use async_trait::async_trait;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::ControlPlaneServer;
 use dapper_control_api::DapperControlPlane;
-use dapper_control_api::NavigationResult;
-use dapper_control_api::NavigationType;
-use dapper_control_api::RawDapResult;
-use dapper_control_api::ScopesResult;
-use dapper_control_api::SetBreakpointsResult;
-use dapper_control_api::SetExceptionBreakpointsResult;
-use dapper_control_api::SetVariableResult;
-use dapper_control_api::StackTraceResult;
-use dapper_control_api::StatusResult;
-use dapper_control_api::ThreadsResult;
-use dapper_control_api::VariablesResult;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
@@ -35,9 +24,20 @@ use dapper_dap_protocol::requests::RequestCommand;
 use dapper_proxy_server::ControlPlaneStatus;
 use dapper_proxy_server::DapperEvent;
 use dapper_proxy_server::ProxyClient;
+use dapper_session::NavigationResult;
+use dapper_session::NavigationType;
 use dapper_session::Port;
+use dapper_session::RawDapResult;
 use dapper_session::ScopeId;
+use dapper_session::ScopesResult;
 use dapper_session::SessionId;
+use dapper_session::SetBreakpointsResult;
+use dapper_session::SetExceptionBreakpointsResult;
+use dapper_session::SetVariableResult;
+use dapper_session::StackTraceResult;
+use dapper_session::StatusResult;
+use dapper_session::ThreadsResult;
+use dapper_session::VariablesResult;
 
 /// A hook that tears down child sessions before the parent proxy shuts down.
 /// Kept generic (a boxed async closure) so this crate has no upward dependency

@@ -151,15 +151,15 @@ impl ExecutionState {
         self.version
     }
 
-    pub fn summary(&self) -> dapper_control_api::VersionedExecutionStateSummary {
+    pub fn summary(&self) -> dapper_session::VersionedExecutionStateSummary {
         let status = match &self.current {
-            ExecutionStatus::Unknown => dapper_control_api::ExecutionStatus::Unknown,
-            ExecutionStatus::Exited => dapper_control_api::ExecutionStatus::Exited,
+            ExecutionStatus::Unknown => dapper_session::ExecutionStatus::Unknown,
+            ExecutionStatus::Exited => dapper_session::ExecutionStatus::Exited,
             ExecutionStatus::Live { .. } => {
                 if self.is_all_running() {
-                    dapper_control_api::ExecutionStatus::Running
+                    dapper_session::ExecutionStatus::Running
                 } else {
-                    dapper_control_api::ExecutionStatus::Stopped
+                    dapper_session::ExecutionStatus::Stopped
                 }
             }
         };
@@ -175,9 +175,9 @@ impl ExecutionState {
             ),
             _ => (None, None, None, None),
         };
-        dapper_control_api::VersionedExecutionStateSummary {
+        dapper_session::VersionedExecutionStateSummary {
             version: self.version,
-            state: dapper_control_api::ExecutionStateSummary {
+            state: dapper_session::ExecutionStateSummary {
                 status,
                 thread_id,
                 stop_reason,

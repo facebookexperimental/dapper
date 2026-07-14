@@ -19,7 +19,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
-use dapper_control_api::ExceptionFilterEntry;
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
 use dapper_dap_protocol::data_types::Seq;
@@ -31,6 +30,7 @@ use dapper_dap_protocol::requests::StartDebuggingRequestArguments;
 use dapper_dap_protocol::responses::ResponseBody;
 use dapper_dap_protocol::responses::RunInTerminalResponseBody;
 use dapper_dap_protocol::responses::UnknownResponseBody;
+use dapper_session::ExceptionFilterEntry;
 use dapper_session::Port;
 use dapper_session::SessionId;
 use dapper_session::config::DebugSessionConfig;

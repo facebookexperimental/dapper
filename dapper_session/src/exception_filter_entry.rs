@@ -3,9 +3,10 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use dapper_session::config::BreakpointSpec;
 use serde::Deserialize;
 use serde::Serialize;
+
+use crate::config::BreakpointSpec;
 
 /// A single exception breakpoint filter, paired with an optional condition.
 ///

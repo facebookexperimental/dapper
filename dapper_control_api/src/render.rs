@@ -7,10 +7,10 @@ use std::fmt;
 
 use dapper_config::DapperConfig;
 use dapper_config::OutputFormat;
+use dapper_session::ResponseContext;
 use serde::Serialize;
 
 use crate::ControlPlaneResult;
-use crate::ResponseContext;
 use crate::envelope::format_context_footer;
 use crate::envelope::format_context_header;
 use crate::envelope::format_envelope;
@@ -72,14 +72,14 @@ fn render_with_envelope(
 
 #[cfg(test)]
 mod tests {
+    use dapper_session::BreakpointInfo;
+    use dapper_session::ExecutionStateSummary;
+    use dapper_session::ExecutionStatus;
     use dapper_session::SessionInfo;
+    use dapper_session::ThreadsResult;
+    use dapper_session::VersionedExecutionStateSummary;
 
     use super::*;
-    use crate::BreakpointInfo;
-    use crate::ExecutionStateSummary;
-    use crate::ExecutionStatus;
-    use crate::ThreadsResult;
-    use crate::VersionedExecutionStateSummary;
 
     #[test]
     fn render_structured_without_context() {

@@ -39,6 +39,46 @@ pub use session_id::SessionId;
 mod scope_id;
 pub use scope_id::ScopeId;
 
+// Shared debug-session domain types. These live here — the leaf crate both
+// the data plane (dapper_proxy_server) and the control plane
+// (dapper_control_api) depend on — so the proxy does not have to pull the
+// gRPC stack in just to name its result types.
+mod breakpoint_info;
+pub use breakpoint_info::BreakpointInfo;
+
+mod exception_filter_entry;
+pub use exception_filter_entry::ExceptionFilterEntry;
+
+mod output_event;
+pub use output_event::BufferedOutput;
+pub use output_event::OutputEvent;
+
+mod execution_state_summary;
+pub use execution_state_summary::ExecutionStateSummary;
+pub use execution_state_summary::ExecutionStatus;
+pub use execution_state_summary::VersionedExecutionStateSummary;
+
+mod response_context;
+pub use response_context::ResponseContext;
+
+mod navigation_type;
+pub use navigation_type::NavigationType;
+
+mod response;
+pub use response::NavigateResult;
+pub use response::NavigationResult;
+pub use response::RawDapResult;
+pub use response::ScopesResult;
+pub use response::SessionsResult;
+pub use response::SetBreakpointsResult;
+pub use response::SetExceptionBreakpointsResult;
+pub use response::SetVariableResult;
+pub use response::StackTraceResult;
+pub use response::StatusResult;
+pub use response::ThreadsResult;
+pub use response::VariablesResult;
+pub use response::WaitedEvent;
+
 pub fn get_user_temp_dir() -> PathBuf {
     let base = env::temp_dir();
     #[cfg(unix)]

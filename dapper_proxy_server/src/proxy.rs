@@ -541,8 +541,6 @@ enum DapSource {
 
 #[cfg(test)]
 mod tests {
-    use dapper_control_api::NavigateResult;
-    use dapper_control_api::NavigationType;
     use dapper_dap_protocol::capabilities::Capabilities;
     use dapper_dap_protocol::data_types::Thread;
     use dapper_dap_protocol::data_types::ThreadId;
@@ -556,6 +554,8 @@ mod tests {
     use dapper_dap_protocol::requests::RequestCommand;
     use dapper_dap_protocol::responses::ResponseBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
+    use dapper_session::NavigateResult;
+    use dapper_session::NavigationType;
 
     use super::*;
     use crate::backend::Backend;

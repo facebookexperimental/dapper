@@ -14,18 +14,18 @@ use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
-use dapper_control_api::NavigationType;
 use dapper_control_api::RenderedResponse;
-use dapper_control_api::SessionsResult;
 use dapper_control_api::render;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::NavigationType;
 use dapper_session::Port;
 use dapper_session::ScopeId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
+use dapper_session::SessionsResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum StepType {

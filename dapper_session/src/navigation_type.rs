@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use dapper_control_proto::NavigationType as ProtoNavigationType;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::requests::ContinueArguments;
 use dapper_dap_protocol::requests::NextArguments;
@@ -44,34 +43,6 @@ pub enum NavigationType {
     /// Resume reverse execution until a breakpoint or the start of recording.
     /// Requires the adapter to advertise `Capabilities.supportsStepBack`.
     ReverseContinue,
-}
-
-impl From<ProtoNavigationType> for NavigationType {
-    fn from(proto_navigation_type: ProtoNavigationType) -> Self {
-        match proto_navigation_type {
-            ProtoNavigationType::StepIn => NavigationType::StepIn,
-            ProtoNavigationType::StepOver => NavigationType::StepOver,
-            ProtoNavigationType::StepOut => NavigationType::StepOut,
-            ProtoNavigationType::Continue => NavigationType::Continue,
-            ProtoNavigationType::Pause => NavigationType::Pause,
-            ProtoNavigationType::StepBack => NavigationType::StepBack,
-            ProtoNavigationType::ReverseContinue => NavigationType::ReverseContinue,
-        }
-    }
-}
-
-impl From<NavigationType> for ProtoNavigationType {
-    fn from(navigation_type: NavigationType) -> Self {
-        match navigation_type {
-            NavigationType::StepIn => ProtoNavigationType::StepIn,
-            NavigationType::StepOver => ProtoNavigationType::StepOver,
-            NavigationType::StepOut => ProtoNavigationType::StepOut,
-            NavigationType::Continue => ProtoNavigationType::Continue,
-            NavigationType::Pause => ProtoNavigationType::Pause,
-            NavigationType::StepBack => ProtoNavigationType::StepBack,
-            NavigationType::ReverseContinue => ProtoNavigationType::ReverseContinue,
-        }
-    }
 }
 
 impl NavigationType {
@@ -163,23 +134,6 @@ mod tests {
             NavigationType::ReverseContinue.to_string(),
             "reverse_continue"
         );
-    }
-
-    #[test]
-    fn proto_round_trip_preserves_variants() {
-        for variant in [
-            NavigationType::StepIn,
-            NavigationType::StepOver,
-            NavigationType::StepOut,
-            NavigationType::Continue,
-            NavigationType::Pause,
-            NavigationType::StepBack,
-            NavigationType::ReverseContinue,
-        ] {
-            let proto: ProtoNavigationType = variant.into();
-            let back: NavigationType = proto.into();
-            assert_eq!(variant, back);
-        }
     }
 
     #[test]

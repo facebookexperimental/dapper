@@ -9,16 +9,15 @@
 
 use dapper_config::ContextConfig;
 use dapper_dap_protocol::data_types::Seq;
+use dapper_session::BreakpointInfo;
+use dapper_session::ExceptionFilterEntry;
+use dapper_session::ExecutionStateSummary;
+use dapper_session::OutputEvent;
 use dapper_session::RequestType;
+use dapper_session::ResponseContext;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use serde::Serialize;
-
-use crate::BreakpointInfo;
-use crate::ExceptionFilterEntry;
-use crate::ExecutionStateSummary;
-use crate::OutputEvent;
-use crate::ResponseContext;
 
 /// Structured JSON representation of a [`ResponseContext`], combining session info
 /// and context sections (execution state, breakpoints, output, other sessions).
@@ -304,12 +303,12 @@ mod tests {
     use dapper_dap_protocol::data_types::ThreadId;
     use dapper_dap_protocol::enums::OutputCategory;
     use dapper_dap_protocol::enums::StoppedReason;
+    use dapper_session::BufferedOutput;
+    use dapper_session::ExecutionStateSummary;
+    use dapper_session::ExecutionStatus;
+    use dapper_session::VersionedExecutionStateSummary;
 
     use super::*;
-    use crate::BufferedOutput;
-    use crate::ExecutionStateSummary;
-    use crate::ExecutionStatus;
-    use crate::VersionedExecutionStateSummary;
 
     fn make_session_info(session_id: &str) -> SessionInfo {
         SessionInfo {

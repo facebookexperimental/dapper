@@ -6,7 +6,6 @@
 //! DAP request builders for session initialization.
 
 use anyhow::Context;
-use dapper_control_api::ExceptionFilterEntry;
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::ExceptionFilterOptions;
 use dapper_dap_protocol::data_types::FunctionBreakpoint;
@@ -20,6 +19,7 @@ use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::requests::SetBreakpointsArguments;
 use dapper_dap_protocol::requests::SetExceptionBreakpointsArguments;
 use dapper_dap_protocol::requests::SetFunctionBreakpointsArguments;
+use dapper_session::ExceptionFilterEntry;
 use dapper_session::config::DebugRequest;
 use tracing::warn;
 

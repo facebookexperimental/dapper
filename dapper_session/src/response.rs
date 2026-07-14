@@ -247,28 +247,28 @@ impl fmt::Display for StackTraceResult {
 #[serde(rename_all = "camelCase")]
 pub struct SessionsResult {
     #[serde(default, serialize_with = "serialize_sessions_without_debugger_args")]
-    pub sessions: Vec<dapper_session::SessionInfo>,
+    pub sessions: Vec<crate::SessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope_id: Option<dapper_session::ScopeId>,
+    pub scope_id: Option<crate::ScopeId>,
 }
 
 /// Serialize sessions as camelCase, excluding `debugger_args`.
 fn serialize_sessions_without_debugger_args<S: serde::Serializer>(
-    sessions: &[dapper_session::SessionInfo],
+    sessions: &[crate::SessionInfo],
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(serde::Serialize)]
-    #[serde(remote = "dapper_session::SessionInfo", rename_all = "camelCase")]
+    #[serde(remote = "crate::SessionInfo", rename_all = "camelCase")]
     struct Def {
-        session_id: dapper_session::SessionId,
+        session_id: crate::SessionId,
         pid: u32,
-        control_plane_port: Option<dapper_session::Port>,
+        control_plane_port: Option<crate::Port>,
         started_at: i64,
         command_line_args: Vec<String>,
         current_working_directory: Option<std::path::PathBuf>,
-        scope_id: Option<dapper_session::ScopeId>,
+        scope_id: Option<crate::ScopeId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        request_type: Option<dapper_session::RequestType>,
+        request_type: Option<crate::RequestType>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,12 +276,12 @@ fn serialize_sessions_without_debugger_args<S: serde::Serializer>(
         #[serde(default, skip_serializing_if = "Option::is_none")]
         debuggee_process_id: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_session_id: Option<dapper_session::SessionId>,
+        parent_session_id: Option<crate::SessionId>,
         #[serde(default, skip_serializing)]
         debugger_args: Option<serde_json::Value>,
     }
 
-    struct Wrap<'a>(&'a dapper_session::SessionInfo);
+    struct Wrap<'a>(&'a crate::SessionInfo);
     impl serde::Serialize for Wrap<'_> {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             Def::serialize(self.0, s)
@@ -1570,8 +1570,8 @@ mod tests {
         ));
     }
 
-    fn make_session_info(id: &str) -> dapper_session::SessionInfo {
-        dapper_session::SessionInfo {
+    fn make_session_info(id: &str) -> crate::SessionInfo {
+        crate::SessionInfo {
             session_id: id.into(),
             pid: 1234,
             control_plane_port: None,
@@ -1604,7 +1604,7 @@ mod tests {
     fn sessions_empty_with_scope() {
         let result = SessionsResult {
             sessions: vec![],
-            scope_id: Some(dapper_session::ScopeId::new("my-scope")),
+            scope_id: Some(crate::ScopeId::new("my-scope")),
         };
         assert_eq!(
             result.to_string(),
@@ -1666,7 +1666,7 @@ mod tests {
     fn sessions_with_entries_and_scope() {
         let result = SessionsResult {
             sessions: vec![make_session_info("s1")],
-            scope_id: Some(dapper_session::ScopeId::new("dev")),
+            scope_id: Some(crate::ScopeId::new("dev")),
         };
         let output = result.to_string();
         assert!(output.contains("Found 1 active session(s) in scope 'dev'"));

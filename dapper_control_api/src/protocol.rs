@@ -7,18 +7,18 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::NavigationResult;
+use dapper_session::RawDapResult;
+use dapper_session::ScopesResult;
+use dapper_session::SetBreakpointsResult;
+use dapper_session::SetExceptionBreakpointsResult;
+use dapper_session::SetVariableResult;
+use dapper_session::StackTraceResult;
+use dapper_session::StatusResult;
+use dapper_session::ThreadsResult;
+use dapper_session::VariablesResult;
 
 use crate::ControlPlaneResult;
-use crate::NavigationResult;
-use crate::RawDapResult;
-use crate::ScopesResult;
-use crate::SetBreakpointsResult;
-use crate::SetExceptionBreakpointsResult;
-use crate::SetVariableResult;
-use crate::StackTraceResult;
-use crate::StatusResult;
-use crate::ThreadsResult;
-use crate::VariablesResult;
 
 #[async_trait::async_trait]
 pub trait DapperControlPlane: Send + Sync {
@@ -54,7 +54,7 @@ pub trait DapperControlPlane: Send + Sync {
     /// Requires the adapter to advertise `supportsSingleThreadExecutionRequests`.
     async fn navigate(
         &self,
-        navigation_type: crate::NavigationType,
+        navigation_type: dapper_session::NavigationType,
         thread_id: ThreadId,
         single_thread: Option<bool>,
     ) -> anyhow::Result<ControlPlaneResult<NavigationResult>>;

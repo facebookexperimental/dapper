@@ -5,11 +5,11 @@
 
 use std::collections::HashMap;
 
-use dapper_control_api::BreakpointInfo;
 use dapper_dap_protocol::data_types::Breakpoint;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::enums::BreakpointEventReason;
+use dapper_session::BreakpointInfo;
 
 /// Represents the difference between old and new breakpoints
 #[derive(Debug)]

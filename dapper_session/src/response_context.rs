@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use dapper_session::SessionInfo;
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::Serialize;
@@ -15,6 +14,7 @@ use serde_json::Value;
 use crate::BreakpointInfo;
 use crate::BufferedOutput;
 use crate::ExceptionFilterEntry;
+use crate::SessionInfo;
 use crate::VersionedExecutionStateSummary;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

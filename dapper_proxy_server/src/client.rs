@@ -10,12 +10,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use dapper_config::DapperConfig;
-use dapper_control_api::ExceptionFilterEntry;
-use dapper_control_api::NavigateResult;
-use dapper_control_api::NavigationType;
-use dapper_control_api::RawDapResult;
-use dapper_control_api::SetExceptionBreakpointsResult;
-use dapper_control_api::WaitedEvent;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::Source as DapSource;
@@ -36,6 +30,12 @@ use dapper_dap_protocol::requests::StackTraceArguments;
 use dapper_dap_protocol::requests::UnknownCommand;
 use dapper_dap_protocol::requests::VariablesArguments;
 use dapper_dap_protocol::responses::ResponseBody;
+use dapper_session::ExceptionFilterEntry;
+use dapper_session::NavigateResult;
+use dapper_session::NavigationType;
+use dapper_session::RawDapResult;
+use dapper_session::SetExceptionBreakpointsResult;
+use dapper_session::WaitedEvent;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -220,7 +220,7 @@ impl ProxyClient {
         Ok(result)
     }
 
-    pub async fn threads(&self) -> anyhow::Result<dapper_control_api::ThreadsResult> {
+    pub async fn threads(&self) -> anyhow::Result<dapper_session::ThreadsResult> {
         let request = dap::Request::new(RequestCommand::Threads);
 
         let ListenerPayload { seq, mut messages } = self.send_message(request.into()).await?;
@@ -242,7 +242,7 @@ impl ProxyClient {
             None
         };
 
-        Ok(dapper_control_api::ThreadsResult {
+        Ok(dapper_session::ThreadsResult {
             threads,
             stack_trace,
             ..Default::default()
@@ -254,7 +254,7 @@ impl ProxyClient {
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
-    ) -> anyhow::Result<dapper_control_api::StackTraceResult> {
+    ) -> anyhow::Result<dapper_session::StackTraceResult> {
         let effective_start_frame = start_frame.unwrap_or(0);
         let effective_levels = levels.unwrap_or(self.config.stack_trace.max_frames as i64);
         let frames_to_request = helpers::levels_to_request(effective_levels);
@@ -289,7 +289,7 @@ impl ProxyClient {
             None
         };
 
-        Ok(dapper_control_api::StackTraceResult {
+        Ok(dapper_session::StackTraceResult {
             stack_frames,
             start_frame: effective_start_frame,
             has_more_frames,
@@ -299,10 +299,7 @@ impl ProxyClient {
         })
     }
 
-    pub async fn scopes(
-        &self,
-        frame_id: FrameId,
-    ) -> anyhow::Result<dapper_control_api::ScopesResult> {
+    pub async fn scopes(&self, frame_id: FrameId) -> anyhow::Result<dapper_session::ScopesResult> {
         let request = dap::Request::new(RequestCommand::Scopes(ScopesArguments {
             frame_id,
             ..Default::default()
@@ -335,7 +332,7 @@ impl ProxyClient {
             None
         };
 
-        Ok(dapper_control_api::ScopesResult {
+        Ok(dapper_session::ScopesResult {
             scopes,
             locals,
             frame_id,
@@ -346,7 +343,7 @@ impl ProxyClient {
     pub async fn variables(
         &self,
         variables_reference: VariablesReference,
-    ) -> anyhow::Result<dapper_control_api::VariablesResult> {
+    ) -> anyhow::Result<dapper_session::VariablesResult> {
         let request = dap::Request::new(RequestCommand::Variables(VariablesArguments {
             variables_reference,
             ..Default::default()
@@ -362,7 +359,7 @@ impl ProxyClient {
             _ => Vec::new(),
         };
 
-        Ok(dapper_control_api::VariablesResult {
+        Ok(dapper_session::VariablesResult {
             variables,
             variables_reference,
             ..Default::default()
@@ -374,7 +371,7 @@ impl ProxyClient {
         variables_reference: VariablesReference,
         name: &str,
         value: &str,
-    ) -> anyhow::Result<dapper_control_api::SetVariableResult> {
+    ) -> anyhow::Result<dapper_session::SetVariableResult> {
         let request = dap::Request::new(RequestCommand::SetVariable(SetVariableArguments {
             variables_reference,
             name: name.to_owned(),
@@ -392,7 +389,7 @@ impl ProxyClient {
             _ => return Err(anyhow::anyhow!("Unexpected response body for setVariable")),
         };
 
-        Ok(dapper_control_api::SetVariableResult {
+        Ok(dapper_session::SetVariableResult {
             body,
             name: name.to_string(),
             ..Default::default()
@@ -404,7 +401,7 @@ impl ProxyClient {
         navigation_type: NavigationType,
         thread_id: ThreadId,
         single_thread: Option<bool>,
-    ) -> anyhow::Result<dapper_control_api::NavigationResult> {
+    ) -> anyhow::Result<dapper_session::NavigationResult> {
         tracing::debug!(
             navigation_type = %navigation_type,
             thread_id = thread_id.as_i64(),
@@ -469,7 +466,7 @@ impl ProxyClient {
             navigation_type,
             NavigationType::Continue | NavigationType::ReverseContinue | NavigationType::Pause
         ) {
-            return Ok(dapper_control_api::NavigationResult {
+            return Ok(dapper_session::NavigationResult {
                 result: NavigateResult::CommandExecuted,
                 navigation_type,
                 extra: Default::default(),
@@ -514,7 +511,7 @@ impl ProxyClient {
             Err(_) => NavigateResult::TimedOut { timeout_seconds },
         };
 
-        Ok(dapper_control_api::NavigationResult {
+        Ok(dapper_session::NavigationResult {
             result,
             navigation_type,
             extra: Default::default(),
@@ -530,7 +527,7 @@ impl ProxyClient {
         source_path: &str,
         clear_existing: bool,
         breakpoint_specs: &[SourceBreakpoint],
-    ) -> anyhow::Result<dapper_control_api::SetBreakpointsResult> {
+    ) -> anyhow::Result<dapper_session::SetBreakpointsResult> {
         // Get existing breakpoints to track what's being removed
         let existing_breakpoints = self.debug_session_tracker.get_breakpoints(source_path);
         let existing_lines: Vec<i64> = existing_breakpoints.iter().map(|bp| bp.line).collect();
@@ -652,7 +649,7 @@ impl ProxyClient {
             }
         }
 
-        Ok(dapper_control_api::SetBreakpointsResult {
+        Ok(dapper_session::SetBreakpointsResult {
             breakpoints: resolved_breakpoints,
             source_path: effective_source_path.to_owned(),
             new_count,
@@ -784,7 +781,7 @@ impl ProxyClient {
         arguments: Option<serde_json::Value>,
         wait_for_event: bool,
         timeout_seconds: u64,
-    ) -> anyhow::Result<dapper_control_api::RawDapResult> {
+    ) -> anyhow::Result<dapper_session::RawDapResult> {
         let timeout = std::time::Duration::from_secs(if timeout_seconds > 0 {
             timeout_seconds
         } else {

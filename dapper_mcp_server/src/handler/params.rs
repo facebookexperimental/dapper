@@ -6,11 +6,11 @@
 //! Tool parameter types, their lenient deserializers, and the JSON
 //! schema helpers that keep the generated schemas Claude-API compatible.
 
-use dapper_control_api::NavigationType;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::NavigationType;
 use dapper_session::SessionId;
 use rmcp::serde_json;
 use schemars::JsonSchema;

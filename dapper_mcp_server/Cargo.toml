@@ -20,7 +20,5 @@ rmcp = { version = "=2.2.0", features = ["auth", "client", "schemars", "server",
 schemars = { version = "1.2.1", features = ["indexmap2"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 strum = { version = "0.28.0", features = ["derive"] }
-tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-
-[dev-dependencies]
 tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

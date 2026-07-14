@@ -51,6 +51,7 @@ pub mod response;
 pub use response::NavigateResult;
 pub use response::NavigationResult;
 pub use response::RawDapResult;
+pub use response::RenderedResponse;
 pub use response::ScopesResult;
 pub use response::SessionsResult;
 pub use response::SetBreakpointsResult;

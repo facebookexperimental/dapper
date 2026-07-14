@@ -18,6 +18,7 @@ use dapper_config::DapperConfig;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
+use dapper_control_api::RenderedResponse;
 use dapper_control_api::render_plaintext;
 use dapper_control_api::resolve_unique_session;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
@@ -330,6 +331,15 @@ impl McpHandler {
     ) -> Result<Arc<DapperControlPlaneClient>, CallToolResult> {
         self.get_client(session_id)
             .map_err(|e| err_text(format!("Error connecting to session: {:#}", e)))
+    }
+
+    /// Bound an already-rendered DAP payload, spilling oversized text to a
+    /// temp file off the async runtime.
+    async fn bounded_dap_text(text: String) -> String {
+        let rendered = RenderedResponse::from_text(text);
+        tokio::task::spawn_blocking(move || rendered.spill_to_temp_and_render())
+            .await
+            .expect("response spill task should not panic")
     }
 
     /// The shared skeleton of every plaintext-rendering tool: resolve the
@@ -802,7 +812,7 @@ Response is JSON from the debug adapter."#
                 .send_dap_request(&command, arguments, wait_for_event, timeout_seconds)
                 .await
             {
-                Ok(result) => ok_text(result.render()),
+                Ok(result) => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 Err(e) => err_text(format!("DAP request '{}' failed: {:#}", command, e)),
             },
         )
@@ -860,7 +870,7 @@ Response is JSON from the debug adapter."#
                     ResponseBody::ReadMemory(None) => {
                         ok_text("No memory data returned by the debug adapter.")
                     }
-                    _ => ok_text(result.render()),
+                    _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
                 Err(e) => err_text(format!("Error reading memory: {:#}", e)),
             },
@@ -921,7 +931,7 @@ Response is JSON from the debug adapter."#
                     ResponseBody::WriteMemory(None) => {
                         ok_text(format!("Write completed to {}.", memory_reference))
                     }
-                    _ => ok_text(result.render()),
+                    _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
                 Err(e) => err_text(format!("Error writing memory: {:#}", e)),
             },

@@ -15,6 +15,7 @@ use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
 use dapper_control_api::NavigationType;
+use dapper_control_api::RenderedResponse;
 use dapper_control_api::SessionsResult;
 use dapper_control_api::render;
 use dapper_dap_protocol::data_types::FrameId;
@@ -493,7 +494,9 @@ impl Debug {
                     .with_context(|| format!("Error executing DAP request '{}'", command))?;
                 let output = match config.output_format {
                     OutputFormat::Json => result.render_json(),
-                    OutputFormat::Plaintext => result.render(),
+                    OutputFormat::Plaintext => {
+                        RenderedResponse::from_text(result.to_string()).spill_to_temp_and_render()
+                    }
                 };
                 try_println(format_args!("{}", output))?;
             }

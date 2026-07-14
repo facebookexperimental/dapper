@@ -752,6 +752,29 @@ mod tests {
     }
 
     #[test]
+    fn render_json_is_compact_and_parseable() {
+        let result = RawDapResult {
+            body: ResponseBody::Threads(ThreadsResponseBody {
+                threads: vec![Thread {
+                    id: ThreadId(1),
+                    name: "main".to_string(),
+                }],
+                ..Default::default()
+            }),
+            event: None,
+            extra: Default::default(),
+        };
+
+        let output = result.render_json();
+        assert!(
+            !output.contains('\n'),
+            "compact rendering should be a single line, got: {output}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
+        assert_eq!(parsed["threads"][0]["id"], 1);
+    }
+
+    #[test]
     fn display_response_with_received_event() {
         let result = RawDapResult {
             body: ResponseBody::Unknown(UnknownResponseBody {

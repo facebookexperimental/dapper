@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::ThreadId;
@@ -501,15 +502,12 @@ impl ExecutionState {
         inner: &Mutex<DebugSessionTrackerInner>,
         f: impl FnOnce(&mut ExecutionState),
     ) {
-        match inner.lock() {
-            Ok(mut guard) => {
-                f(&mut guard.execution_state);
-                tracing::trace!(state = ?guard.execution_state, "Execution state changed");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire lock for inner to update execution state");
-            }
-        }
+        // Recover from poisoning: skipping a transition would leave the
+        // tracked execution state permanently stale, while recovery risks
+        // at most one unfinished update.
+        let mut guard = inner.lock().unwrap_or_else(PoisonError::into_inner);
+        f(&mut guard.execution_state);
+        tracing::trace!(state = ?guard.execution_state, "Execution state changed");
     }
 }
 

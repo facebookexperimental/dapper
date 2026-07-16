@@ -606,34 +606,31 @@ impl ProxyClient {
         let new_count = breakpoint_specs.len();
         let existing_count = merged_specs.len().saturating_sub(new_count);
 
-        let breakpoint_diff = self.debug_session_tracker.track_breakpoints_with_source(
+        let diff = self.debug_session_tracker.track_breakpoints_with_source(
             source_path,
             effective_source_path,
             resolved_breakpoints.clone(),
         );
 
-        // Send events to client based on the diff
-        if let Some(diff) = breakpoint_diff {
-            // Send "removed" events for breakpoints to remove
-            if !diff.to_remove.is_empty() {
-                self.send_breakpoint_events(
-                    BreakpointEventReason::Removed,
-                    effective_source_path,
-                    effective_source_name,
-                    &diff.to_remove,
-                )
-                .await;
-            }
-            // Send "new" events for breakpoints to add
-            if !diff.to_add.is_empty() {
-                self.send_breakpoint_events(
-                    BreakpointEventReason::New,
-                    effective_source_path,
-                    effective_source_name,
-                    &diff.to_add,
-                )
-                .await;
-            }
+        // Send "removed" events for breakpoints to remove
+        if !diff.to_remove.is_empty() {
+            self.send_breakpoint_events(
+                BreakpointEventReason::Removed,
+                effective_source_path,
+                effective_source_name,
+                &diff.to_remove,
+            )
+            .await;
+        }
+        // Send "new" events for breakpoints to add
+        if !diff.to_add.is_empty() {
+            self.send_breakpoint_events(
+                BreakpointEventReason::New,
+                effective_source_path,
+                effective_source_name,
+                &diff.to_add,
+            )
+            .await;
         }
 
         Ok(dapper_session::SetBreakpointsResult {

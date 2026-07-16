@@ -11,6 +11,7 @@ mod tracker_inner;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 
 pub use breakpoint_state::BreakpointDiff;
 pub(crate) use breakpoint_state::breakpoints_with_fallback;
@@ -93,35 +94,13 @@ impl DebugSessionTracker {
         self
     }
 
-    /// Acquire the inner lock and apply `f`, returning `default` if the lock is poisoned.
-    fn with_inner<R>(
-        &self,
-        default: R,
-        op: &str,
-        f: impl FnOnce(&mut DebugSessionTrackerInner) -> R,
-    ) -> R {
-        match self.inner.lock() {
-            Ok(mut inner) => f(&mut inner),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire lock for {}", op);
-                default
-            }
-        }
-    }
-
-    /// Acquire the inner lock and apply `f`, returning `None` if the lock is poisoned.
-    fn with_inner_opt<R>(
-        &self,
-        op: &str,
-        f: impl FnOnce(&mut DebugSessionTrackerInner) -> R,
-    ) -> Option<R> {
-        match self.inner.lock() {
-            Ok(mut inner) => Some(f(&mut inner)),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire lock for {}", op);
-                None
-            }
-        }
+    /// Acquire the inner lock and apply `f`, recovering from poisoning.
+    /// Tracker state is advisory bookkeeping: skipping updates on a
+    /// poisoned lock would silently drop every subsequent update, while
+    /// recovery risks at most the one update a panicking writer left
+    /// unfinished.
+    fn with_inner<R>(&self, f: impl FnOnce(&mut DebugSessionTrackerInner) -> R) -> R {
+        f(&mut self.inner.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Track a message from a client going to the backend.
@@ -172,7 +151,7 @@ impl DebugSessionTracker {
         if let Message::Response(response) = message {
             if response.success {
                 if let ResponseBody::SetBreakpoints(bp_body) = &response.body {
-                    self.with_inner((), "tracking breakpoint response", |inner| {
+                    self.with_inner(|inner| {
                         inner.breakpoint_state.update_breakpoints_from_response(
                             response.request_seq,
                             &bp_body.breakpoints,
@@ -180,7 +159,7 @@ impl DebugSessionTracker {
                     });
                 }
                 if let ResponseBody::Initialize(caps) = &response.body {
-                    self.with_inner((), "storing adapter capabilities", |inner| {
+                    self.with_inner(|inner| {
                         inner.adapter_capabilities = caps.clone();
                     });
                 }
@@ -195,7 +174,7 @@ impl DebugSessionTracker {
             if let ResponseBody::SetExceptionBreakpoints(_) = &response.body {
                 let success = response.success;
                 let request_seq = response.request_seq;
-                self.with_inner((), "tracking exception filter response", |inner| {
+                self.with_inner(|inner| {
                     inner
                         .exception_filter_state
                         .complete_response(request_seq, success);
@@ -206,7 +185,7 @@ impl DebugSessionTracker {
             match &event.event {
                 EventKind::Output(_) => self.track_output_event(event),
                 EventKind::Breakpoint(bp_event) => {
-                    self.with_inner((), "tracking breakpoint event", |inner| {
+                    self.with_inner(|inner| {
                         inner
                             .breakpoint_state
                             .apply_breakpoint_event(&bp_event.reason, &bp_event.breakpoint);
@@ -220,9 +199,7 @@ impl DebugSessionTracker {
     }
 
     pub fn get_breakpoints(&self, source_path: &str) -> Vec<BreakpointInfo> {
-        self.with_inner(Vec::new(), "getting breakpoints", |inner| {
-            inner.breakpoint_state.get_breakpoints(source_path)
-        })
+        self.with_inner(|inner| inner.breakpoint_state.get_breakpoints(source_path))
     }
 
     pub fn register_control_plane(
@@ -230,7 +207,7 @@ impl DebugSessionTracker {
         control_plane_port: Option<Port>,
         scope_id: Option<ScopeId>,
     ) {
-        let to_save = self.with_inner(None, "registering control plane", |inner| {
+        let to_save = self.with_inner(|inner| {
             inner.control_plane_port = control_plane_port;
             inner.scope_id = scope_id;
             inner.try_finalize_session(&self.session_id, self.parent_session_id.as_ref())
@@ -239,30 +216,24 @@ impl DebugSessionTracker {
     }
 
     pub fn get_session_info(&self) -> Option<SessionInfo> {
-        self.with_inner(None, "get_session_info", |inner| inner.session_info.clone())
+        self.with_inner(|inner| inner.session_info.clone())
     }
 
     pub fn adapter_capabilities(&self) -> Option<Capabilities> {
-        self.with_inner(None, "adapter_capabilities", |inner| {
-            inner.adapter_capabilities.clone()
-        })
+        self.with_inner(|inner| inner.adapter_capabilities.clone())
     }
 
     pub fn get_execution_state(&self) -> ExecutionState {
-        self.with_inner(ExecutionState::default(), "get_execution_state", |inner| {
-            inner.execution_state.clone()
-        })
+        self.with_inner(|inner| inner.execution_state.clone())
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.with_inner(false, "is_stopped", |inner| {
-            inner.execution_state.is_all_stopped()
-        })
+        self.with_inner(|inner| inner.execution_state.is_all_stopped())
     }
 
     /// Track a setBreakpoints request's source path to match with its response later
     fn track_breakpoint_request(&self, seq: Seq, source_path: &str, specs: Vec<SourceBreakpoint>) {
-        self.with_inner((), "tracking breakpoint request", |inner| {
+        self.with_inner(|inner| {
             inner
                 .breakpoint_state
                 .track_request(seq, source_path.to_string(), specs);
@@ -272,7 +243,7 @@ impl DebugSessionTracker {
     /// Track a setExceptionBreakpoints request keyed by its main-client seq
     /// so we can commit the entries on a successful response.
     fn track_exception_filter_request(&self, seq: Seq, entries: Vec<ExceptionFilterEntry>) {
-        self.with_inner((), "tracking exception filter request", |inner| {
+        self.with_inner(|inner| {
             inner.exception_filter_state.track_request(seq, entries);
         });
     }
@@ -283,16 +254,14 @@ impl DebugSessionTracker {
     /// the post-builder *effective* set (i.e. what the adapter actually
     /// accepted, with any unsupported conditions already dropped).
     pub fn update_exception_filters(&self, entries: Vec<ExceptionFilterEntry>) {
-        self.with_inner((), "updating exception filters", |inner| {
+        self.with_inner(|inner| {
             inner.exception_filter_state.replace(entries);
         });
     }
 
     /// Read the current installed exception filter set, sorted by filter id.
     pub fn get_installed_exception_filters(&self) -> Vec<ExceptionFilterEntry> {
-        self.with_inner(Vec::new(), "getting installed exception filters", |inner| {
-            inner.exception_filter_state.get_installed().to_vec()
-        })
+        self.with_inner(|inner| inner.exception_filter_state.get_installed().to_vec())
     }
 
     /// Track launch or attach requests to capture session information
@@ -302,7 +271,7 @@ impl DebugSessionTracker {
         debugger_args: Option<serde_json::Value>,
     ) {
         let session_id = &self.session_id;
-        let to_save = self.with_inner(None, "tracking launch/attach request", |inner| {
+        let to_save = self.with_inner(|inner| {
             inner.debugger_args = debugger_args;
             inner.request_type = Some(request_type);
 
@@ -329,9 +298,7 @@ impl DebugSessionTracker {
         match store.save(&info) {
             Ok(path) => {
                 tracing::info!("Session file written to: {}", path.display());
-                self.with_inner((), "marking session file written", |inner| {
-                    inner.session_file_written = true
-                });
+                self.with_inner(|inner| inner.session_file_written = true);
             }
             Err(e) => {
                 tracing::warn!("Failed to write session file: {}", e);
@@ -349,8 +316,8 @@ impl DebugSessionTracker {
         requested_source_path: &str,
         effective_source_path: &str,
         new_breakpoints: Vec<BreakpointInfo>,
-    ) -> Option<BreakpointDiff> {
-        self.with_inner_opt("tracking breakpoints with source", |inner| {
+    ) -> BreakpointDiff {
+        self.with_inner(|inner| {
             let old_breakpoints = inner
                 .breakpoint_state
                 .get_breakpoints(effective_source_path);
@@ -371,7 +338,7 @@ impl DebugSessionTracker {
     fn track_output_event(&self, event: &Event) {
         if let EventKind::Output(output) = &event.event {
             let dap_seq = event.seq;
-            self.with_inner((), "tracking output event", |inner| {
+            self.with_inner(|inner| {
                 if let Err(e) =
                     inner
                         .output_state
@@ -391,7 +358,7 @@ impl DebugSessionTracker {
     pub fn response_context(&self) -> Option<dapper_session::ResponseContext> {
         if !self.config.context.enable {
             let session = if self.config.context.show_session {
-                self.with_inner_opt("response context", |inner| inner.session_info.clone())?
+                self.with_inner(|inner| inner.session_info.clone())
             } else {
                 None
             };
@@ -412,7 +379,7 @@ impl DebugSessionTracker {
             installed_exception_filters,
             output,
             output_history_file,
-        ) = self.with_inner_opt("response context", |inner| {
+        ) = self.with_inner(|inner| {
             let session = if ctx.show_session {
                 inner.session_info.clone()
             } else {
@@ -454,7 +421,7 @@ impl DebugSessionTracker {
                 output,
                 output_history_file,
             )
-        })?;
+        });
 
         // Filesystem I/O happens here, outside the lock.
         let other_sessions = match (&self.sessions, ctx.show_sessions) {
@@ -1104,8 +1071,6 @@ mod tests {
             breakpoint_state::breakpoints_with_fallback(&response_breakpoints, &requested_specs);
 
         let diff = tracker.track_breakpoints_with_source(source_path, source_path, resolved);
-        assert!(diff.is_some());
-        let diff = diff.unwrap();
         assert_eq!(diff.to_add.len(), 2);
         assert_eq!(diff.to_remove.len(), 0);
 

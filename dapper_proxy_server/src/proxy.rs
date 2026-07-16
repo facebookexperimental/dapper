@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -61,40 +62,30 @@ impl MessageRemapper {
         }
     }
 
-    /// Apply `f` under the lock, returning `None` if the mutex is poisoned.
-    fn with_inner_opt<R>(
-        &self,
-        op: &str,
-        f: impl FnOnce(&mut MessageRemapperInner) -> R,
-    ) -> Option<R> {
-        match self.inner.lock() {
-            Ok(mut inner) => Some(f(&mut inner)),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to acquire MessageRemapper lock for {op}");
-                None
-            }
-        }
+    /// Acquire the lock, recovering from poisoning. Refusing the state
+    /// after a panic would drop every subsequent mapping — a client would
+    /// never receive its response — while recovery risks at most the one
+    /// mapping a panicking writer had in flight.
+    fn locked(&self) -> std::sync::MutexGuard<'_, MessageRemapperInner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn map(&self, client_seq: ClientSeq, backend_seq: BackendSeq) -> BackendSeq {
-        self.with_inner_opt("map", |inner| {
-            if let Some(old_backend_seq) = inner.forward.insert(client_seq, backend_seq) {
-                inner.reverse.remove(&old_backend_seq);
-            }
-            inner.reverse.insert(backend_seq, client_seq);
-        });
+        let mut inner = self.locked();
+        if let Some(old_backend_seq) = inner.forward.insert(client_seq, backend_seq) {
+            inner.reverse.remove(&old_backend_seq);
+        }
+        inner.reverse.insert(backend_seq, client_seq);
         backend_seq
     }
 
     pub fn unmap(&self, backend_seq: BackendSeq) -> Option<ClientSeq> {
-        self.with_inner_opt("unmap", |inner| {
-            let client_seq = inner.reverse.remove(&backend_seq);
-            if let Some(client_seq) = client_seq {
-                inner.forward.remove(&client_seq);
-            }
-            client_seq
-        })
-        .flatten()
+        let mut inner = self.locked();
+        let client_seq = inner.reverse.remove(&backend_seq);
+        if let Some(client_seq) = client_seq {
+            inner.forward.remove(&client_seq);
+        }
+        client_seq
     }
 
     /// Read-only forward lookup: client seq → backend seq.
@@ -102,15 +93,8 @@ impl MessageRemapper {
     /// Used to translate references inside other messages (e.g. `cancel`'s
     /// `requestId`) without consuming the mapping — the referenced request is
     /// still in flight and its response will trigger the eventual `unmap`.
-    ///
-    /// `None` indicates either a missing mapping or a poisoned mutex (the
-    /// latter is logged at warn). Callers treat both the same way: they
-    /// cannot translate the reference and proceed defensively.
     pub fn lookup_backend(&self, client_seq: ClientSeq) -> Option<BackendSeq> {
-        self.with_inner_opt("lookup_backend", |inner| {
-            inner.forward.get(&client_seq).copied()
-        })
-        .flatten()
+        self.locked().forward.get(&client_seq).copied()
     }
 }
 
@@ -1138,6 +1122,29 @@ mod tests {
     fn test_remapper_lookup_backend_unknown() {
         let remapper = MessageRemapper::new();
         assert_eq!(remapper.lookup_backend(ClientSeq(Seq(5))), None);
+    }
+
+    #[test]
+    fn test_remapper_survives_poisoned_lock() {
+        let remapper = MessageRemapper::new();
+        let client_seq = ClientSeq(Seq(5));
+        let backend_seq = BackendSeq(Seq(100));
+        remapper.map(client_seq, backend_seq);
+
+        // Poison the mutex: panic on another thread while holding the guard.
+        let inner = Arc::clone(&remapper.inner);
+        std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("poison the remapper lock");
+        })
+        .join()
+        .expect_err("the poisoning thread should panic");
+
+        // Existing state survives and all operations keep working.
+        assert_eq!(remapper.lookup_backend(client_seq), Some(backend_seq));
+        assert_eq!(remapper.unmap(backend_seq), Some(client_seq));
+        remapper.map(client_seq, backend_seq);
+        assert_eq!(remapper.unmap(backend_seq), Some(client_seq));
     }
 
     #[test]

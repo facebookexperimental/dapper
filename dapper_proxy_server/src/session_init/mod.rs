@@ -53,6 +53,7 @@ use tracing::trace;
 use tracing::warn;
 
 use self::breakpoints::BreakpointGroups;
+pub(crate) use self::breakpoints::validate_exception_filter_ids;
 use crate::dapper_event::ControlPlaneStatus;
 use crate::dapper_event::DapperEvent;
 use crate::transport::DuplexChannel;
@@ -868,22 +869,9 @@ impl SessionInitializer {
 
         // Validate explicit filter ids against the advertised set — this is
         // initialization-fatal because a typo in the config would
-        // otherwise silently fall through. Collect all unknown ids before
-        // bailing so a user with multiple typos sees them all at once
-        // instead of fixing-and-rerunning.
-        let unknown: Vec<&str> = explicit
-            .iter()
-            .filter(|e| !advertised.iter().any(|f| f.filter == e.filter))
-            .map(|e| e.filter.as_str())
-            .collect();
-        if !unknown.is_empty() {
-            let valid: Vec<&str> = advertised.iter().map(|f| f.filter.as_str()).collect();
-            anyhow::bail!(
-                "config references unknown exception breakpoint filter(s) {:?}; valid ids: {:?}",
-                unknown,
-                valid,
-            );
-        }
+        // otherwise silently fall through.
+        validate_exception_filter_ids(advertised, explicit.iter().map(|e| e.filter.as_str()))
+            .context("in launch config")?;
 
         // Merge: defaults (if opted in) first, then explicit list overrides
         // by filter id. Use BTreeMap so iteration is deterministic by id.

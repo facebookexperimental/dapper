@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
 use dapper_session::ExceptionFilterEntry;
 use dapper_session::config::BreakpointSpec;
 
@@ -80,6 +81,28 @@ impl BreakpointGroups {
     pub fn exception_filters(&self) -> &[ExceptionFilterEntry] {
         &self.exceptions
     }
+}
+
+/// Validate requested exception filter ids against the adapter-advertised
+/// set. Collects every unknown id (deduped, sorted) before failing so a
+/// caller with multiple typos sees the full list at once.
+pub(crate) fn validate_exception_filter_ids<'a>(
+    advertised: &[ExceptionBreakpointsFilter],
+    requested_ids: impl IntoIterator<Item = &'a str>,
+) -> anyhow::Result<()> {
+    let advertised: std::collections::BTreeSet<&str> =
+        advertised.iter().map(|f| f.filter.as_str()).collect();
+    let unknown: Vec<&str> = requested_ids
+        .into_iter()
+        .filter(|id| !advertised.contains(id))
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .collect();
+    if !unknown.is_empty() {
+        let valid: Vec<&str> = advertised.into_iter().collect();
+        anyhow::bail!("unknown exception breakpoint filter(s) {unknown:?}; valid ids: {valid:?}",);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

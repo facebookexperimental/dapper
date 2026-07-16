@@ -44,6 +44,7 @@ use crate::dapper_event::DapperEvent;
 use crate::debug_session_tracker::BreakpointInfo;
 use crate::debug_session_tracker::DebugSessionTracker;
 use crate::session_init::build_set_exception_breakpoints_request;
+use crate::session_init::validate_exception_filter_ids;
 
 /// A wrapper around an mpsc sender that only allows sending DAP events
 #[derive(Clone)]
@@ -685,30 +686,9 @@ impl ProxyClient {
             );
         }
 
-        // Materialize the advertised set into a HashSet once so the
-        // unknown-id check and the existing-vs-new accounting below avoid
-        // repeated O(advertised) scans.
-        let advertised_ids: HashSet<&str> = advertised.iter().map(|f| f.filter.as_str()).collect();
-
         // Validate every requested filter id against the advertised set
-        // before sending any DAP request. Collect all unknowns (deduped
-        // and sorted for stable error output) so a caller with multiple
-        // typos sees the full list at once.
-        let unknown_set: std::collections::BTreeSet<&str> = filters
-            .iter()
-            .filter(|f| !advertised_ids.contains(f.as_str()))
-            .map(|f| f.as_str())
-            .collect();
-        if !unknown_set.is_empty() {
-            let unknown: Vec<&str> = unknown_set.into_iter().collect();
-            let mut valid: Vec<&str> = advertised_ids.iter().copied().collect();
-            valid.sort_unstable();
-            anyhow::bail!(
-                "unknown exception breakpoint filter(s) {:?}; valid ids: {:?}",
-                unknown,
-                valid,
-            );
-        }
+        // before sending any DAP request.
+        validate_exception_filter_ids(advertised, filters.iter().map(|f| f.as_str()))?;
 
         let installed = self.debug_session_tracker.get_installed_exception_filters();
         let MergedExceptionFilters {

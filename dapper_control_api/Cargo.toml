@@ -14,7 +14,6 @@ dapper_config = { path = "../dapper_config" }
 dapper_control_proto = { path = "../dapper_control_proto" }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_session = { path = "../dapper_session" }
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }

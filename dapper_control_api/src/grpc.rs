@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::future::Future;
 use std::result::Result;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -48,7 +49,6 @@ use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
-use futures::future::Future;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Request;
@@ -424,7 +424,7 @@ where
     }
 }
 
-pub async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
+pub(crate) async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
 where
     F: Future<Output = anyhow::Result<T>>,
 {

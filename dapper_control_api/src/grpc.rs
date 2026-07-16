@@ -154,9 +154,9 @@ where
             let cp_result = self.control_plane.threads().await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(ThreadsResponse {
-                threads: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -178,9 +178,9 @@ where
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(StackTraceResponse {
-                stack_trace: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -195,9 +195,9 @@ where
             let cp_result = self.control_plane.scopes(frame_id.into()).await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(ScopesResponse {
-                scopes: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -217,9 +217,9 @@ where
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(VariablesResponse {
-                variables: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -244,9 +244,9 @@ where
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(NavigateResponse {
-                result: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -268,9 +268,9 @@ where
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(SetVariableResponse {
-                result: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await
@@ -322,9 +322,9 @@ where
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(SetBreakpointsResponse {
-                result: String::new(),
                 result_json,
                 context_json,
+                ..Default::default()
             })
         })
         .await

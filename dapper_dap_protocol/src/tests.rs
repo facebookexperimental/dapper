@@ -16,13 +16,16 @@ use crate::data_types::ThreadId;
 use crate::data_types::VariablesReference;
 use crate::data_types::i64_from_value;
 use crate::enums::*;
+use crate::events::EventKindDiscriminants;
 use crate::events::*;
 use crate::protocol::Message;
 use crate::protocol::MessageType;
 use crate::protocol::ProtocolError;
 use crate::protocol::Request;
 use crate::protocol::Response;
+use crate::requests::RequestCommandDiscriminants;
 use crate::requests::*;
+use crate::responses::ResponseBodyDiscriminants;
 use crate::responses::*;
 
 fn parse_message(json: serde_json::Value) -> Message {
@@ -751,6 +754,68 @@ fn test_newtype_in_struct_context() {
     }))
     .unwrap();
     assert_eq!(args.thread_id, ThreadId(7));
+}
+
+// -- inventory exhaustiveness guards --
+//
+// The round-trip inventories below are hand-maintained: without these
+// guards, a newly added protocol variant would silently ship without
+// wire-format coverage. The untagged `Unknown` catch-alls are exempt: they
+// cannot round-trip through the generic tagged-serde path, and their
+// lossless behavior has dedicated tests in this file.
+
+#[test]
+fn request_command_inventory_is_exhaustive() {
+    use strum::IntoEnumIterator;
+    let covered: std::collections::HashSet<RequestCommandDiscriminants> = all_request_commands()
+        .iter()
+        .map(RequestCommandDiscriminants::from)
+        .collect();
+    for variant in RequestCommandDiscriminants::iter() {
+        if variant == RequestCommandDiscriminants::Unknown {
+            continue;
+        }
+        assert!(
+            covered.contains(&variant),
+            "all_request_commands() is missing RequestCommand::{variant:?}"
+        );
+    }
+}
+
+#[test]
+fn response_body_inventory_is_exhaustive() {
+    use strum::IntoEnumIterator;
+    let covered: std::collections::HashSet<ResponseBodyDiscriminants> = all_response_bodies()
+        .iter()
+        .map(ResponseBodyDiscriminants::from)
+        .collect();
+    for variant in ResponseBodyDiscriminants::iter() {
+        if variant == ResponseBodyDiscriminants::Unknown {
+            continue;
+        }
+        assert!(
+            covered.contains(&variant),
+            "all_response_bodies() is missing ResponseBody::{variant:?}"
+        );
+    }
+}
+
+#[test]
+fn event_kind_inventory_is_exhaustive() {
+    use strum::IntoEnumIterator;
+    let covered: std::collections::HashSet<EventKindDiscriminants> = all_event_kinds()
+        .iter()
+        .map(EventKindDiscriminants::from)
+        .collect();
+    for variant in EventKindDiscriminants::iter() {
+        if variant == EventKindDiscriminants::Unknown {
+            continue;
+        }
+        assert!(
+            covered.contains(&variant),
+            "all_event_kinds() is missing EventKind::{variant:?}"
+        );
+    }
 }
 
 fn all_request_commands() -> Vec<RequestCommand> {

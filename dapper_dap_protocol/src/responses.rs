@@ -320,7 +320,16 @@ pub struct LocationsResponseBody {
     pub extra: IndexMap<String, Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, AsRefStr)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+    strum::EnumDiscriminants
+)]
+#[strum_discriminants(derive(strum::EnumIter, Hash))]
 #[serde(tag = "command", content = "body", rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum ResponseBody {

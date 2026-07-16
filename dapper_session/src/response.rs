@@ -401,6 +401,9 @@ pub enum NavigateResult {
     Stopped(StoppedEventBody),
     Exited(ExitedEventBody),
     Terminated,
+    /// Only navigation types that wait for a stop event (pause and the
+    /// continue family) can time out; step commands complete with the DAP
+    /// response and never produce this variant.
     TimedOut {
         timeout_seconds: Option<u64>,
     },
@@ -421,7 +424,11 @@ impl fmt::Display for NavigationResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.result {
             NavigateResult::CommandExecuted => {
-                write!(f, "{}", self.navigation_type.command_success_description())
+                write!(
+                    f,
+                    "{} command executed successfully",
+                    self.navigation_type.display_name()
+                )
             }
             NavigateResult::Stopped(stopped) => {
                 write!(f, "Execution stopped: {}", stopped.reason)
@@ -433,25 +440,7 @@ impl fmt::Display for NavigationResult {
                 write!(f, "Program terminated")
             }
             NavigateResult::TimedOut { timeout_seconds } => {
-                // Match exhaustively so adding a new NavigationType is a
-                // compile error here rather than a silent mislabel.
-                let command_name = match self.navigation_type {
-                    NavigationType::Continue => "Continue",
-                    NavigationType::Pause => "Pause",
-                    NavigationType::ReverseContinue => "Reverse continue",
-                    // Step variants (forward and back) skip the wait branch
-                    // in ProxyClient::navigate today, so they should not
-                    // reach TimedOut. Display impls must stay total — we
-                    // render a sentence-case fallback rather than panicking,
-                    // so a programmatic NavigateResult constructor (or a
-                    // future refactor) cannot crash a render path. Listed
-                    // explicitly so adding a new NavigationType forces an
-                    // intentional decision here.
-                    NavigationType::StepIn => "Step in",
-                    NavigationType::StepOver => "Step over",
-                    NavigationType::StepOut => "Step out",
-                    NavigationType::StepBack => "Step back",
-                };
+                let command_name = self.navigation_type.display_name();
                 match timeout_seconds {
                     Some(secs) => write!(
                         f,
@@ -1149,7 +1138,12 @@ mod tests {
             navigation_type: NavigationType::StepOver,
             extra: Default::default(),
         };
-        assert_eq!(output.to_string(), "Next command executed successfully");
+        // "Step over" is the display name; DAP's wire-level request name
+        // ("next") is not user-facing.
+        assert_eq!(
+            output.to_string(),
+            "Step over command executed successfully"
+        );
     }
 
     #[test]

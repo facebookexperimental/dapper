@@ -59,16 +59,17 @@ impl NavigationType {
         }
     }
 
-    /// Returns the success message for this navigation type
-    pub fn command_success_description(&self) -> &'static str {
+    /// Sentence-case human name for this navigation type — the single
+    /// source for composing user-facing success and timeout messages.
+    pub fn display_name(&self) -> &'static str {
         match self {
-            NavigationType::StepIn => "Step in command executed successfully",
-            NavigationType::StepOver => "Next command executed successfully",
-            NavigationType::StepOut => "Step out command executed successfully",
-            NavigationType::Continue => "Continue command executed successfully",
-            NavigationType::Pause => "Pause command executed successfully",
-            NavigationType::StepBack => "Step back command executed successfully",
-            NavigationType::ReverseContinue => "Reverse continue command executed successfully",
+            NavigationType::StepIn => "Step in",
+            NavigationType::StepOver => "Step over",
+            NavigationType::StepOut => "Step out",
+            NavigationType::Continue => "Continue",
+            NavigationType::Pause => "Pause",
+            NavigationType::StepBack => "Step back",
+            NavigationType::ReverseContinue => "Reverse continue",
         }
     }
 

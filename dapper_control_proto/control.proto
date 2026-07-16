@@ -21,8 +21,9 @@ message StopResponse {};
 
 message ThreadsRequest {}
 message ThreadsResponse {
-  // Deprecated: no longer populated by the server.
-  string threads = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "threads";
   string result_json = 2;
   string context_json = 3;
 }
@@ -33,8 +34,9 @@ message StackTraceRequest {
   optional int64 levels = 3;
 }
 message StackTraceResponse {
-  // Deprecated: no longer populated by the server.
-  string stack_trace = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "stack_trace";
   string result_json = 2;
   string context_json = 3;
 }
@@ -43,8 +45,9 @@ message ScopesRequest {
   int64 frame_id = 1;
 }
 message ScopesResponse {
-  // Deprecated: no longer populated by the server.
-  string scopes = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "scopes";
   string result_json = 2;
   string context_json = 3;
 }
@@ -53,8 +56,9 @@ message VariablesRequest {
   int64 variables_reference = 1;
 }
 message VariablesResponse {
-  // Deprecated: no longer populated by the server.
-  string variables = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "variables";
   string result_json = 2;
   string context_json = 3;
 }
@@ -85,8 +89,9 @@ message NavigateRequest {
   optional bool single_thread = 3;
 }
 message NavigateResponse {
-  // Deprecated: no longer populated by the server.
-  string result = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "result";
   string result_json = 2;
   string context_json = 3;
 }
@@ -97,8 +102,9 @@ message SetVariableRequest {
   string value = 3;
 }
 message SetVariableResponse {
-  // Deprecated: no longer populated by the server.
-  string result = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "result";
   string result_json = 2;
   string context_json = 3;
 }
@@ -116,8 +122,9 @@ message SetBreakpointsRequest {
   repeated SourceBreakpoint breakpoints = 4;
 }
 message SetBreakpointsResponse {
-  // Deprecated: no longer populated by the server.
-  string result = 1;
+  // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
+  reserved 1;
+  reserved "result";
   string result_json = 2;
   string context_json = 3;
 }

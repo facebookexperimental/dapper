@@ -156,7 +156,6 @@ where
             Ok(ThreadsResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -180,7 +179,6 @@ where
             Ok(StackTraceResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -197,7 +195,6 @@ where
             Ok(ScopesResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -219,7 +216,6 @@ where
             Ok(VariablesResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -246,7 +242,6 @@ where
             Ok(NavigateResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -270,7 +265,6 @@ where
             Ok(SetVariableResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await
@@ -324,7 +318,6 @@ where
             Ok(SetBreakpointsResponse {
                 result_json,
                 context_json,
-                ..Default::default()
             })
         })
         .await

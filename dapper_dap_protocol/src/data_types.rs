@@ -51,6 +51,11 @@ impl Default for IntOrString {
     }
 }
 
+// The ID newtypes below share a shape. `FromStr` is derived only where the
+// id arrives via CLI or MCP string parameters; `as_i64` exists for `tracing`
+// call sites that should record an integer field rather than a Display
+// string.
+
 #[derive(
     Debug,
     Clone,
@@ -73,10 +78,6 @@ impl Seq {
         Self(self.0 + 1)
     }
 
-    /// Returns the underlying integer value.
-    ///
-    /// Useful at `tracing` call sites where the field should be recorded as
-    /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -94,16 +95,13 @@ impl Seq {
     Deserialize,
     derive_more::Display,
     derive_more::From,
-    derive_more::Into
+    derive_more::Into,
+    derive_more::FromStr
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct ThreadId(pub i64);
 
 impl ThreadId {
-    /// Returns the underlying integer value.
-    ///
-    /// Useful at `tracing` call sites where the field should be recorded as
-    /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -117,14 +115,6 @@ impl TryFrom<Value> for ThreadId {
     }
 }
 
-impl std::str::FromStr for ThreadId {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<i64>().map(ThreadId)
-    }
-}
-
 #[derive(
     Debug,
     Clone,
@@ -137,16 +127,13 @@ impl std::str::FromStr for ThreadId {
     Deserialize,
     derive_more::Display,
     derive_more::From,
-    derive_more::Into
+    derive_more::Into,
+    derive_more::FromStr
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct FrameId(pub i64);
 
 impl FrameId {
-    /// Returns the underlying integer value.
-    ///
-    /// Useful at `tracing` call sites where the field should be recorded as
-    /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -160,14 +147,6 @@ impl TryFrom<Value> for FrameId {
     }
 }
 
-impl std::str::FromStr for FrameId {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<i64>().map(FrameId)
-    }
-}
-
 #[derive(
     Debug,
     Clone,
@@ -180,7 +159,8 @@ impl std::str::FromStr for FrameId {
     Deserialize,
     derive_more::Display,
     derive_more::From,
-    derive_more::Into
+    derive_more::Into,
+    derive_more::FromStr
 )]
 #[serde(try_from = "Value", into = "i64")]
 pub struct VariablesReference(pub i64);
@@ -190,10 +170,6 @@ impl VariablesReference {
         self.0 > 0
     }
 
-    /// Returns the underlying integer value.
-    ///
-    /// Useful at `tracing` call sites where the field should be recorded as
-    /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
     }
@@ -204,14 +180,6 @@ impl TryFrom<Value> for VariablesReference {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         i64_from_value(&value).map(VariablesReference)
-    }
-}
-
-impl std::str::FromStr for VariablesReference {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<i64>().map(VariablesReference)
     }
 }
 
@@ -233,10 +201,6 @@ impl std::str::FromStr for VariablesReference {
 pub struct BreakpointId(pub i64);
 
 impl BreakpointId {
-    /// Returns the underlying integer value.
-    ///
-    /// Useful at `tracing` call sites where the field should be recorded as
-    /// an integer rather than the Display string representation.
     pub fn as_i64(self) -> i64 {
         self.0
     }

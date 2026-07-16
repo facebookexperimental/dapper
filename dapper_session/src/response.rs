@@ -92,21 +92,25 @@ impl RawDapResult {
     }
 }
 
+/// Pull the `body` field out of a typed message's serde representation.
+/// Relies on the tagged-enum encoding placing the payload under `"body"`.
+fn tagged_body<T: Serialize>(value: &T) -> Option<serde_json::Value> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.get("body").cloned())
+}
+
 fn extract_response_body(body: &ResponseBody) -> Option<serde_json::Value> {
     match body {
         ResponseBody::Unknown(u) => u.body.clone(),
-        other => serde_json::to_value(other)
-            .ok()
-            .and_then(|v| v.get("body").cloned()),
+        other => tagged_body(other),
     }
 }
 
 fn extract_event_body(event: &EventKind) -> Option<serde_json::Value> {
     match event {
         EventKind::Unknown(u) => u.body.clone(),
-        other => serde_json::to_value(other)
-            .ok()
-            .and_then(|v| v.get("body").cloned()),
+        other => tagged_body(other),
     }
 }
 

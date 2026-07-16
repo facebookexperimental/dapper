@@ -139,18 +139,16 @@ pub enum MessageType {
     Other(String),
 }
 
-#[derive(Error, Debug, PartialEq)]
+#[derive(Error, Debug)]
 pub enum ProtocolError {
     #[error("Invalid DAP message header: {0}")]
     HeaderParseError(String),
     #[error("Decoding error: {0}")]
     DecodingError(#[from] Utf8Error),
     #[error("Serde error: {0}")]
-    SerdeError(String),
+    SerdeError(#[from] serde_json::Error),
     #[error("IO error: {0}")]
-    IoError(String),
-    #[error("DAP error: {0}")]
-    DapError(String),
+    IoError(#[from] std::io::Error),
 }
 
 pub type ProtocolResult<T> = Result<T, ProtocolError>;
@@ -197,13 +195,14 @@ impl Message {
                 .take(MAX_DAP_HEADER_LINE_SIZE as u64)
                 .read_line(&mut line_buffer)
                 .await
-                .map_err(|e| ProtocolError::IoError(e.to_string()))?;
+                .map_err(ProtocolError::IoError)?;
 
             if bytes_read == 0 {
                 if content_length.is_some() {
-                    return Err(ProtocolError::IoError(
-                        "unexpected EOF while reading headers".to_string(),
-                    ));
+                    return Err(ProtocolError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "unexpected EOF while reading headers",
+                    )));
                 }
                 return Ok(None);
             }
@@ -276,12 +275,11 @@ impl Message {
         input_buffer
             .read_exact(&mut content)
             .await
-            .map_err(|e| ProtocolError::IoError(e.to_string()))?;
+            .map_err(ProtocolError::IoError)?;
 
         let content =
             std::str::from_utf8(content.as_slice()).map_err(ProtocolError::DecodingError)?;
-        let message: Self =
-            serde_json::from_str(content).map_err(|e| ProtocolError::SerdeError(e.to_string()))?;
+        let message: Self = serde_json::from_str(content).map_err(ProtocolError::SerdeError)?;
 
         Ok(Some(message))
     }
@@ -295,8 +293,7 @@ impl Message {
     /// for these fields — they should either be omitted or be a valid object.
     /// This method strips those null entries.
     pub fn to_value(&self) -> ProtocolResult<Value> {
-        let mut val =
-            serde_json::to_value(self).map_err(|e| ProtocolError::SerdeError(e.to_string()))?;
+        let mut val = serde_json::to_value(self).map_err(ProtocolError::SerdeError)?;
         if let Value::Object(ref mut map) = val {
             for key in &["arguments", "body"] {
                 if map.get(*key).is_some_and(Value::is_null) {
@@ -309,13 +306,12 @@ impl Message {
 
     pub fn format(&self) -> ProtocolResult<Vec<u8>> {
         let val = self.to_value()?;
-        let json_bytes =
-            serde_json::to_vec(&val).map_err(|e| ProtocolError::SerdeError(e.to_string()))?;
+        let json_bytes = serde_json::to_vec(&val).map_err(ProtocolError::SerdeError)?;
 
         // "Content-Length: \r\n\r\n" (20 bytes) + up to 10 digits for the length value
         let mut buf = Vec::with_capacity(32 + json_bytes.len());
         write!(buf, "Content-Length: {}\r\n\r\n", json_bytes.len())
-            .map_err(|e| ProtocolError::IoError(e.to_string()))?;
+            .map_err(ProtocolError::IoError)?;
         buf.extend_from_slice(&json_bytes);
         Ok(buf)
     }

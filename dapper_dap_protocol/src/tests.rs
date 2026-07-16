@@ -1603,11 +1603,11 @@ async fn test_wire_unterminated_content_length_header() {
     let result = Message::read(&mut cursor).await;
     assert!(result.is_err());
     match result.unwrap_err() {
-        ProtocolError::IoError(msg) => {
+        ProtocolError::IoError(err) => {
             assert!(
-                msg.contains("unexpected EOF"),
+                err.to_string().contains("unexpected EOF"),
                 "unexpected error message: {}",
-                msg
+                err
             );
         }
         other => panic!("Expected IoError, got: {:?}", other),

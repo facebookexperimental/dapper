@@ -23,18 +23,30 @@ use crate::enums::VariablePresentationHintAttributes;
 use crate::enums::VariablePresentationHintKind;
 use crate::enums::VariablePresentationHintVisibility;
 
+/// Error from [`i64_from_value`]: the JSON value was not an integer (or an
+/// integer-bearing string).
+#[derive(Debug, PartialEq, thiserror::Error)]
+pub enum IntParseError {
+    #[error("expected an integer, got {0}")]
+    NotAnInteger(serde_json::Number),
+    #[error("invalid integer string: {0:?}")]
+    InvalidString(String),
+    #[error("expected integer or string, got {0}")]
+    WrongType(Value),
+}
+
 /// Parse an `i64` from a JSON value that is either a number or a
 /// string containing an integer. LLM clients (MCP tool callers)
 /// sometimes send integer parameters as strings.
-pub fn i64_from_value(value: &Value) -> Result<i64, String> {
+pub fn i64_from_value(value: &Value) -> Result<i64, IntParseError> {
     match value {
         Value::Number(n) => n
             .as_i64()
-            .ok_or_else(|| format!("expected an integer, got {n}")),
+            .ok_or_else(|| IntParseError::NotAnInteger(n.clone())),
         Value::String(s) => s
             .parse::<i64>()
-            .map_err(|_| format!("invalid integer string: {s:?}")),
-        other => Err(format!("expected integer or string, got {other}")),
+            .map_err(|_| IntParseError::InvalidString(s.clone())),
+        other => Err(IntParseError::WrongType(other.clone())),
     }
 }
 
@@ -108,7 +120,7 @@ impl ThreadId {
 }
 
 impl TryFrom<Value> for ThreadId {
-    type Error = String;
+    type Error = IntParseError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         i64_from_value(&value).map(ThreadId)
@@ -140,7 +152,7 @@ impl FrameId {
 }
 
 impl TryFrom<Value> for FrameId {
-    type Error = String;
+    type Error = IntParseError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         i64_from_value(&value).map(FrameId)
@@ -176,7 +188,7 @@ impl VariablesReference {
 }
 
 impl TryFrom<Value> for VariablesReference {
-    type Error = String;
+    type Error = IntParseError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         i64_from_value(&value).map(VariablesReference)

@@ -230,14 +230,12 @@ impl DebugSessionTracker {
         control_plane_port: Option<Port>,
         scope_id: Option<ScopeId>,
     ) {
-        let session_id = &self.session_id;
-        let parent_session_id = self.parent_session_id.as_ref();
-        let sessions = self.sessions.as_ref();
-        self.with_inner((), "registering control plane", |inner| {
+        let to_save = self.with_inner(None, "registering control plane", |inner| {
             inner.control_plane_port = control_plane_port;
             inner.scope_id = scope_id;
-            inner.try_finalize_session(session_id, parent_session_id, sessions);
+            inner.try_finalize_session(&self.session_id, self.parent_session_id.as_ref())
         });
+        self.save_session_file(to_save);
     }
 
     pub fn get_session_info(&self) -> Option<SessionInfo> {
@@ -304,9 +302,7 @@ impl DebugSessionTracker {
         debugger_args: Option<serde_json::Value>,
     ) {
         let session_id = &self.session_id;
-        let parent_session_id = self.parent_session_id.as_ref();
-        let sessions = self.sessions.as_ref();
-        self.with_inner((), "tracking launch/attach request", |inner| {
+        let to_save = self.with_inner(None, "tracking launch/attach request", |inner| {
             inner.debugger_args = debugger_args;
             inner.request_type = Some(request_type);
 
@@ -316,8 +312,31 @@ impl DebugSessionTracker {
                 request_type
             );
 
-            inner.try_finalize_session(session_id, parent_session_id, sessions);
+            inner.try_finalize_session(session_id, self.parent_session_id.as_ref())
         });
+        self.save_session_file(to_save);
+    }
+
+    /// Persist a finalized `SessionInfo` outside the tracker lock (file IO
+    /// must not block message tracking). Racing finalizers may both save;
+    /// each save atomically renames a consistent snapshot, so either may win.
+    fn save_session_file(&self, info: Option<SessionInfo>) {
+        let Some(info) = info else { return };
+        let Some(store) = &self.sessions else {
+            tracing::warn!("Session store unavailable; session file not written");
+            return;
+        };
+        match store.save(&info) {
+            Ok(path) => {
+                tracing::info!("Session file written to: {}", path.display());
+                self.with_inner((), "marking session file written", |inner| {
+                    inner.session_file_written = true
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to write session file: {}", e);
+            }
+        }
     }
 
     /// Track breakpoints when source path is explicitly known.

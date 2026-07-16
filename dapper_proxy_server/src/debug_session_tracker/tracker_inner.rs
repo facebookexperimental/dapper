@@ -9,7 +9,6 @@ use dapper_session::RequestType;
 use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
-use dapper_session::SessionStore;
 
 use super::breakpoint_state::BreakpointState;
 use super::exception_filter_state::ExceptionFilterState;
@@ -64,14 +63,17 @@ impl DebugSessionTrackerInner {
         }
     }
 
+    /// Build the `SessionInfo` once both the control-plane port and a
+    /// launch/attach request have been seen, and return a copy for the
+    /// caller to persist. Returns `None` when the info is not yet
+    /// complete or the file has already been written.
     pub fn try_finalize_session(
         &mut self,
         session_id: &SessionId,
         parent_session_id: Option<&SessionId>,
-        sessions: Option<&SessionStore>,
-    ) {
+    ) -> Option<SessionInfo> {
         if self.session_file_written {
-            return;
+            return None;
         }
 
         if self.session_info.is_none()
@@ -89,20 +91,6 @@ impl DebugSessionTrackerInner {
             );
         }
 
-        if let Some(ref session_info) = self.session_info {
-            let Some(store) = sessions else {
-                tracing::warn!("Session store unavailable; session file not written");
-                return;
-            };
-            match store.save(session_info) {
-                Ok(path) => {
-                    tracing::info!("Session file written to: {}", path.display());
-                    self.session_file_written = true;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to write session file: {}", e);
-                }
-            }
-        }
+        self.session_info.clone()
     }
 }

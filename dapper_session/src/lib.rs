@@ -18,6 +18,8 @@ use std::net::TcpListener;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::process;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use chrono::DateTime;
@@ -296,8 +298,15 @@ impl SessionStore {
 
         // Write to a temporary file first, then atomically rename into place.
         // This prevents concurrent readers (iter_sessions) from seeing an
-        // empty or partially-written file and deleting it.
-        let tmp_path = file_path.with_extension("json.tmp");
+        // empty or partially-written file and deleting it. The temp name is
+        // unique per save so concurrent saves of the same session cannot
+        // rename each other's half-written temp file into place.
+        static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+        let tmp_path = file_path.with_extension(format!(
+            "json.tmp.{}.{}",
+            process::id(),
+            NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+        ));
         let file = File::create(&tmp_path)
             .with_context(|| format!("Failed to create session file: {}", tmp_path.display()))?;
 

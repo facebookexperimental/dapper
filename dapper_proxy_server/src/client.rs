@@ -169,9 +169,9 @@ pub type ProxyClient = Client<Command, CommandResult>;
 
 impl ProxyClient {
     pub async fn status(&self) -> anyhow::Result<()> {
-        let result = self.send(Command::Control(ControlCommand::Status)).await?;
+        let result = self.send(Command::Status).await?;
         match result {
-            CommandResult::Control(ControlResult::Status) => Ok(()),
+            CommandResult::Status => Ok(()),
             _ => anyhow::bail!("Unexpected result type"),
         }
     }
@@ -1052,25 +1052,15 @@ pub(crate) fn merge_exception_filters(
     reason = "boxing `Debugger` would require broader command plumbing updates"
 )]
 pub enum Command {
-    Control(ControlCommand),
-    Debugger(dap::Message),
-}
-
-#[derive(Debug, Clone)]
-pub enum ControlCommand {
+    /// Control-plane liveness ping.
     Status,
+    Debugger(dap::Message),
 }
 
 #[derive(Debug)]
 pub enum CommandResult {
-    Control(ControlResult),
-    Debugger(ListenerPayload),
-}
-
-#[derive(Debug)]
-pub enum ControlResult {
-    // TODO: this will become a real status result later
     Status,
+    Debugger(ListenerPayload),
 }
 
 #[derive(Debug)]

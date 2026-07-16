@@ -25,8 +25,6 @@ use crate::backend::Backend;
 use crate::client::ClientId;
 use crate::client::Command;
 use crate::client::CommandResult;
-use crate::client::ControlCommand;
-use crate::client::ControlResult;
 use crate::client::EventChannel;
 use crate::client::ListenerPayload;
 use crate::client::ProxyClient;
@@ -294,9 +292,7 @@ impl ProxyServer {
             tracing::debug!("Processing request from client: {client_id:?}");
 
             let result = match request.command {
-                Command::Control(control_command) => match control_command {
-                    ControlCommand::Status => CommandResult::Control(ControlResult::Status),
-                },
+                Command::Status => CommandResult::Status,
                 Command::Debugger(message) => {
                     debug_session_tracker
                         .track_message_from_client(&message, ClientType::Secondary);

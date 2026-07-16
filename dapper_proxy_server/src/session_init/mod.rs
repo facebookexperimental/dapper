@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use dapper_dap_protocol::capabilities::Capabilities;
+use dapper_dap_protocol::capabilities::apply_capabilities_event;
 use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::events::EventKind;
@@ -385,6 +386,13 @@ impl SessionInitializer {
                 // Handle program stopped/exited/terminated events
                 EventKind::Stopped(_) | EventKind::Exited(_) | EventKind::Terminated(_) => {
                     self.handle_program_stopped_event(event);
+                }
+                // Absorb post-initialize capability updates so later init steps see them.
+                EventKind::Capabilities(caps_event) => {
+                    apply_capabilities_event(
+                        &mut self.adapter_capabilities,
+                        caps_event.capabilities.clone(),
+                    );
                 }
                 _ => {}
             },
@@ -1049,6 +1057,7 @@ mod tests {
     use std::sync::Mutex;
 
     use dapper_dap_protocol::capabilities::Capabilities;
+    use dapper_dap_protocol::events::CapabilitiesEventBody;
     use dapper_dap_protocol::events::EventKind;
     use dapper_dap_protocol::requests::RequestCommand;
     use dapper_dap_protocol::requests::SetExceptionBreakpointsArguments;
@@ -1427,6 +1436,123 @@ mod tests {
         anyhow::bail!("Channel closed before completion, state: {:?}", state)
     }
 
+    /// Mock backend that advertises `caps_event_filters` via a post-initialize
+    /// `capabilities` event and captures any setExceptionBreakpoints requests.
+    async fn mock_backend_with_late_filters(
+        mut channel: DuplexChannel,
+        caps_event_filters: Vec<ExceptionBreakpointsFilter>,
+        captured: Arc<Mutex<Vec<SetExceptionBreakpointsArguments>>>,
+    ) -> anyhow::Result<()> {
+        let mut state = MockState::WaitingForInitialize;
+        let mut pending_debug_request: Option<dap::Request> = None;
+        let mut seq: Seq = 1.into();
+
+        while let Ok(Some(msg)) = channel.recv().await {
+            if let dap::Message::Request(req) = msg {
+                match (&state, &req.command) {
+                    (MockState::WaitingForInitialize, RequestCommand::Initialize(_)) => {
+                        // Baseline caps: configurationDone yes, no exception filters yet.
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::Initialize(Some(Capabilities {
+                                supports_configuration_done_request: Some(true),
+                                ..Default::default()
+                            })),
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+                        state = MockState::WaitingForDebugRequest;
+                    }
+                    (
+                        MockState::WaitingForDebugRequest,
+                        RequestCommand::Launch(_) | RequestCommand::Attach(_),
+                    ) => {
+                        pending_debug_request = Some(req);
+
+                        // Advertise the exception filters late (before `initialized`).
+                        let caps_event = dap::Event {
+                            seq,
+                            event: EventKind::Capabilities(CapabilitiesEventBody {
+                                capabilities: Capabilities {
+                                    exception_breakpoint_filters: Some(caps_event_filters.clone()),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                        };
+                        seq = seq.next();
+                        channel.send(caps_event.into()).await?;
+
+                        let initialized_event = dap::Event {
+                            seq,
+                            event: EventKind::Initialized(Default::default()),
+                        };
+                        seq = seq.next();
+                        channel.send(initialized_event.into()).await?;
+                        state = MockState::WaitingForConfigurationDone;
+                    }
+                    (
+                        MockState::WaitingForConfigurationDone,
+                        RequestCommand::SetExceptionBreakpoints(args),
+                    ) => {
+                        captured.lock().unwrap().push(args.clone());
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::SetExceptionBreakpoints(None),
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+                    }
+                    (
+                        MockState::WaitingForConfigurationDone,
+                        RequestCommand::ConfigurationDone(_),
+                    ) => {
+                        let config_response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::ConfigurationDone,
+                        };
+                        seq = seq.next();
+                        channel.send(config_response.into()).await?;
+
+                        if let Some(debug_req) = pending_debug_request.take() {
+                            let body = match &debug_req.command {
+                                RequestCommand::Launch(_) => ResponseBody::Launch,
+                                RequestCommand::Attach(_) => ResponseBody::Attach,
+                                _ => unreachable!(),
+                            };
+                            let debug_response = dap::Response {
+                                seq,
+                                request_seq: debug_req.seq,
+                                success: true,
+                                message: None,
+                                body,
+                            };
+                            channel.send(debug_response.into()).await?;
+                        }
+                        return Ok(());
+                    }
+                    (current_state, cmd) => {
+                        anyhow::bail!(
+                            "Protocol violation: received '{}' in state {:?}",
+                            cmd.command_name(),
+                            current_state
+                        );
+                    }
+                }
+            }
+        }
+        anyhow::bail!("Channel closed before completion, state: {:?}", state)
+    }
+
     fn launch_config(
         breakpoints: Vec<BreakpointSpec>,
         install_defaults: bool,
@@ -1532,6 +1658,44 @@ mod tests {
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].filters, vec!["uncaught"]);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_capabilities_event_enables_exception_filters() {
+        // Filters are advertised via a post-initialize `capabilities` event; if it
+        // were dropped, no setExceptionBreakpoints request would be sent.
+        let config = launch_config(vec![], true);
+        let captured = Arc::new(Mutex::new(Vec::new()));
+
+        let late_filters = vec![ExceptionBreakpointsFilter {
+            filter: "raised".to_string(),
+            label: "Raised".to_string(),
+            default: Some(true),
+            ..Default::default()
+        }];
+
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend_with_late_filters(
+            server,
+            late_filters,
+            Arc::clone(&captured),
+        ));
+        let initializer = SessionInitializer::new(config).with_timeout(Duration::from_secs(2));
+        let result = initializer.run(client).await;
+
+        backend_handle.await.expect("backend panicked").unwrap();
+        assert!(result.is_ok(), "init failed: {:?}", result);
+        let captured = captured.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "expected a setExceptionBreakpoints request built from the dynamically-advertised filter",
+        );
+        assert_eq!(
+            captured[0].filters,
+            vec!["raised"],
+            "the filter advertised via the capabilities event must be installed",
+        );
     }
 
     #[tokio::test]

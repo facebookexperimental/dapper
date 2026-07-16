@@ -18,6 +18,7 @@ pub(crate) use breakpoint_state::breakpoints_with_fallback;
 pub(crate) use breakpoint_state::resolved_source_path;
 use dapper_config::DapperConfig;
 use dapper_dap_protocol::capabilities::Capabilities;
+use dapper_dap_protocol::capabilities::apply_capabilities_event;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::events::EventKind;
@@ -189,6 +190,15 @@ impl DebugSessionTracker {
                         inner
                             .breakpoint_state
                             .apply_breakpoint_event(&bp_event.reason, &bp_event.breakpoint);
+                    });
+                }
+                EventKind::Capabilities(caps_event) => {
+                    // Absorb post-initialize capability updates so gates see them.
+                    self.with_inner(|inner| {
+                        apply_capabilities_event(
+                            &mut inner.adapter_capabilities,
+                            caps_event.capabilities.clone(),
+                        );
                     });
                 }
                 _ => {}
@@ -513,6 +523,7 @@ mod tests {
     use dapper_dap_protocol::enums::OutputCategory;
     use dapper_dap_protocol::enums::StoppedReason;
     use dapper_dap_protocol::events::BreakpointEventBody;
+    use dapper_dap_protocol::events::CapabilitiesEventBody;
     use dapper_dap_protocol::events::EventKind;
     use dapper_dap_protocol::events::OutputEventBody;
     use dapper_dap_protocol::events::StoppedEventBody;
@@ -1488,6 +1499,51 @@ mod tests {
         };
         tracker.track_message_to_client(&Message::Response(response));
         assert!(tracker.adapter_capabilities().is_none());
+    }
+
+    #[test]
+    fn capabilities_event_overlays_and_preserves_baseline() {
+        let tracker = test_tracker();
+
+        // Baseline from `initialize`: single-thread supported, stepBack unset.
+        let init = Response {
+            seq: 1.into(),
+            request_seq: 1.into(),
+            success: true,
+            message: None,
+            body: ResponseBody::Initialize(Some(Capabilities {
+                supports_single_thread_execution_requests: Some(true),
+                ..Default::default()
+            })),
+        };
+        tracker.track_message_to_client(&Message::Response(init));
+
+        // A later `capabilities` event advertises stepBack (a partial delta).
+        let event = Event {
+            seq: 2.into(),
+            event: EventKind::Capabilities(CapabilitiesEventBody {
+                capabilities: Capabilities {
+                    supports_step_back: Some(true),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        };
+        tracker.track_message_to_client(&Message::Event(event));
+
+        let caps = tracker
+            .adapter_capabilities()
+            .expect("capabilities should be present after initialize");
+        assert_eq!(
+            caps.supports_step_back,
+            Some(true),
+            "the capabilities event should advertise stepBack post-initialize"
+        );
+        assert_eq!(
+            caps.supports_single_thread_execution_requests,
+            Some(true),
+            "the initialize baseline must survive the capabilities merge"
+        );
     }
 
     fn make_set_exception_breakpoints_request(seq: Seq, filters: Vec<&str>) -> Request {

@@ -208,7 +208,12 @@ impl ProxyClient {
         // Extract result from the response body
         let result = match response.body {
             ResponseBody::Evaluate(body) => body.result,
-            _ => "No result returned".to_owned(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for evaluate: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         Ok(result)
@@ -221,7 +226,12 @@ impl ProxyClient {
 
         let threads = match response.body {
             ResponseBody::Threads(body) => body.threads,
-            _ => Vec::new(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for threads: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         let stack_trace = if self.config.threads.show_stacktrace
@@ -261,7 +271,12 @@ impl ProxyClient {
 
         let all_frames = match response.body {
             ResponseBody::StackTrace(body) => body.stack_frames,
-            _ => Vec::new(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for stackTrace: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         let (frames_to_show, has_more_frames) =
@@ -297,7 +312,12 @@ impl ProxyClient {
 
         let scopes = match response.body {
             ResponseBody::Scopes(body) => body.scopes,
-            _ => Vec::new(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for scopes: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         let locals = if self.config.scopes.expand_locals {
@@ -338,7 +358,12 @@ impl ProxyClient {
 
         let variables = match response.body {
             ResponseBody::Variables(body) => body.variables,
-            _ => Vec::new(),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for variables: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         Ok(dapper_session::VariablesResult {
@@ -365,7 +390,12 @@ impl ProxyClient {
 
         let body = match response.body {
             ResponseBody::SetVariable(body) => body,
-            _ => return Err(anyhow::anyhow!("Unexpected response body for setVariable")),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "Unexpected response body for setVariable: got `{}`",
+                    other.command_name()
+                ));
+            }
         };
 
         Ok(dapper_session::SetVariableResult {
@@ -1420,6 +1450,113 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "navigate should succeed, got: {result:?}");
+    }
+
+    /// Spawn a mock backend that answers the next request with a
+    /// `success: true` response carrying a deliberately mismatched
+    /// body (`Next`), so the caller's body match hits its `_` arm.
+    fn spawn_mismatched_body_mock(mut rx: mpsc::UnboundedReceiver<ProxyRequest>) {
+        tokio::spawn(async move {
+            if let Some(req) = rx.recv().await {
+                let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
+                let messages = msg_tx.subscribe();
+
+                let Command::Debugger(dap::Message::Request(dap_req)) = &req.command else {
+                    panic!("expected a debugger request");
+                };
+                let response = dap::Response {
+                    seq: Seq(2),
+                    request_seq: dap_req.seq,
+                    success: true,
+                    message: None,
+                    body: ResponseBody::Next,
+                };
+                msg_tx.send(Arc::new(response.into())).unwrap();
+
+                let _ = req.result.send(CommandResult::Debugger(ListenerPayload {
+                    seq: dap_req.seq,
+                    messages,
+                }));
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn test_threads_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client.threads().await.unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stack_trace_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client
+            .stack_trace(ThreadId(1), None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_scopes_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client.scopes(FrameId(1)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_variables_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client.variables(VariablesReference(1)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_repl_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client.repl("x".to_owned(), None).await.unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_variable_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client
+            .set_variable(VariablesReference(1), "x", "1")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Unexpected response body"),
+            "expected an unexpected-body error, got: {err}"
+        );
     }
 
     #[tokio::test]

@@ -226,7 +226,7 @@ impl fmt::Display for StackTraceResult {
         if self.has_more_frames {
             writeln!(
                 f,
-                "(frames omitted after #{}, use 'debug_stack_trace_command' to request more)",
+                "(frames omitted after #{}, request more frames with a larger levels value)",
                 end,
             )?;
         }

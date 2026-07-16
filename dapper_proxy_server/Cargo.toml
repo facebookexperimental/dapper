@@ -9,7 +9,6 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.103"
-async-trait = "0.1.86"
 dapper_config = { path = "../dapper_config" }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_session = { path = "../dapper_session" }

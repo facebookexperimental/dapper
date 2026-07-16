@@ -3,28 +3,24 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::fmt::Debug;
 use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::bail;
+use dapper_dap_protocol::protocol::Message;
+use dapper_dap_protocol::protocol::ProtocolError;
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
-use crate::transport::Decode;
 use crate::transport::DuplexChannel;
-use crate::transport::Encode;
 
-pub struct Backend<M> {
-    pub duplex: DuplexChannel<M>,
+pub struct Backend {
+    pub duplex: DuplexChannel,
     pub handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
-impl<M> Backend<M>
-where
-    M: Encode + Decode + Send + 'static + Debug,
-{
+impl Backend {
     pub async fn from_tcp(host: &str, port: u16) -> anyhow::Result<Self> {
         tracing::debug!("Backend: connecting to TCP {}:{}", host, port);
 
@@ -152,11 +148,11 @@ where
         })
     }
 
-    pub async fn send(&mut self, message: M) -> anyhow::Result<()> {
+    pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
         self.duplex.send(message).await
     }
 
-    pub async fn recv(&mut self) -> Result<Option<M>, M::Error> {
+    pub async fn recv(&mut self) -> Result<Option<Message>, ProtocolError> {
         self.duplex.recv().await
     }
 }

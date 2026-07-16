@@ -11,7 +11,6 @@ use clap::Parser;
 use clap::Subcommand;
 use dapper_config::DapperConfig;
 use dapper_control_server as control_plane_server;
-use dapper_dap_protocol::protocol::Message;
 use dapper_dap_protocol::protocol::Request;
 use dapper_dap_protocol::requests::DisconnectArguments;
 use dapper_dap_protocol::requests::RequestCommand;
@@ -182,7 +181,7 @@ pub struct Proxy {
     backend: BackendMode,
 }
 
-async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend<Message>> {
+async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend> {
     match spawn_config {
         SpawnConfig::Stdio(cfg) => {
             let mut cmd = vec![cfg.cmd.clone()];

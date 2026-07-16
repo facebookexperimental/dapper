@@ -69,10 +69,10 @@ impl EventChannel {
     }
 }
 
-pub struct Request<C, R> {
+pub struct ProxyRequest {
     pub(crate) client_id: ClientId,
-    pub(crate) command: C,
-    pub(crate) result: oneshot::Sender<R>,
+    pub(crate) command: Command,
+    pub(crate) result: oneshot::Sender<CommandResult>,
 }
 
 /// A unique identifier for a client connection. This identifier is used for
@@ -88,34 +88,19 @@ impl ClientId {
     }
 }
 
-pub struct Client<C, R> {
+#[derive(Clone)]
+pub struct ProxyClient {
     id: ClientId,
-    to_server: mpsc::UnboundedSender<Request<C, R>>,
+    to_server: mpsc::UnboundedSender<ProxyRequest>,
     event_channel: EventChannel,
     debug_session_tracker: DebugSessionTracker,
     config: DapperConfig,
 }
 
-impl<C, R> Clone for Client<C, R> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            to_server: self.to_server.clone(),
-            event_channel: self.event_channel.clone(),
-            debug_session_tracker: self.debug_session_tracker.clone(),
-            config: self.config.clone(),
-        }
-    }
-}
-
-impl<C, R> Client<C, R>
-where
-    C: Send + Sync + 'static,
-    R: Send + 'static,
-{
+impl ProxyClient {
     pub fn new(
         id: ClientId,
-        to_server: mpsc::UnboundedSender<Request<C, R>>,
+        to_server: mpsc::UnboundedSender<ProxyRequest>,
         event_channel: EventChannel,
         debug_session_tracker: DebugSessionTracker,
         config: DapperConfig,
@@ -129,9 +114,9 @@ where
         }
     }
 
-    pub async fn send(&self, command: C) -> anyhow::Result<R> {
+    pub async fn send(&self, command: Command) -> anyhow::Result<CommandResult> {
         let (result_sender, result_receiver) = oneshot::channel();
-        let command_handle = Request {
+        let command_handle = ProxyRequest {
             client_id: self.id.clone(),
             command,
             result: result_sender,
@@ -163,9 +148,6 @@ where
         &self.event_channel
     }
 }
-
-pub type ProxyRequest = Request<Command, CommandResult>;
-pub type ProxyClient = Client<Command, CommandResult>;
 
 impl ProxyClient {
     pub async fn status(&self) -> anyhow::Result<()> {

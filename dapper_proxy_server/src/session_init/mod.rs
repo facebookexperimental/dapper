@@ -335,7 +335,7 @@ impl SessionInitializer {
     /// Stashes debug responses, handles dapper events, then returns the message.
     async fn recv_message(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
     ) -> anyhow::Result<Option<dap::Message>> {
         let msg = match channel.recv().await.context("Failed to receive message")? {
             None => return Ok(None),
@@ -404,7 +404,7 @@ impl SessionInitializer {
     /// response so the adapter never hangs.
     async fn handle_reverse_request(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: &dap::Request,
     ) -> anyhow::Result<()> {
         if let RequestCommand::StartDebugging(args) = &request.command {
@@ -421,7 +421,7 @@ impl SessionInitializer {
     /// unresolvable request, or a spawn error/timeout.
     async fn handle_start_debugging(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: &dap::Request,
         args: &StartDebuggingRequestArguments,
     ) -> anyhow::Result<()> {
@@ -517,7 +517,7 @@ impl SessionInitializer {
     /// message.
     async fn fail_reverse_request(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: &dap::Request,
         message: &str,
     ) -> anyhow::Result<()> {
@@ -529,7 +529,7 @@ impl SessionInitializer {
     /// `Response` so the adapter never hangs.
     async fn decline_reverse_request(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: &dap::Request,
     ) -> anyhow::Result<()> {
         let command = request.command_name();
@@ -547,7 +547,7 @@ impl SessionInitializer {
     /// name (keeping the match total).
     async fn send_reverse_response(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: &dap::Request,
         success: bool,
         message: Option<String>,
@@ -648,7 +648,7 @@ impl SessionInitializer {
     /// 4. Send configuration (breakpoints, etc.)
     /// 5. Send configurationDone, wait for response
     /// 6. Wait for launch/attach response (may come after configurationDone)
-    pub async fn run(mut self, mut channel: DuplexChannel<dap::Message>) -> anyhow::Result<()> {
+    pub async fn run(mut self, mut channel: DuplexChannel) -> anyhow::Result<()> {
         self.start_time = Some(Instant::now());
         self.event_writer.emit(&ProgressEvent::SessionInit {
             status: Status::Started,
@@ -685,10 +685,7 @@ impl SessionInitializer {
         Ok(())
     }
 
-    async fn initialize(
-        &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn initialize(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
         debug!("Sending initialize request");
         let request = requests::initialize(
             self.config.initialize_args.as_ref(),
@@ -708,10 +705,7 @@ impl SessionInitializer {
 
     /// Send the launch/attach request but don't wait for its response.
     /// Per DAP spec, the response may not come until after configurationDone.
-    async fn send_debug_request(
-        &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn send_debug_request(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
         let debug_request = self
             .config
             .debug_request
@@ -734,7 +728,7 @@ impl SessionInitializer {
     /// Per DAP spec, this event signals that the DA is ready to receive configuration.
     async fn wait_for_initialized_event_no_timeout(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
     ) -> anyhow::Result<()> {
         debug!("Waiting for initialized event");
         loop {
@@ -757,7 +751,7 @@ impl SessionInitializer {
 
     async fn wait_for_initialized_event(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
     ) -> anyhow::Result<()> {
         tokio::time::timeout(
             self.timeout,
@@ -769,10 +763,7 @@ impl SessionInitializer {
 
     /// Wait for the launch/attach response.
     /// It may have already arrived (stored in pending_debug_response) or may come now.
-    async fn wait_for_debug_response(
-        &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn wait_for_debug_response(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
         if let Some(response) = self.pending_debug_response.take() {
             debug!("Using previously received debug response");
             return response.check_success();
@@ -789,7 +780,7 @@ impl SessionInitializer {
 
     async fn set_breakpoints(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         groups: &BreakpointGroups,
     ) -> anyhow::Result<()> {
         // `groups` carries source, function, and exception buckets; this
@@ -850,7 +841,7 @@ impl SessionInitializer {
     ///    rest of init can complete; matches the function-bp pattern.
     async fn set_exception_breakpoints(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         groups: &BreakpointGroups,
     ) -> anyhow::Result<()> {
         let explicit = groups.exception_filters();
@@ -943,10 +934,7 @@ impl SessionInitializer {
         Ok(())
     }
 
-    async fn configuration_done(
-        &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn configuration_done(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
         let supports = self
             .adapter_capabilities
             .as_ref()
@@ -966,7 +954,7 @@ impl SessionInitializer {
 
     async fn send(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         mut request: dap::Request,
     ) -> anyhow::Result<Seq> {
         let seq = self.next_seq;
@@ -984,7 +972,7 @@ impl SessionInitializer {
     /// Send a request and wait for its response (with timeout).
     async fn request(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         request: dap::Request,
     ) -> anyhow::Result<dap::Response> {
         let seq = self.send(channel, request).await?;
@@ -993,7 +981,7 @@ impl SessionInitializer {
 
     async fn wait_for_response_no_timeout(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         seq: Seq,
     ) -> anyhow::Result<dap::Response> {
         // Check if already stashed
@@ -1025,7 +1013,7 @@ impl SessionInitializer {
 
     async fn wait_for_response(
         &mut self,
-        channel: &mut DuplexChannel<dap::Message>,
+        channel: &mut DuplexChannel,
         seq: Seq,
     ) -> anyhow::Result<dap::Response> {
         tokio::time::timeout(
@@ -1036,7 +1024,7 @@ impl SessionInitializer {
         .context("Timed out waiting for response")?
     }
 
-    async fn receive_messages_until_closed(&mut self, channel: &mut DuplexChannel<dap::Message>) {
+    async fn receive_messages_until_closed(&mut self, channel: &mut DuplexChannel) {
         loop {
             match self.recv_message(channel).await {
                 Ok(Some(msg)) => {
@@ -1106,7 +1094,7 @@ mod tests {
     /// 1. initialize request → initialize response
     /// 2. launch/attach request → initialized EVENT (response deferred)
     /// 3. configurationDone request → configurationDone response + deferred launch/attach response
-    async fn mock_backend(mut channel: DuplexChannel<dap::Message>) -> anyhow::Result<()> {
+    async fn mock_backend(mut channel: DuplexChannel) -> anyhow::Result<()> {
         let mut state = MockState::WaitingForInitialize;
         let mut pending_debug_request: Option<dap::Request> = None;
         let mut seq: Seq = 1.into();
@@ -1271,9 +1259,7 @@ mod tests {
 
     /// Mock backend that responds to initialize but never sends the initialized event.
     /// Used to test init timeout behavior.
-    async fn mock_backend_hangs_after_initialize(
-        mut channel: DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn mock_backend_hangs_after_initialize(mut channel: DuplexChannel) -> anyhow::Result<()> {
         let mut seq: Seq = 1.into();
 
         // Wait for initialize request
@@ -1356,7 +1342,7 @@ mod tests {
     /// requests received between `initialized` and `configurationDone`.
     /// `caps` is returned in the initialize response.
     async fn mock_backend_with_caps(
-        mut channel: DuplexChannel<dap::Message>,
+        mut channel: DuplexChannel,
         caps: Capabilities,
         captured: Arc<Mutex<Vec<SetExceptionBreakpointsArguments>>>,
     ) -> anyhow::Result<()> {
@@ -1735,7 +1721,7 @@ mod tests {
     /// `setExceptionBreakpoints` with `success: false` so we can verify
     /// the warn-on-failure path doesn't bail init.
     async fn mock_backend_rejecting_set_exception_breakpoints(
-        mut channel: DuplexChannel<dap::Message>,
+        mut channel: DuplexChannel,
         caps: Capabilities,
     ) -> anyhow::Result<()> {
         let mut state = MockState::WaitingForInitialize;
@@ -1905,9 +1891,7 @@ mod tests {
     /// Mock backend that does not advertise supportsConfigurationDoneRequest,
     /// and expects no configurationDone request (per DAP spec). Sends debug
     /// response after initialized event without waiting for configurationDone.
-    async fn mock_backend_no_config_done(
-        mut channel: DuplexChannel<dap::Message>,
-    ) -> anyhow::Result<()> {
+    async fn mock_backend_no_config_done(mut channel: DuplexChannel) -> anyhow::Result<()> {
         let mut seq: Seq = 1.into();
 
         while let Ok(Some(msg)) = channel.recv().await {
@@ -2152,17 +2136,14 @@ mod tests {
     }
 
     /// Drive `recv_message` once (bounded) so the handler processes a request.
-    async fn drive_recv(
-        initializer: &mut SessionInitializer,
-        client: &mut DuplexChannel<dap::Message>,
-    ) {
+    async fn drive_recv(initializer: &mut SessionInitializer, client: &mut DuplexChannel) {
         tokio::time::timeout(Duration::from_secs(5), initializer.recv_message(client))
             .await
             .expect("recv_message should not hang")
             .expect("recv_message ok");
     }
 
-    async fn read_response(server: &mut DuplexChannel<dap::Message>) -> dap::Response {
+    async fn read_response(server: &mut DuplexChannel) -> dap::Response {
         match tokio::time::timeout(Duration::from_secs(5), server.recv())
             .await
             .expect("a response should be sent without hanging")

@@ -3,10 +3,8 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::fmt::Debug;
-
-use async_trait::async_trait;
-use tokio::io::AsyncBufRead;
+use dapper_dap_protocol::protocol::Message;
+use dapper_dap_protocol::protocol::ProtocolError;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
@@ -23,34 +21,16 @@ use tokio::net::UnixStream;
 /// multiple messages per syscall when using write_buffered + flush.
 const DAP_BUFFER_SIZE: usize = 64 * 1024;
 
-pub trait Encode {
-    fn encode(&self) -> anyhow::Result<Vec<u8>>;
-}
-
-#[async_trait]
-pub trait Decode: Sized {
-    type Error: std::error::Error + Send + Sync + Debug + 'static;
-
-    async fn decode(
-        reader: &mut (dyn AsyncBufRead + Send + Unpin),
-    ) -> Result<Option<Self>, Self::Error>;
-}
-
-pub struct WriteChannel<M> {
+// Channels are concrete over the DAP `Message` type — the only wire format
+// in this workspace.
+pub struct WriteChannel {
     writer: BufWriter<Box<dyn AsyncWrite + Send + Unpin>>,
-    marker: std::marker::PhantomData<M>,
 }
 
-impl<M> WriteChannel<M>
-where
-    M: Encode + 'static,
-{
+impl WriteChannel {
     pub fn new(writer: Box<dyn AsyncWrite + Send + Unpin>) -> Self {
         let writer = BufWriter::with_capacity(DAP_BUFFER_SIZE, writer);
-        Self {
-            writer,
-            marker: std::marker::PhantomData,
-        }
+        Self { writer }
     }
 
     /// Write a message into the internal buffer and flush it to the
@@ -61,8 +41,8 @@ where
     /// round-trip (~100-500 µs of scheduling overhead). Prefer
     /// [`write_buffered`] + an explicit [`flush`] when forwarding
     /// multiple independent messages in a loop.
-    pub async fn send(&mut self, message: M) -> anyhow::Result<()> {
-        let content = message.encode()?;
+    pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
+        let content = message.format()?;
         self.writer.write_all(&content).await?;
         Ok(self.writer.flush().await?)
     }
@@ -73,8 +53,8 @@ where
     /// the data actually reaches the peer. This is useful when the
     /// caller knows it will send several messages in quick succession
     /// and wants to batch them into a single `flush()` / syscall.
-    pub async fn write_buffered(&mut self, message: M) -> anyhow::Result<()> {
-        let content = message.encode()?;
+    pub async fn write_buffered(&mut self, message: Message) -> anyhow::Result<()> {
+        let content = message.format()?;
         self.writer.write_all(&content).await?;
         Ok(())
     }
@@ -85,37 +65,27 @@ where
     }
 }
 
-pub struct ReadChannel<M> {
+pub struct ReadChannel {
     reader: BufReader<Box<dyn AsyncRead + Send + Unpin>>,
-    marker: std::marker::PhantomData<M>,
 }
 
-impl<M> ReadChannel<M>
-where
-    M: Decode + 'static,
-{
+impl ReadChannel {
     pub fn new(reader: Box<dyn AsyncRead + Send + Unpin>) -> Self {
         let reader = BufReader::with_capacity(DAP_BUFFER_SIZE, reader);
-        Self {
-            reader,
-            marker: std::marker::PhantomData,
-        }
+        Self { reader }
     }
 
-    pub async fn recv(&mut self) -> Result<Option<M>, M::Error> {
-        M::decode(&mut self.reader).await
+    pub async fn recv(&mut self) -> Result<Option<Message>, ProtocolError> {
+        Message::read(&mut self.reader).await
     }
 }
 
-pub struct DuplexChannel<M> {
-    read: ReadChannel<M>,
-    write: WriteChannel<M>,
+pub struct DuplexChannel {
+    read: ReadChannel,
+    write: WriteChannel,
 }
 
-impl<M> DuplexChannel<M>
-where
-    M: Encode + Decode + Send + 'static + Debug,
-{
+impl DuplexChannel {
     pub fn from_streams(
         writer: Box<dyn AsyncWrite + Send + Unpin>,
         reader: Box<dyn AsyncRead + Send + Unpin>,
@@ -173,15 +143,15 @@ where
         Ok(Self { write, read })
     }
 
-    pub async fn send(&mut self, message: M) -> anyhow::Result<()> {
+    pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
         self.write.send(message).await
     }
 
-    pub async fn recv(&mut self) -> Result<Option<M>, M::Error> {
+    pub async fn recv(&mut self) -> Result<Option<Message>, ProtocolError> {
         self.read.recv().await
     }
 
-    pub fn into_channels(self) -> (ReadChannel<M>, WriteChannel<M>) {
+    pub fn into_channels(self) -> (ReadChannel, WriteChannel) {
         (self.read, self.write)
     }
 
@@ -201,30 +171,6 @@ where
     }
 }
 
-mod dap {
-    use dapper_dap_protocol::protocol::Message;
-    use dapper_dap_protocol::protocol::ProtocolError;
-
-    use super::*;
-
-    impl Encode for Message {
-        fn encode(&self) -> anyhow::Result<Vec<u8>> {
-            Ok(self.format()?)
-        }
-    }
-
-    #[async_trait]
-    impl Decode for Message {
-        type Error = ProtocolError;
-
-        async fn decode(
-            reader: &mut (dyn AsyncBufRead + Send + Unpin),
-        ) -> Result<Option<Self>, Self::Error> {
-            Message::read(reader).await
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use dapper_dap_protocol::protocol::Message;
@@ -238,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_bidirectional() {
-        let (mut server, mut client) = DuplexChannel::<Message>::in_memory(1024);
+        let (mut server, mut client) = DuplexChannel::in_memory(1024);
 
         let request = Request {
             seq: 1.into(),
@@ -264,7 +210,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_buffered_then_flush() {
-        let (mut server, mut client) = DuplexChannel::<Message>::in_memory(1024);
+        let (mut server, mut client) = DuplexChannel::in_memory(1024);
 
         let request1 = Request {
             seq: 1.into(),

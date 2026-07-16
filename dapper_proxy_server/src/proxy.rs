@@ -35,7 +35,7 @@ use crate::transport::DuplexChannel;
 use crate::transport::ReadChannel;
 use crate::transport::WriteChannel;
 
-type DAPClient = DuplexChannel<Message>;
+type DAPClient = DuplexChannel;
 
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
 pub struct ClientSeq(Seq);
@@ -143,10 +143,10 @@ fn translate_cancel(request: &mut dap::Request, remapper: &MessageRemapper) {
 /// Uses `tokio::sync::Mutex` so the lock can be held across `.await` points
 /// (the `send` method flushes the underlying writer). In the common case
 /// only one task is writing at a time, so the lock is uncontended and cheap.
-type SharedBackendWriter = Arc<tokio::sync::Mutex<WriteChannel<Message>>>;
+type SharedBackendWriter = Arc<tokio::sync::Mutex<WriteChannel>>;
 
 pub struct ProxyServer {
-    backend: Backend<Message>,
+    backend: Backend,
     /// This receiver is the single stream of messages that will be consumed by the backend
     to_backend_rx: mpsc::UnboundedReceiver<ProxyRequest>,
     /// This sender will be cloned and passed to the client
@@ -167,7 +167,7 @@ pub struct ProxyServer {
 
 impl ProxyServer {
     pub fn new(
-        backend: Backend<Message>,
+        backend: Backend,
         config: DapperConfig,
         sessions: Option<SessionStore>,
         session_id: SessionId,
@@ -354,9 +354,9 @@ impl ProxyServer {
     }
 
     async fn backend_to_main_client_and_listeners(
-        mut backend_read: ReadChannel<Message>,
+        mut backend_read: ReadChannel,
         mut event_channel_rx: mpsc::UnboundedReceiver<Message>,
-        mut main_client: WriteChannel<Message>,
+        mut main_client: WriteChannel,
         to_listeners_tx: broadcast::Sender<Arc<Message>>,
         remapper: MessageRemapper,
         debug_session_tracker: DebugSessionTracker,
@@ -425,7 +425,7 @@ impl ProxyServer {
     /// to the backend debug adapter. This bypasses `to_backend_tx` because
     /// the main client only sends DAP messages, never control commands.
     async fn main_client_to_backend(
-        mut main_client: ReadChannel<Message>,
+        mut main_client: ReadChannel,
         backend_write: SharedBackendWriter,
         remapper: MessageRemapper,
         debug_session_tracker: DebugSessionTracker,
@@ -544,9 +544,9 @@ mod tests {
     /// endpoints for driving messages in tests.
     struct TestProxy {
         /// The "VS Code" side — send requests here, read responses from here
-        main_client: DuplexChannel<Message>,
+        main_client: DuplexChannel,
         /// The "debug adapter" side — read forwarded requests here, send responses here
-        mock_backend: DuplexChannel<Message>,
+        mock_backend: DuplexChannel,
         /// A secondary client (control plane) connected to the proxy
         proxy_client: ProxyClient,
         /// Handle to the spawned proxy task

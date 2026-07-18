@@ -30,7 +30,7 @@ strum = { version = "0.28.0", features = ["derive"] }
 termimad = "0.34.1"
 tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
-uuid = { version = "1.23.5", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
+uuid = { version = "1.24.0", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }
 
 [dev-dependencies]
 temp-env = { version = "0.3.6", features = ["async_closure"] }

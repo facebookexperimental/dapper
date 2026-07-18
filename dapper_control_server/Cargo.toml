@@ -15,4 +15,4 @@ dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_proxy_server = { path = "../dapper_proxy_server" }
 dapper_session = { path = "../dapper_session" }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-tokio = { version = "1.52.3", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }

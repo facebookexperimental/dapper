@@ -202,6 +202,137 @@ fn test_parse_error_response() {
 }
 
 #[test]
+fn test_error_response_with_error_body() {
+    // lldb-dap style ErrorResponse: no top-level `message`, error text only in
+    // `body.error.format`.
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "variables",
+        "body": {
+            "error": {
+                "id": 1,
+                "format": "no frame selected",
+                "showUser": true
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    assert_eq!(resp.command_name(), "variables");
+    let err = resp.check_success().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "variables request failed: no frame selected"
+    );
+}
+
+#[test]
+fn test_error_response_body_format_variables_substitution() {
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "evaluate",
+        "body": {
+            "error": {
+                "id": 2,
+                "format": "Unable to evaluate {expr}: {reason}",
+                "variables": {
+                    "expr": "(void*)&main",
+                    "reason": "process exited"
+                }
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    assert_eq!(
+        resp.error_message(),
+        "Unable to evaluate (void*)&main: process exited"
+    );
+}
+
+#[test]
+fn test_error_response_body_substitution_is_single_pass() {
+    // Substituted values must be emitted literally: `{reason}` arriving as
+    // the *value* of `expr` names another variable, but per the DAP spec only
+    // placeholders in the original format string are resolved. Unknown
+    // placeholders and unterminated braces also stay literal.
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "evaluate",
+        "body": {
+            "error": {
+                "id": 2,
+                "format": "failed: {expr} {unknown} {oops",
+                "variables": {
+                    "expr": "{reason}",
+                    "reason": "should not appear"
+                }
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    assert_eq!(resp.error_message(), "failed: {reason} {unknown} {oops");
+}
+
+#[test]
+fn test_error_response_body_preferred_over_message() {
+    // Per the DAP spec `message` is a short machine-readable string while
+    // `body.error.format` carries the display text, so the body wins.
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "variables",
+        "message": "cancelled",
+        "body": {
+            "error": {
+                "id": 3,
+                "format": "request was cancelled by the client"
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    assert_eq!(resp.error_message(), "request was cancelled by the client");
+}
+
+#[test]
+fn test_error_response_without_any_details() {
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "variables"
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    let err = resp.check_success().unwrap_err();
+    assert_eq!(err.to_string(), "variables request failed: unknown error");
+}
+
+#[test]
 fn test_parse_stopped_event() {
     let msg = parse_message(json!({
         "seq": 50,

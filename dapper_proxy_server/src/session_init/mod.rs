@@ -354,7 +354,7 @@ impl SessionInitializer {
             {
                 debug!("Stashing debug response (seq={})", response.request_seq);
                 if !response.success {
-                    let err_msg = response.message.as_deref().unwrap_or("unknown error");
+                    let err_msg = response.error_message();
                     error!("Launch/attach request failed: {}", err_msg);
                     self.event_writer.emit(&ProgressEvent::SessionInit {
                         status: Status::Failed,

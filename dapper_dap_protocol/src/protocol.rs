@@ -11,6 +11,7 @@ use derive_more::TryInto;
 use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::AsyncBufRead;
@@ -81,11 +82,60 @@ impl Response {
     pub fn check_success(&self) -> anyhow::Result<()> {
         if !self.success {
             let command = self.command_name();
-            let error_message = self.message.as_deref().unwrap_or("unknown error");
-            anyhow::bail!("{} request failed: {}", command, error_message);
+            anyhow::bail!("{} request failed: {}", command, self.error_message());
         }
         Ok(())
     }
+
+    /// Human-readable error for a failed response.
+    ///
+    /// Prefers the `ErrorResponse` body's `format` text (the spec's display
+    /// error), then the short top-level `message` — adapters differ in which
+    /// one they populate.
+    pub fn error_message(&self) -> String {
+        self.dap_error_message()
+            .or_else(|| self.message.clone())
+            .unwrap_or_else(|| "unknown error".to_owned())
+    }
+
+    /// Extract and render `body.error` (a DAP `Message` object) if present.
+    ///
+    /// Error bodies don't match the typed [`ResponseBody`] variant for their
+    /// command, so they normally land in `ResponseBody::Unknown`; bodies whose
+    /// fields are all optional can instead capture the error in their
+    /// flattened extras. Re-serializing the body handles both uniformly.
+    fn dap_error_message(&self) -> Option<String> {
+        let body = serde_json::to_value(&self.body).ok()?;
+        let error = body.get("body")?.get("error")?;
+        let format = error.get("format")?.as_str()?;
+        let variables = error.get("variables").and_then(Value::as_object);
+        Some(substitute_placeholders(format, variables))
+    }
+}
+
+/// Resolve `{name}` placeholders in a DAP `Message.format` string from its
+/// `variables` map (all values are strings, per the spec). Substituted values
+/// are never re-scanned for placeholders; unknown and unterminated
+/// placeholders stay literal.
+fn substitute_placeholders(format: &str, variables: Option<&Map<String, Value>>) -> String {
+    let mut text = String::with_capacity(format.len());
+    let mut rest = format;
+    while let Some(open) = rest.find('{') {
+        text.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let Some(close) = rest.find('}') else {
+            break;
+        };
+        let (placeholder, tail) = rest.split_at(close + 1);
+        let name = &placeholder[1..close];
+        match variables.and_then(|v| v.get(name)).and_then(Value::as_str) {
+            Some(value) => text.push_str(value),
+            None => text.push_str(placeholder),
+        }
+        rest = tail;
+    }
+    text.push_str(rest);
+    text
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -7,14 +7,17 @@ on:
     paths:
       - "website/**"
       - ".github/workflows/dapper-website-deploy.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
 jobs:
-  deploy:
-    permissions:
-      contents: write # to push to gh-pages
+  build:
     runs-on: ubuntu-latest
 
     if: github.repository == 'facebookexperimental/dapper'
@@ -46,13 +49,28 @@ jobs:
         working-directory: ${{ env.working-directory }}
         run: yarn --frozen-lockfile
 
-      - name: Deploy to GitHub Pages
+      - name: Build website
         working-directory: ${{ env.working-directory }}
-        env:
-          INTERNAL_STATIC_DOCS: "0"
-        run: |
-          unset FB_INTERNAL
-          git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
-          git config --global user.name "${GITHUB_ACTOR}"
-          echo "machine github.com login ${GITHUB_ACTOR} password ${{ secrets.GITHUB_TOKEN }}" > ~/.netrc
-          GIT_USER=${GITHUB_ACTOR} USE_SSH=false yarn deploy
+        run: yarn build-external
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

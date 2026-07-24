@@ -111,8 +111,11 @@ message SetVariableResponse {
 
 message SourceBreakpoint {
   int64 line = 1;
-  string condition = 2;
-  string log_message = 4;
+  optional string condition = 2;
+  optional string hit_condition = 3;
+  optional string log_message = 4;
+  optional int64 column = 5;
+  optional string mode = 6;
 }
 
 message SetBreakpointsRequest {

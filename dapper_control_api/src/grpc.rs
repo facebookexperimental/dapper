@@ -288,17 +288,11 @@ where
                     .into_iter()
                     .map(|bp| SourceBreakpoint {
                         line: bp.line,
-                        condition: if bp.condition.is_empty() {
-                            None
-                        } else {
-                            Some(bp.condition)
-                        },
-                        log_message: if bp.log_message.is_empty() {
-                            None
-                        } else {
-                            Some(bp.log_message)
-                        },
-                        ..Default::default()
+                        column: bp.column,
+                        condition: bp.condition,
+                        hit_condition: bp.hit_condition,
+                        log_message: bp.log_message,
+                        mode: bp.mode,
                     })
                     .collect()
             } else {
@@ -785,8 +779,11 @@ impl DapperControlPlane for DapperControlPlaneClient {
             .iter()
             .map(|bp| dapper_control_proto::SourceBreakpoint {
                 line: bp.line,
-                condition: bp.condition.clone().unwrap_or_default(),
-                log_message: bp.log_message.clone().unwrap_or_default(),
+                condition: bp.condition.clone(),
+                hit_condition: bp.hit_condition.clone(),
+                log_message: bp.log_message.clone(),
+                column: bp.column,
+                mode: bp.mode.clone(),
             })
             .collect();
         let lines: Vec<i64> = breakpoint_specs.iter().map(|bp| bp.line).collect();
@@ -877,6 +874,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
 
@@ -912,10 +910,14 @@ mod tests {
 
     struct TestServer {
         stop_was_called: Arc<AtomicBool>,
+        breakpoint_specs: Arc<Mutex<Vec<SourceBreakpoint>>>,
     }
     impl TestServer {
         fn new(stop_was_called: Arc<AtomicBool>) -> Self {
-            TestServer { stop_was_called }
+            TestServer {
+                stop_was_called,
+                breakpoint_specs: Arc::new(Mutex::new(Vec::new())),
+            }
         }
     }
     #[async_trait::async_trait]
@@ -1062,6 +1064,11 @@ mod tests {
             clear_existing: bool,
             breakpoint_specs: &[SourceBreakpoint],
         ) -> anyhow::Result<ControlPlaneResult<dapper_session::SetBreakpointsResult>> {
+            *self
+                .breakpoint_specs
+                .lock()
+                .expect("breakpoint recorder mutex should not be poisoned") =
+                breakpoint_specs.to_vec();
             let breakpoints = breakpoint_specs
                 .iter()
                 .map(|bp| dapper_session::BreakpointInfo {
@@ -1163,6 +1170,60 @@ mod tests {
                 context: None,
             })
         }
+    }
+
+    async fn round_trip_breakpoint_specs(
+        breakpoint_specs: &[SourceBreakpoint],
+    ) -> anyhow::Result<Vec<SourceBreakpoint>> {
+        let server = TestServer::new(Arc::new(AtomicBool::new(false)));
+        let recorded_specs = Arc::clone(&server.breakpoint_specs);
+        let control_plane_server = serve(None, server).await?;
+        tokio::task::yield_now().await;
+
+        let client = DapperControlPlaneClient::for_port(control_plane_server.port);
+        let result = client
+            .set_breakpoints("/path/to/file.py", true, breakpoint_specs)
+            .await;
+        control_plane_server.handle.abort();
+        result?;
+
+        let specs = recorded_specs
+            .lock()
+            .expect("breakpoint recorder mutex should not be poisoned")
+            .clone();
+        Ok(specs)
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_grpc_preserves_source_breakpoint_metadata() -> anyhow::Result<()> {
+        let expected = SourceBreakpoint {
+            line: 42,
+            column: Some(7),
+            condition: Some("x > 0".into()),
+            hit_condition: Some("3".into()),
+            log_message: Some("hit {x}".into()),
+            mode: Some("hardware".into()),
+        };
+
+        let recorded = round_trip_breakpoint_specs(std::slice::from_ref(&expected)).await?;
+        assert_eq!(recorded, vec![expected]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_grpc_preserves_present_empty_strings() -> anyhow::Result<()> {
+        let expected = SourceBreakpoint {
+            line: 42,
+            condition: Some(String::new()),
+            hit_condition: Some(String::new()),
+            log_message: Some(String::new()),
+            mode: Some(String::new()),
+            ..Default::default()
+        };
+
+        let recorded = round_trip_breakpoint_specs(std::slice::from_ref(&expected)).await?;
+        assert_eq!(recorded, vec![expected]);
+        Ok(())
     }
 
     #[tokio::test]

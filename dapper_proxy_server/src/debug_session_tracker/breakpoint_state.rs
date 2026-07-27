@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use dapper_dap_protocol::data_types::Breakpoint;
+use dapper_dap_protocol::data_types::BreakpointId;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::enums::BreakpointEventReason;
@@ -113,6 +114,17 @@ impl BreakpointState {
             .insert(original_path.to_string(), resolved_path.to_string());
     }
 
+    fn event_column(bp_id: BreakpointId, column: Option<i64>) -> Option<i64> {
+        match column {
+            Some(column) if column >= 0 => Some(column),
+            Some(column) => {
+                tracing::debug!(bp_id = ?bp_id, column, "Ignoring negative column in breakpoint event");
+                None
+            }
+            None => None,
+        }
+    }
+
     /// Apply a breakpoint event from the debug adapter to update tracked state.
     /// The DAP spec says the `id` field identifies the target breakpoint, and
     /// other attributes provide new values.
@@ -153,6 +165,9 @@ impl BreakpointState {
                             tracing::debug!(bp_id = ?bp_id, line = line, "Ignoring negative line in breakpoint changed event");
                         }
                     }
+                    if let Some(column) = Self::event_column(bp_id, bp.column) {
+                        moved.column = Some(column);
+                    }
                     self.breakpoints
                         .entry(new_path.to_string())
                         .or_default()
@@ -171,6 +186,9 @@ impl BreakpointState {
                     } else {
                         tracing::debug!(bp_id = ?bp_id, line = line, "Ignoring negative line in breakpoint changed event");
                     }
+                }
+                if let Some(column) = Self::event_column(bp_id, bp.column) {
+                    existing.column = Some(column);
                 }
             }
             BreakpointEventReason::Removed => {
@@ -223,6 +241,7 @@ impl BreakpointState {
                     line,
                     verified: bp.verified,
                     id: Some(bp_id),
+                    column: Self::event_column(bp_id, bp.column),
                     condition: None,
                     log_message: None,
                     ..Default::default()
@@ -484,6 +503,7 @@ mod tests {
                 id: Some(BreakpointId(1)),
                 verified: true,
                 line: Some(12),
+                column: Some(4),
                 ..Default::default()
             },
         );
@@ -491,17 +511,19 @@ mod tests {
         let bps = state.get_breakpoints("/test.rs");
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0].line, 12);
+        assert_eq!(bps[0].column, Some(4));
         assert!(bps[0].verified);
         assert_eq!(bps[1].line, 20);
     }
 
     #[test]
-    fn test_apply_breakpoint_event_changed_preserves_line_when_none() {
+    fn test_apply_breakpoint_event_changed_preserves_omitted_or_negative_coordinates() {
         let mut state = BreakpointState::new();
         state.update_breakpoints(
             "/test.rs",
             vec![BreakpointInfo {
                 line: 10,
+                column: Some(5),
                 verified: false,
                 id: Some(BreakpointId(1)),
                 ..Default::default()
@@ -521,7 +543,23 @@ mod tests {
         let bps = state.get_breakpoints("/test.rs");
         assert_eq!(bps.len(), 1);
         assert_eq!(bps[0].line, 10);
+        assert_eq!(bps[0].column, Some(5));
         assert!(bps[0].verified);
+
+        state.apply_breakpoint_event(
+            &BreakpointEventReason::Changed,
+            &Breakpoint {
+                id: Some(BreakpointId(1)),
+                verified: true,
+                line: Some(-1),
+                column: Some(-1),
+                ..Default::default()
+            },
+        );
+
+        let bps = state.get_breakpoints("/test.rs");
+        assert_eq!(bps[0].line, 10);
+        assert_eq!(bps[0].column, Some(5));
     }
 
     #[test]
@@ -570,6 +608,7 @@ mod tests {
                 id: Some(BreakpointId(5)),
                 verified: true,
                 line: Some(42),
+                column: Some(7),
                 source: Some(Source {
                     path: Some("/test.rs".to_string()),
                     ..Default::default()
@@ -581,8 +620,33 @@ mod tests {
         let bps = state.get_breakpoints("/test.rs");
         assert_eq!(bps.len(), 1);
         assert_eq!(bps[0].line, 42);
+        assert_eq!(bps[0].column, Some(7));
         assert!(bps[0].verified);
         assert_eq!(bps[0].id, Some(BreakpointId(5)));
+    }
+
+    #[test]
+    fn test_apply_breakpoint_event_new_ignores_negative_column() {
+        let mut state = BreakpointState::new();
+
+        state.apply_breakpoint_event(
+            &BreakpointEventReason::New,
+            &Breakpoint {
+                id: Some(BreakpointId(5)),
+                verified: true,
+                line: Some(42),
+                column: Some(-1),
+                source: Some(Source {
+                    path: Some("/test.rs".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let bps = state.get_breakpoints("/test.rs");
+        assert_eq!(bps.len(), 1);
+        assert_eq!(bps[0].column, None);
     }
 
     #[test]
@@ -634,6 +698,7 @@ mod tests {
                 id: Some(BreakpointId(1)),
                 verified: true,
                 line: Some(12),
+                column: Some(6),
                 source: Some(Source {
                     path: Some("/new/path.rs".to_string()),
                     ..Default::default()
@@ -648,8 +713,44 @@ mod tests {
         let bps = state.get_breakpoints("/new/path.rs");
         assert_eq!(bps.len(), 1);
         assert_eq!(bps[0].line, 12);
+        assert_eq!(bps[0].column, Some(6));
         assert_eq!(bps[0].id, Some(BreakpointId(1)));
         assert_eq!(bps[0].condition, Some("x > 5".to_string()));
+    }
+
+    #[test]
+    fn test_apply_breakpoint_event_changed_move_ignores_negative_coordinates() {
+        let mut state = BreakpointState::new();
+        state.update_breakpoints(
+            "/old/path.rs",
+            vec![BreakpointInfo {
+                line: 10,
+                column: Some(5),
+                verified: true,
+                id: Some(BreakpointId(1)),
+                ..Default::default()
+            }],
+        );
+
+        state.apply_breakpoint_event(
+            &BreakpointEventReason::Changed,
+            &Breakpoint {
+                id: Some(BreakpointId(1)),
+                verified: true,
+                line: Some(-1),
+                column: Some(-1),
+                source: Some(Source {
+                    path: Some("/new/path.rs".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        let bps = state.get_breakpoints("/new/path.rs");
+        assert_eq!(bps.len(), 1);
+        assert_eq!(bps[0].line, 10);
+        assert_eq!(bps[0].column, Some(5));
     }
 
     #[test]

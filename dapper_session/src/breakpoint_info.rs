@@ -25,12 +25,17 @@ pub struct BreakpointInfo {
     pub condition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_message: Option<String>,
+    #[serde(skip)]
+    pub requested: Option<SourceBreakpoint>,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
     pub extra: IndexMap<String, Value>,
 }
 
 impl From<&BreakpointInfo> for SourceBreakpoint {
     fn from(bp: &BreakpointInfo) -> Self {
+        if let Some(requested) = &bp.requested {
+            return requested.clone();
+        }
         Self {
             line: bp.line,
             condition: bp.condition.clone(),

@@ -268,6 +268,7 @@ pub(crate) fn breakpoints_with_fallback(
                 id: bp.id,
                 condition: spec.and_then(|s| s.condition.clone()),
                 log_message: spec.and_then(|s| s.log_message.clone()),
+                requested: spec.cloned(),
                 ..Default::default()
             })
         })
@@ -304,6 +305,31 @@ mod tests {
         assert_eq!(sbp.line, 42);
         assert_eq!(sbp.condition, Some("x > 0".into()));
         assert_eq!(sbp.log_message, Some("hit".into()));
+    }
+
+    #[test]
+    fn test_breakpoints_preserve_requested_identity_after_resolution() {
+        let spec = SourceBreakpoint {
+            line: 42,
+            column: Some(7),
+            condition: Some("x > 0".into()),
+            hit_condition: Some("3".into()),
+            log_message: Some("hit".into()),
+            mode: Some("hardware".into()),
+        };
+        let breakpoints = breakpoints_with_fallback(
+            &[Breakpoint {
+                verified: true,
+                line: Some(43),
+                column: Some(9),
+                ..Default::default()
+            }],
+            std::slice::from_ref(&spec),
+        );
+
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0].line, 43);
+        assert_eq!(SourceBreakpoint::from(&breakpoints[0]), spec);
     }
 
     #[test]

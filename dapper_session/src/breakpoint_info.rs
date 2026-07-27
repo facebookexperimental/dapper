@@ -22,9 +22,15 @@ pub struct BreakpointInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<BreakpointId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     #[serde(skip)]
     pub requested: Option<SourceBreakpoint>,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
@@ -38,9 +44,11 @@ impl From<&BreakpointInfo> for SourceBreakpoint {
         }
         Self {
             line: bp.line,
+            column: bp.column,
             condition: bp.condition.clone(),
+            hit_condition: bp.hit_condition.clone(),
             log_message: bp.log_message.clone(),
-            ..Default::default()
+            mode: bp.mode.clone(),
         }
     }
 }
@@ -51,6 +59,7 @@ impl BreakpointInfo {
             id: self.id,
             verified: self.verified,
             line: Some(self.line),
+            column: self.column,
             source: Some(Source {
                 name: Some(source_name.to_string()),
                 path: Some(source_path.to_string()),

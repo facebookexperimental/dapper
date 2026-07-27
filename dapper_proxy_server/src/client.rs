@@ -1069,9 +1069,11 @@ pub struct ListenerPayload {
 #[cfg(test)]
 mod tests {
     use dapper_dap_protocol::capabilities::Capabilities;
+    use dapper_dap_protocol::data_types::Breakpoint;
     use dapper_dap_protocol::data_types::ThreadId;
     use dapper_dap_protocol::enums::StoppedReason;
     use dapper_dap_protocol::events::StoppedEventBody;
+    use dapper_dap_protocol::responses::SetBreakpointsResponseBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
 
     use super::*;
@@ -1143,6 +1145,112 @@ mod tests {
             DapperConfig::default(),
         );
         (client, rx)
+    }
+
+    fn complete_set_breakpoints_request(
+        request: ProxyRequest,
+        resolved_column: Option<i64>,
+    ) -> Vec<SourceBreakpoint> {
+        let ProxyRequest {
+            command, result, ..
+        } = request;
+        let Command::Debugger(dap::Message::Request(dap_request)) = command else {
+            panic!("expected a debugger request");
+        };
+        let request_seq = dap_request.seq;
+        let RequestCommand::SetBreakpoints(arguments) = dap_request.command else {
+            panic!("expected a setBreakpoints request");
+        };
+        let specs = arguments.breakpoints.unwrap_or_default();
+        let breakpoints = specs
+            .iter()
+            .enumerate()
+            .map(|(index, breakpoint)| Breakpoint {
+                id: Some((index as i64 + 1).into()),
+                verified: true,
+                line: Some(breakpoint.line),
+                column: resolved_column.or(breakpoint.column),
+                ..Default::default()
+            })
+            .collect();
+
+        let (messages_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
+        let messages = messages_tx.subscribe();
+        messages_tx
+            .send(Arc::new(
+                dap::Response {
+                    seq: Seq(1),
+                    request_seq,
+                    success: true,
+                    message: None,
+                    body: ResponseBody::SetBreakpoints(SetBreakpointsResponseBody {
+                        breakpoints,
+                        ..Default::default()
+                    }),
+                }
+                .into(),
+            ))
+            .expect("response receiver should remain open");
+        result
+            .send(CommandResult::Debugger(ListenerPayload {
+                seq: request_seq,
+                messages,
+            }))
+            .expect("client should wait for the response");
+        specs
+    }
+
+    fn spawn_set_breakpoints_mock_with_resolved_columns(
+        mut rx: mpsc::UnboundedReceiver<ProxyRequest>,
+        resolved_columns: Vec<Option<i64>>,
+    ) {
+        tokio::spawn(async move {
+            for resolved_column in resolved_columns {
+                let request = rx.recv().await.expect("expected a proxy request");
+                complete_set_breakpoints_request(request, resolved_column);
+            }
+        });
+    }
+
+    async fn assert_requested_breakpoint_survives_resolution(
+        requested_column: Option<i64>,
+        resolved_column: i64,
+    ) {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_set_breakpoints_mock_with_resolved_columns(
+            rx,
+            vec![Some(resolved_column), Some(resolved_column)],
+        );
+        let requested = SourceBreakpoint {
+            line: 10,
+            column: requested_column,
+            ..Default::default()
+        };
+
+        let first = client
+            .set_breakpoints("/test.rs", false, std::slice::from_ref(&requested))
+            .await
+            .expect("setting the initial breakpoint should succeed");
+        assert_eq!(first.breakpoints.len(), 1);
+        assert_eq!(first.breakpoints[0].column, Some(resolved_column));
+
+        let second = client
+            .set_breakpoints("/test.rs", false, std::slice::from_ref(&requested))
+            .await
+            .expect("setting the same breakpoint again should succeed");
+        assert_eq!(second.breakpoints.len(), 1);
+        assert_eq!(second.breakpoints[0].column, Some(resolved_column));
+        assert_eq!(SourceBreakpoint::from(&second.breakpoints[0]), requested);
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_preserves_line_only_identity_after_resolution() {
+        assert_requested_breakpoint_survives_resolution(None, 2).await;
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_preserves_explicit_column_identity_after_resolution() {
+        assert_requested_breakpoint_survives_resolution(Some(3), 4).await;
     }
 
     fn entry(filter: &str, condition: Option<&str>) -> ExceptionFilterEntry {

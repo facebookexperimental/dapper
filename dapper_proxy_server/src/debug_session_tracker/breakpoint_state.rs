@@ -266,8 +266,11 @@ pub(crate) fn breakpoints_with_fallback(
                 line,
                 verified: bp.verified,
                 id: bp.id,
+                column: bp.column.or_else(|| spec.and_then(|s| s.column)),
                 condition: spec.and_then(|s| s.condition.clone()),
+                hit_condition: spec.and_then(|s| s.hit_condition.clone()),
                 log_message: spec.and_then(|s| s.log_message.clone()),
+                mode: spec.and_then(|s| s.mode.clone()),
                 requested: spec.cloned(),
                 ..Default::default()
             })
@@ -296,19 +299,30 @@ mod tests {
             line: 42,
             verified: true,
             id: Some(BreakpointId(5)),
+            column: Some(7),
             condition: Some("x > 0".into()),
+            hit_condition: Some("3".into()),
             log_message: Some("hit".into()),
+            mode: Some("hardware".into()),
             ..Default::default()
         };
 
         let sbp = SourceBreakpoint::from(&info);
-        assert_eq!(sbp.line, 42);
-        assert_eq!(sbp.condition, Some("x > 0".into()));
-        assert_eq!(sbp.log_message, Some("hit".into()));
+        assert_eq!(
+            sbp,
+            SourceBreakpoint {
+                line: 42,
+                column: Some(7),
+                condition: Some("x > 0".into()),
+                hit_condition: Some("3".into()),
+                log_message: Some("hit".into()),
+                mode: Some("hardware".into()),
+            }
+        );
     }
 
     #[test]
-    fn test_breakpoints_preserve_requested_identity_after_resolution() {
+    fn test_breakpoints_preserve_resolved_coordinates_and_request_metadata() {
         let spec = SourceBreakpoint {
             line: 42,
             column: Some(7),
@@ -328,8 +342,56 @@ mod tests {
         );
 
         assert_eq!(breakpoints.len(), 1);
-        assert_eq!(breakpoints[0].line, 43);
-        assert_eq!(SourceBreakpoint::from(&breakpoints[0]), spec);
+        let breakpoint = &breakpoints[0];
+        assert_eq!(breakpoint.line, 43);
+        assert_eq!(breakpoint.column, Some(9));
+        assert_eq!(breakpoint.condition, spec.condition);
+        assert_eq!(breakpoint.hit_condition, spec.hit_condition);
+        assert_eq!(breakpoint.log_message, spec.log_message);
+        assert_eq!(breakpoint.mode, spec.mode);
+        assert_eq!(SourceBreakpoint::from(breakpoint), spec);
+
+        let round_tripped: BreakpointInfo = serde_json::from_value(
+            serde_json::to_value(breakpoint).expect("breakpoint metadata should serialize"),
+        )
+        .expect("breakpoint metadata should deserialize");
+        assert_eq!(round_tripped.condition, breakpoint.condition);
+        assert_eq!(round_tripped.hit_condition, breakpoint.hit_condition);
+        assert_eq!(round_tripped.log_message, breakpoint.log_message);
+        assert_eq!(round_tripped.mode, breakpoint.mode);
+        assert_eq!(round_tripped.requested, None);
+        assert_eq!(
+            SourceBreakpoint::from(&round_tripped),
+            SourceBreakpoint {
+                line: 43,
+                column: Some(9),
+                condition: spec.condition,
+                hit_condition: spec.hit_condition,
+                log_message: spec.log_message,
+                mode: spec.mode,
+            }
+        );
+    }
+
+    #[test]
+    fn test_breakpoints_fall_back_to_requested_coordinates() {
+        let spec = SourceBreakpoint {
+            line: 42,
+            column: Some(7),
+            ..Default::default()
+        };
+        let breakpoints = breakpoints_with_fallback(
+            &[Breakpoint {
+                verified: true,
+                ..Default::default()
+            }],
+            std::slice::from_ref(&spec),
+        );
+
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0].line, 42);
+        assert_eq!(breakpoints[0].column, Some(7));
+        assert_eq!(breakpoints[0].requested, Some(spec));
     }
 
     #[test]
@@ -379,6 +441,7 @@ mod tests {
             line: 42,
             verified: true,
             id: Some(BreakpointId(5)),
+            column: Some(7),
             condition: None,
             log_message: None,
             ..Default::default()
@@ -386,6 +449,7 @@ mod tests {
 
         let bp = info.to_dap_breakpoint("/src/main.rs", "main.rs");
         assert_eq!(bp.line, Some(42));
+        assert_eq!(bp.column, Some(7));
         assert!(bp.verified);
         assert_eq!(bp.id, Some(BreakpointId(5)));
         let source = bp.source.unwrap();

@@ -377,17 +377,12 @@ impl ProxyServer {
 
             tracing::trace!(target: "dap", source = %DapSource::Backend, message = ?message);
 
-            if let Message::Response(response) = &message {
-                debug_session_tracker.track_execution_response_from_backend(response);
-            }
-
-            // Only clone for broadcast when there are active listeners.
-            // receiver_count() is an atomic load — essentially free.
-            // Wrapping in Arc means receivers get a cheap refcount increment
-            // instead of deep-cloning the entire Message.
-            if to_listeners_tx.receiver_count() > 0 {
-                let _ = to_listeners_tx.send(Arc::new(message.clone()));
-            }
+            Self::track_then_publish_backend_message(&debug_session_tracker, &message, || {
+                // Avoid cloning nested DAP payloads when no listener is subscribed.
+                if to_listeners_tx.receiver_count() > 0 {
+                    let _ = to_listeners_tx.send(Arc::new(message.clone()));
+                }
+            });
 
             // Assign sequence numbers for main client display
             let next_seq = Seq(event_seq_counter);
@@ -415,13 +410,30 @@ impl ProxyServer {
                     }
                 }
                 _ => {
-                    debug_session_tracker.track_message_to_client(&message);
+                    debug_session_tracker.track_message_metadata_to_client(&message);
                     main_client.send(message).await?;
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn track_then_publish_backend_message(
+        debug_session_tracker: &DebugSessionTracker,
+        message: &Message,
+        publish: impl FnOnce(),
+    ) {
+        match message {
+            Message::Response(response) => {
+                debug_session_tracker.track_execution_response_from_backend(response);
+            }
+            Message::Event(event) => {
+                debug_session_tracker.track_execution_event_from_backend(event);
+            }
+            _ => {}
+        }
+        publish();
     }
 
     /// Reads messages from the main VS Code client and writes them directly
@@ -1118,6 +1130,24 @@ mod tests {
             matches!(broadcast_msg.as_ref(), Message::Event(e) if matches!(e.event, EventKind::Stopped(_))),
             "Listener should receive the Stopped event"
         );
+    }
+
+    #[test]
+    fn backend_event_updates_state_before_publish() {
+        let tracker = DebugSessionTracker::new(
+            SessionId::from("publish-order-test"),
+            DapperConfig::default(),
+            None,
+        );
+        let message = make_stopped_event();
+        let mut published = false;
+
+        ProxyServer::track_then_publish_backend_message(&tracker, &message, || {
+            assert!(tracker.is_stopped());
+            published = true;
+        });
+
+        assert!(published);
     }
 
     #[tokio::test]

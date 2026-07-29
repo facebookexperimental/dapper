@@ -65,8 +65,6 @@ pub struct DebugSessionTracker {
 impl DebugSessionTracker {
     /// Create a new debug session tracker
     ///
-    /// Tracking is done via direct function calls (track_message_from_client, track_message_to_client).
-    ///
     /// # Arguments
     /// * `session_id` - Unique identifier for this debug session
     /// * `config` - Dapper configuration (the caller's single loaded copy)
@@ -119,10 +117,7 @@ impl DebugSessionTracker {
                         self.track_breakpoint_request(request.seq, source_path, specs);
                     }
                 }
-                // Only track for the main client; secondary clients get their
-                // responses via the broadcast subscription (not through
-                // `track_message_to_client`) and update the tracker via the
-                // explicit `update_exception_filters` setter instead.
+                // Secondary clients record adapter-accepted filters explicitly.
                 RequestCommand::SetExceptionBreakpoints(args)
                     if client_type == ClientType::Main =>
                 {
@@ -151,8 +146,8 @@ impl DebugSessionTracker {
         ExecutionState::track_request(&self.inner, request);
     }
 
-    /// Track a message from the backend going to the main client
-    pub fn track_message_to_client(&self, message: &Message) {
+    #[cfg(test)]
+    pub(crate) fn track_message_to_client(&self, message: &Message) {
         self.track_message_metadata_to_client(message);
         match message {
             Message::Response(response) => ExecutionState::track_response(&self.inner, response),
@@ -276,11 +271,7 @@ impl DebugSessionTracker {
         });
     }
 
-    /// Replace the installed exception filter set wholesale. Used by
-    /// secondary clients (control-plane MCP/CLI) whose responses don't
-    /// reach `track_message_to_client`. Caller is responsible for passing
-    /// the post-builder *effective* set (i.e. what the adapter actually
-    /// accepted, with any unsupported conditions already dropped).
+    /// Replace a secondary client's filters with the adapter-accepted set.
     pub fn update_exception_filters(&self, entries: Vec<ExceptionFilterEntry>) {
         self.with_inner(|inner| {
             inner.exception_filter_state.replace(entries);

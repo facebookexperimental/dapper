@@ -24,6 +24,8 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::events::EventKind;
 use dapper_dap_protocol::protocol::Event;
 use dapper_dap_protocol::protocol::Message;
+use dapper_dap_protocol::protocol::Request;
+use dapper_dap_protocol::protocol::Response;
 use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::responses::ResponseBody;
 pub use dapper_session::BreakpointInfo;
@@ -143,12 +145,23 @@ impl DebugSessionTracker {
                 _ => {}
             }
         }
+    }
 
-        ExecutionState::track_message_from_client(&self.inner, message);
+    pub(crate) fn track_execution_request_to_backend(&self, request: &Request) {
+        ExecutionState::track_request(&self.inner, request);
     }
 
     /// Track a message from the backend going to the main client
     pub fn track_message_to_client(&self, message: &Message) {
+        self.track_message_metadata_to_client(message);
+        match message {
+            Message::Response(response) => ExecutionState::track_response(&self.inner, response),
+            Message::Event(event) => self.track_execution_event_from_backend(event),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn track_message_metadata_to_client(&self, message: &Message) {
         if let Message::Response(response) = message {
             if response.success {
                 if let ResponseBody::SetBreakpoints(bp_body) = &response.body {
@@ -192,20 +205,25 @@ impl DebugSessionTracker {
                             .apply_breakpoint_event(&bp_event.reason, &bp_event.breakpoint);
                     });
                 }
-                EventKind::Capabilities(caps_event) => {
-                    // Absorb post-initialize capability updates so gates see them.
-                    self.with_inner(|inner| {
-                        apply_capabilities_event(
-                            &mut inner.adapter_capabilities,
-                            caps_event.capabilities.clone(),
-                        );
-                    });
-                }
                 _ => {}
             }
         }
+    }
 
-        ExecutionState::track_message_to_client(&self.inner, message);
+    pub(crate) fn track_execution_response_from_backend(&self, response: &Response) {
+        ExecutionState::track_response(&self.inner, response);
+    }
+
+    pub(crate) fn track_execution_event_from_backend(&self, event: &Event) {
+        if let EventKind::Capabilities(caps_event) = &event.event {
+            self.with_inner(|inner| {
+                apply_capabilities_event(
+                    &mut inner.adapter_capabilities,
+                    caps_event.capabilities.clone(),
+                );
+            });
+        }
+        ExecutionState::track_event(&self.inner, event);
     }
 
     pub fn get_breakpoints(&self, source_path: &str) -> Vec<BreakpointInfo> {
@@ -858,7 +876,8 @@ mod tests {
                 ..Default::default()
             }),
         };
-        tracker.track_message_from_client(&Message::Request(request), ClientType::Main);
+        tracker.track_message_from_client(&Message::Request(request.clone()), ClientType::Main);
+        tracker.track_execution_request_to_backend(&request);
 
         let execution_state = tracker.get_execution_state();
         assert!(execution_state.is_all_running());
@@ -896,7 +915,11 @@ mod tests {
                 ..Default::default()
             }),
         };
-        tracker.track_message_from_client(&Message::Request(continue_request), ClientType::Main);
+        tracker.track_message_from_client(
+            &Message::Request(continue_request.clone()),
+            ClientType::Main,
+        );
+        tracker.track_execution_request_to_backend(&continue_request);
 
         let continue_response = Response {
             seq: 200.into(),
@@ -908,6 +931,7 @@ mod tests {
                 ..Default::default()
             }),
         };
+        tracker.track_execution_response_from_backend(&continue_response);
         tracker.track_message_to_client(&Message::Response(continue_response));
         assert!(!tracker.is_stopped());
 

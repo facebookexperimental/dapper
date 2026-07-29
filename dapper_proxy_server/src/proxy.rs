@@ -294,9 +294,6 @@ impl ProxyServer {
             let result = match request.command {
                 Command::Status => CommandResult::Status,
                 Command::Debugger(message) => {
-                    debug_session_tracker
-                        .track_message_from_client(&message, ClientType::Secondary);
-
                     tracing::debug!(
                         "Forwarding message to backend from client {client_id:?}: {message:?}"
                     );
@@ -318,9 +315,11 @@ impl ProxyServer {
                             // tool input piping a user-specified seq) through
                             // this path without translation. See the doc on
                             // `translate_cancel` for the matching invariant.
+                            debug_session_tracker.track_execution_request_to_backend(&message);
                             let msg: Message = message.into();
+                            debug_session_tracker
+                                .track_message_from_client(&msg, ClientType::Secondary);
                             tracing::trace!(target: "dap", source = %DapSource::ControlPlane, message = ?msg);
-
                             let mut writer = backend_write.lock().await;
                             writer.send(msg).await?;
                         }
@@ -378,6 +377,10 @@ impl ProxyServer {
 
             tracing::trace!(target: "dap", source = %DapSource::Backend, message = ?message);
 
+            if let Message::Response(response) = &message {
+                debug_session_tracker.track_execution_response_from_backend(response);
+            }
+
             // Only clone for broadcast when there are active listeners.
             // receiver_count() is an atomic load — essentially free.
             // Wrapping in Arc means receivers get a cheap refcount increment
@@ -407,7 +410,7 @@ impl ProxyServer {
                     let backend_seq = BackendSeq(resp.request_seq);
                     if let Some(client_seq) = remapper.unmap(backend_seq) {
                         resp.request_seq = client_seq.0;
-                        debug_session_tracker.track_message_to_client(&message);
+                        debug_session_tracker.track_message_metadata_to_client(&message);
                         main_client.send(message).await?;
                     }
                 }
@@ -455,7 +458,7 @@ impl ProxyServer {
                     // Map after translation so the response reader can find
                     // the mapping when the backend's response arrives.
                     remapper.map(client_seq, BackendSeq(seq));
-
+                    debug_session_tracker.track_execution_request_to_backend(&request);
                     let msg: Message = request.into();
                     tracing::trace!(target: "dap", source = %DapSource::MainClient, message = ?msg);
                     let mut writer = backend_write.lock().await;
@@ -527,8 +530,11 @@ mod tests {
     use dapper_dap_protocol::protocol::Event;
     use dapper_dap_protocol::protocol::Request;
     use dapper_dap_protocol::protocol::Response;
+    use dapper_dap_protocol::requests::ContinueArguments;
     use dapper_dap_protocol::requests::InitializeRequestArguments;
     use dapper_dap_protocol::requests::RequestCommand;
+    use dapper_dap_protocol::requests::ReverseContinueArguments;
+    use dapper_dap_protocol::responses::ContinueResponseBody;
     use dapper_dap_protocol::responses::ResponseBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
     use dapper_session::NavigateResult;
@@ -618,6 +624,155 @@ mod tests {
             ..Default::default()
         }))
         .into()
+    }
+
+    async fn assert_secondary_execution_response_updates_state(
+        command: RequestCommand,
+        response_body: ResponseBody,
+    ) {
+        let mut tp = TestProxy::new();
+
+        tp.mock_backend.send(make_stopped_event()).await.unwrap();
+        tp.main_client.recv().await.unwrap().unwrap();
+        assert!(tp.proxy_client.debug_session_tracker().is_stopped());
+
+        let request = Request::new(command);
+        let ListenerPayload { mut messages, .. } =
+            tp.proxy_client.send_message(request.into()).await.unwrap();
+        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
+        let forwarded_seq = match forwarded {
+            Message::Request(request) => request.seq,
+            other => panic!("expected Request, got {:?}", other.message_type()),
+        };
+
+        tp.mock_backend
+            .send(
+                Response {
+                    seq: Seq(0),
+                    request_seq: forwarded_seq,
+                    success: true,
+                    message: None,
+                    body: response_body,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        crate::client::helpers::wait_for_response(forwarded_seq, &mut messages)
+            .await
+            .unwrap();
+
+        let execution_state = tp
+            .proxy_client
+            .debug_session_tracker()
+            .get_execution_state();
+        assert!(execution_state.is_all_running());
+        assert!(execution_state.pending_execution_requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn secondary_continue_response_updates_execution_state() {
+        assert_secondary_execution_response_updates_state(
+            RequestCommand::Continue(ContinueArguments {
+                thread_id: ThreadId(1),
+                ..Default::default()
+            }),
+            ResponseBody::Continue(ContinueResponseBody {
+                all_threads_continued: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn secondary_reverse_continue_response_updates_execution_state() {
+        assert_secondary_execution_response_updates_state(
+            RequestCommand::ReverseContinue(ReverseContinueArguments {
+                thread_id: ThreadId(1),
+                single_thread: None,
+                ..Default::default()
+            }),
+            ResponseBody::ReverseContinue,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn main_and_secondary_execution_sequences_do_not_collide() {
+        let mut tp = TestProxy::new();
+        tp.mock_backend.send(make_stopped_event()).await.unwrap();
+        tp.main_client.recv().await.unwrap().unwrap();
+
+        let secondary_request = Request::new(RequestCommand::Continue(ContinueArguments {
+            thread_id: ThreadId(1),
+            ..Default::default()
+        }));
+        let ListenerPayload {
+            messages: mut secondary_messages,
+            ..
+        } = tp
+            .proxy_client
+            .send_message(secondary_request.into())
+            .await
+            .unwrap();
+        let secondary_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
+            Message::Request(request) => request.seq,
+            other => panic!("expected Request, got {:?}", other.message_type()),
+        };
+
+        let mut main_request = Request::new(RequestCommand::Continue(ContinueArguments {
+            thread_id: ThreadId(2),
+            ..Default::default()
+        }));
+        main_request.seq = secondary_seq;
+        tp.main_client.send(main_request.into()).await.unwrap();
+        let main_backend_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
+            Message::Request(request) => request.seq,
+            other => panic!("expected Request, got {:?}", other.message_type()),
+        };
+
+        tp.mock_backend
+            .send(
+                Response {
+                    seq: Seq(0),
+                    request_seq: main_backend_seq,
+                    success: false,
+                    message: Some("rejected".to_string()),
+                    body: ResponseBody::Continue(ContinueResponseBody::default()),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        tp.main_client.recv().await.unwrap().unwrap();
+
+        tp.mock_backend
+            .send(
+                Response {
+                    seq: Seq(0),
+                    request_seq: secondary_seq,
+                    success: true,
+                    message: None,
+                    body: ResponseBody::Continue(ContinueResponseBody {
+                        all_threads_continued: Some(true),
+                        ..Default::default()
+                    }),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        crate::client::helpers::wait_for_response(secondary_seq, &mut secondary_messages)
+            .await
+            .unwrap();
+
+        let state = tp
+            .proxy_client
+            .debug_session_tracker()
+            .get_execution_state();
+        assert!(state.is_all_running());
+        assert!(state.pending_execution_requests.is_empty());
     }
 
     fn make_cancel_request(seq: i64, request_id: Option<i64>) -> Request {

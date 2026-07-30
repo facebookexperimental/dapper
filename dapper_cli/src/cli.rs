@@ -11,7 +11,7 @@ use dapper_session::SessionId;
 #[derive(Parser)]
 #[command(name = "dapper")]
 #[command(about = "Debug Adapter Protocol (DAP) proxy, (de-)multiplexer, client, and MCP server")]
-#[command(version = "0.1.0")]
+#[command(version)]
 // Disable clap's auto-generated `help` subcommand so our `Help` variant
 // owns the slot. `--help` / `-h` are unaffected and still print clap's
 // terse synopsis. `dapper help` (without `--`) is the canonical

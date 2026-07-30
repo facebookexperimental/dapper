@@ -83,6 +83,20 @@ fn default_install_default_exception_breakpoints() -> bool {
 }
 
 impl DebugSessionConfig {
+    /// A session config for the given backend, all other fields at their defaults.
+    pub fn from_spawn(spawn_config: SpawnConfig) -> Self {
+        Self {
+            spawn_config,
+            debug_request: None,
+            breakpoints: Vec::new(),
+            metadata: HashMap::new(),
+            initialize_args: None,
+            init_timeout_secs: None,
+            install_default_exception_breakpoints: true,
+            child_sessions: None,
+        }
+    }
+
     /// Load a debug session configuration from a JSON file.
     ///
     /// For stdio spawn configs, `new_session` is forced to `true` so that the

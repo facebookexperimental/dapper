@@ -112,42 +112,21 @@ impl BackendMode {
                 let (first, rest) = cmd
                     .split_first()
                     .ok_or_else(|| anyhow::anyhow!("Process command cannot be empty"))?;
-                Ok(DebugSessionConfig {
-                    spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+                Ok(DebugSessionConfig::from_spawn(SpawnConfig::Stdio(
+                    StdioSpawnConfig {
                         cmd: first.clone(),
                         args: rest.to_vec(),
                         new_session: false,
-                    }),
-                    debug_request: None,
-                    breakpoints: Vec::new(),
-                    metadata: std::collections::HashMap::new(),
-                    initialize_args: None,
-                    init_timeout_secs: None,
-                    install_default_exception_breakpoints: true,
-                    child_sessions: None,
-                })
+                    },
+                )))
             }
-            BackendMode::Tcp { addr } => Ok(DebugSessionConfig {
-                spawn_config: SpawnConfig::Tcp(TcpSpawnConfig { addr }),
-                debug_request: None,
-                breakpoints: Vec::new(),
-                metadata: std::collections::HashMap::new(),
-                initialize_args: None,
-                init_timeout_secs: None,
-                install_default_exception_breakpoints: true,
-                child_sessions: None,
-            }),
+            BackendMode::Tcp { addr } => Ok(DebugSessionConfig::from_spawn(SpawnConfig::Tcp(
+                TcpSpawnConfig { addr },
+            ))),
             #[cfg(unix)]
-            BackendMode::Uds { path } => Ok(DebugSessionConfig {
-                spawn_config: SpawnConfig::Uds(UdsSpawnConfig { path }),
-                debug_request: None,
-                breakpoints: Vec::new(),
-                metadata: std::collections::HashMap::new(),
-                initialize_args: None,
-                init_timeout_secs: None,
-                install_default_exception_breakpoints: true,
-                child_sessions: None,
-            }),
+            BackendMode::Uds { path } => Ok(DebugSessionConfig::from_spawn(SpawnConfig::Uds(
+                UdsSpawnConfig { path },
+            ))),
             BackendMode::FromConfig { config_file, .. } => {
                 DebugSessionConfig::from_file(&config_file)
             }

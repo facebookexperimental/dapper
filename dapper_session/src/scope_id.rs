@@ -3,14 +3,23 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::fmt;
-use std::str::FromStr;
-
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::FromStr
+)]
 #[serde(transparent)]
+#[from(String, &str)]
 pub struct ScopeId(String);
 
 impl ScopeId {
@@ -23,35 +32,9 @@ impl ScopeId {
     }
 }
 
-impl fmt::Display for ScopeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 impl AsRef<str> for ScopeId {
     fn as_ref(&self) -> &str {
         &self.0
-    }
-}
-
-impl From<String> for ScopeId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for ScopeId {
-    fn from(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-}
-
-impl FromStr for ScopeId {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_owned()))
     }
 }
 

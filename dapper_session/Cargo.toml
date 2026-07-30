@@ -11,6 +11,7 @@ license = "MIT"
 anyhow = "1.0.103"
 chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-features = false }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
+derive_more = { version = "1.0.0", features = ["full"] }
 dirs = "6.0"
 indexmap = { version = "2.14.0", features = ["arbitrary", "rayon", "serde"] }
 schemars = { version = "1.2.1", features = ["indexmap2"] }

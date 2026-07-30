@@ -313,47 +313,29 @@ impl Proxy {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-        let result = tokio::select! {
-            result = proxy_server_handle => result,
+        let (result, needs_shutdown) = tokio::select! {
+            // No shutdown: the proxy server task has already torn itself down.
+            result = proxy_server_handle => (result, false),
             result = async {
                 match initializer_handle {
                     Some(handle) => handle.await,
                     None => std::future::pending().await,
                 }
-            } => {
-                match result {
-                    Ok(Ok(())) => Ok(Ok(())),
-                    Ok(Err(e)) => {
-                        tracing::error!("DAP initialization failed, shutting down proxy: {}", e);
-                        Self::graceful_shutdown(
-                            &cleanup_client,
-                            &proxy_server_abort,
-                            child_teardown_hook.as_ref(),
-                        )
-                        .await;
-                        Ok(Err(e))
-                    }
-                    Err(e) => {
-                        tracing::error!("DAP initializer task panicked, shutting down proxy: {}", e);
-                        Self::graceful_shutdown(
-                            &cleanup_client,
-                            &proxy_server_abort,
-                            child_teardown_hook.as_ref(),
-                        )
-                        .await;
-                        Err(e)
-                    }
+            } => match result {
+                // No shutdown: the idempotent catch-all teardown below covers it.
+                Ok(Ok(())) => (Ok(Ok(())), false),
+                Ok(Err(e)) => {
+                    tracing::error!("DAP initialization failed, shutting down proxy: {}", e);
+                    (Ok(Err(e)), true)
                 }
-            }
+                Err(e) => {
+                    tracing::error!("DAP initializer task panicked, shutting down proxy: {}", e);
+                    (Err(e), true)
+                }
+            },
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received SIGINT, shutting down gracefully...");
-                Self::graceful_shutdown(
-                    &cleanup_client,
-                    &proxy_server_abort,
-                    child_teardown_hook.as_ref(),
-                )
-                .await;
-                Ok(Ok(()))
+                (Ok(Ok(())), true)
             }
             _ = async {
                 #[cfg(unix)]
@@ -362,15 +344,18 @@ impl Proxy {
                 std::future::pending::<()>().await;
             } => {
                 tracing::info!("Received SIGTERM, shutting down gracefully...");
-                Self::graceful_shutdown(
-                    &cleanup_client,
-                    &proxy_server_abort,
-                    child_teardown_hook.as_ref(),
-                )
-                .await;
-                Ok(Ok(()))
+                (Ok(Ok(())), true)
             }
         };
+
+        if needs_shutdown {
+            Self::graceful_shutdown(
+                &cleanup_client,
+                &proxy_server_abort,
+                child_teardown_hook.as_ref(),
+            )
+            .await;
+        }
 
         // Catch-all: ensure children are torn down on any exit path (e.g. the
         // proxy server task ending on its own, which doesn't go through

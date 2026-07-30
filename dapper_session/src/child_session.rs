@@ -456,12 +456,7 @@ fn build_child_spawn_config(
                     reason: e.to_string(),
                 }
             })?;
-            Ok(SpawnConfig::Tcp(TcpSpawnConfig {
-                // The child connects to an already-running server; nothing to spawn.
-                cmd: PathBuf::new(),
-                args: Vec::new(),
-                addr,
-            }))
+            Ok(SpawnConfig::Tcp(TcpSpawnConfig { addr }))
         }
         ChildBackendTemplate::Uds { path } => {
             let path = resolve_string_template(path, context)?;
@@ -728,7 +723,7 @@ mod tests {
         // The lldb-dap-style handoff rule: reuse the parent's reusable server
         // backend. Also carries a declarative unsupportedMessage.
         let json = r#"{
-            "spawnConfig": { "type": "tcp", "cmd": "/usr/bin/lldb-dap", "addr": "127.0.0.1:12345" },
+            "spawnConfig": { "type": "tcp", "addr": "127.0.0.1:12345" },
             "childSessions": {
                 "autoSpawn": true,
                 "maxChildren": 4,
@@ -906,7 +901,6 @@ mod tests {
         match &child.spawn_config {
             SpawnConfig::Tcp(tcp) => {
                 assert_eq!(tcp.addr, "127.0.0.1:5678".parse().unwrap());
-                assert_eq!(tcp.cmd, PathBuf::new(), "connect-only child has no cmd");
             }
             other => panic!("expected tcp spawn config, got {other:?}"),
         }
@@ -953,7 +947,7 @@ mod tests {
     fn test_resolve_lldb_dap_parent_backend_tcp() {
         let parent: DebugSessionConfig = serde_json::from_str(
             r#"{
-                "spawnConfig": { "type": "tcp", "cmd": "/usr/bin/lldb-dap", "addr": "127.0.0.1:12345" },
+                "spawnConfig": { "type": "tcp", "addr": "127.0.0.1:12345" },
                 "childSessions": {
                     "autoSpawn": true,
                     "profile": {
@@ -1059,7 +1053,7 @@ mod tests {
         // incompatible, so no rule applies.
         let parent: DebugSessionConfig = serde_json::from_str(
             r#"{
-                "spawnConfig": { "type": "tcp", "cmd": "/x", "addr": "127.0.0.1:1" },
+                "spawnConfig": { "type": "tcp", "addr": "127.0.0.1:1" },
                 "childSessions": {
                     "autoSpawn": true,
                     "profile": {
@@ -1368,7 +1362,7 @@ mod tests {
         // the child reuses the parent's server endpoint verbatim.
         let parent: DebugSessionConfig = serde_json::from_str(
             r#"{
-                "spawnConfig": { "type": "tcp", "cmd": "", "addr": "127.0.0.1:9000" },
+                "spawnConfig": { "type": "tcp", "addr": "127.0.0.1:9000" },
                 "childSessions": { "autoSpawn": true, "maxDepth": 1, "maxChildren": 4, "profile": "lldb-dap" }
             }"#,
         )

@@ -128,11 +128,7 @@ impl BackendMode {
                 })
             }
             BackendMode::Tcp { addr } => Ok(DebugSessionConfig {
-                spawn_config: SpawnConfig::Tcp(TcpSpawnConfig {
-                    cmd: PathBuf::new(),
-                    args: Vec::new(),
-                    addr,
-                }),
+                spawn_config: SpawnConfig::Tcp(TcpSpawnConfig { addr }),
                 debug_request: None,
                 breakpoints: Vec::new(),
                 metadata: std::collections::HashMap::new(),
@@ -190,7 +186,6 @@ async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend> {
             Backend::from_process(&cmd, cfg.new_session).await
         }
         SpawnConfig::Tcp(cfg) => {
-            // TODO: Spawn the process first if cmd is specified, then connect
             tracing::info!("Connecting to debug adapter at {}", cfg.addr);
             Backend::from_tcp(&cfg.addr.ip().to_string(), cfg.addr.port()).await
         }

@@ -136,9 +136,7 @@ pub struct StdioSpawnConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcpSpawnConfig {
-    pub cmd: PathBuf,
-    #[serde(default)]
-    pub args: Vec<String>,
+    /// Socket address of an already-running DAP server to connect to.
     pub addr: SocketAddr,
 }
 
@@ -311,8 +309,6 @@ mod tests {
         assert!(json.contains(r#""type":"stdio"#));
 
         let tcp = SpawnConfig::Tcp(TcpSpawnConfig {
-            cmd: PathBuf::from("/usr/bin/lldb-dap"),
-            args: vec![],
             addr: "127.0.0.1:4711".parse().unwrap(),
         });
         let json = serde_json::to_string(&tcp).unwrap();
@@ -327,6 +323,27 @@ mod tests {
             let json = serde_json::to_string(&uds).unwrap();
             assert!(json.contains(r#""type":"uds"#));
             assert!(json.contains(r#""path":"/tmp/debug.sock""#));
+        }
+    }
+
+    #[test]
+    fn test_tcp_spawn_config_ignores_legacy_cmd_args() {
+        // Configs written when TcpSpawnConfig still required cmd/args must keep
+        // parsing after their removal: the keys are simply ignored.
+        let json = r#"{
+            "spawnConfig": {
+                "type": "tcp",
+                "cmd": "/usr/bin/lldb-dap",
+                "args": ["--port", "4711"],
+                "addr": "127.0.0.1:4711"
+            }
+        }"#;
+        let config: DebugSessionConfig = serde_json::from_str(json).unwrap();
+        match config.spawn_config {
+            SpawnConfig::Tcp(tcp) => {
+                assert_eq!(tcp.addr, "127.0.0.1:4711".parse().unwrap());
+            }
+            other => panic!("expected TCP spawn config, got {other:?}"),
         }
     }
 

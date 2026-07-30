@@ -26,7 +26,6 @@ use chrono::DateTime;
 use chrono::Local;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_with::serde_as;
 use strum::Display;
 
 pub mod child_session;
@@ -118,7 +117,6 @@ pub enum RequestType {
 }
 
 /// Session information for a dapper proxy instance
-#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SessionInfo {
     pub session_id: SessionId,

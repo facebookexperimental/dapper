@@ -80,6 +80,11 @@ pub use response::ThreadsResult;
 pub use response::VariablesResult;
 pub use response::WaitedEvent;
 
+/// User-specific temp directory for dapper artifacts.
+///
+/// `dapper_tracing` keeps a deliberate private copy of this function (it
+/// stays dependency-free); the two must agree so logs and session artifacts
+/// land under the same directory. Change both together.
 pub fn get_user_temp_dir() -> PathBuf {
     let base = env::temp_dir();
     #[cfg(unix)]

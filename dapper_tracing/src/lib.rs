@@ -23,6 +23,10 @@ use tracing_subscriber::layer::SubscriberExt;
 /// Get a user-specific temporary directory for dapper.
 /// On Unix, appends the username to avoid collisions on shared multi-user systems.
 /// On Windows, temp_dir() is already per-user.
+///
+/// Deliberate copy of `dapper_session::get_user_temp_dir` so this crate
+/// stays dependency-free; the two must agree so logs and session artifacts
+/// land under the same directory. Change both together.
 fn get_user_temp_dir() -> PathBuf {
     let base = std::env::temp_dir();
     #[cfg(unix)]

@@ -48,12 +48,8 @@ pub fn default_log_file_path() -> PathBuf {
 
 pub type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
 
-pub fn default_filter() -> EnvFilter {
-    EnvFilter::from_default_env()
-}
-
 pub fn default_layers() -> Result<Vec<BoxedLayer>> {
-    let filter = default_filter();
+    let filter = EnvFilter::from_default_env();
     let console_layer: BoxedLayer = Box::new(console_logging_layer().with_filter(filter.clone()));
 
     let mut layers = vec![console_layer];
@@ -76,13 +72,11 @@ pub fn default_layers() -> Result<Vec<BoxedLayer>> {
 /// This function creates a tracing layer that outputs human-readable logs to stderr
 /// with appropriate ANSI color formatting based on terminal capabilities.
 pub fn console_logging_layer() -> impl Layer<Registry> {
-    let layer = tracing_subscriber::fmt::Layer::default()
+    tracing_subscriber::fmt::Layer::default()
         .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .event_format(Glog::default().with_timer(tracing_glog::LocalTime::default()))
-        .fmt_fields(GlogFields::default());
-
-    Box::new(layer)
+        .fmt_fields(GlogFields::default())
 }
 
 /// Create a file logging layer for the specified file path.
@@ -101,13 +95,11 @@ pub fn file_logging_layer(file_path: &Path) -> Result<impl Layer<Registry>> {
         .open(file_path)
         .with_context(|| format!("Failed to open log file '{}'", file_path.display()))?;
 
-    let layer = tracing_subscriber::fmt::Layer::default()
+    Ok(tracing_subscriber::fmt::Layer::default()
         .json()
         .with_file(true)
         .with_line_number(true)
-        .with_writer(log_file);
-
-    Ok(Box::new(layer))
+        .with_writer(log_file))
 }
 
 /// Set up a panic hook to capture panics and backtraces in the logs.

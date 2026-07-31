@@ -10,14 +10,15 @@ int sum_values(const std::vector<int>& values) {
   for (const int value : values) {
     // breakpoint default_stop
     total += value;
-    // breakpoint secondary_stop
-    total += 0;
   }
+  // breakpoint secondary_stop
   return total;
 }
 
 int main() {
   const std::vector<int> values{1, 2, 3};
+  // breakpoint tertiary_stop
   const int total = sum_values(values);
+  // breakpoint quaternary_stop
   return total == 6 ? 0 : 1;
 }

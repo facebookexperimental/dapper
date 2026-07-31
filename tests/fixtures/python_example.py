@@ -14,11 +14,12 @@ def main() -> int:
     total = 0
     # breakpoint default_stop
     for num in numbers:
-        total += num
         # breakpoint secondary_stop
-        total += 0
+        total += num
 
+    # breakpoint tertiary_stop
     print(f"Sum: {total}")
+    # breakpoint quaternary_stop
     return total
 
 

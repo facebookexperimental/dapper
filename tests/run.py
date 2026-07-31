@@ -99,6 +99,7 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_tool_dap_request", AdapterProfile.LLDB),
     TestSpec("mcp_tool_evaluate", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_evaluate", AdapterProfile.LLDB),
+    TestSpec("mcp_tool_memory", AdapterProfile.LLDB),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("mcp_tool_scopes", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_scopes", AdapterProfile.LLDB),

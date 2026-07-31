@@ -111,6 +111,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("proxy_from_config", AdapterProfile.LLDB),
     TestSpec("proxy_response_filtering", AdapterProfile.DEBUGPY),
     TestSpec("proxy_response_filtering", AdapterProfile.LLDB),
+    TestSpec("session_scoping", AdapterProfile.DEBUGPY),
+    TestSpec("session_scoping", AdapterProfile.LLDB),
 )
 TEST_NAMES: tuple[str, ...] = tuple(dict.fromkeys(spec.name for spec in TEST_SPECS))
 

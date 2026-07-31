@@ -365,10 +365,17 @@ pub fn setup_stopped_fake_debug_session(
 
 /// Starts an injected real adapter and pauses its debuggee at program entry.
 pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClient)> {
-    let debuggee = test_debuggee_path()?;
     let scope_id = generate_test_scope_id(test_name);
+    let dap_client = start_stopped_debug_session(scope_id.clone())?;
 
-    let mut dap_client = DapClient::new(Some(scope_id.clone()))?;
+    Ok((scope_id, dap_client))
+}
+
+/// Starts a stopped real-adapter session in a caller-provided scope.
+pub fn start_stopped_debug_session(scope_id: ScopeId) -> Result<DapClient> {
+    let debuggee = test_debuggee_path()?;
+
+    let mut dap_client = DapClient::new(Some(scope_id))?;
     dap_client.initialize()?;
     let mut launch_arguments = serde_json::json!({
         "noDebug": false,
@@ -383,7 +390,7 @@ pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClien
     dap_client.launch(launch_arguments)?;
     dap_client.wait_for_event("stopped")?;
 
-    Ok((scope_id, dap_client))
+    Ok(dap_client)
 }
 
 /// Runs a Dapper debug CLI command against an optional test scope.

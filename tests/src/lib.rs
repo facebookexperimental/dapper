@@ -41,6 +41,7 @@ pub use harness::run_debug_command_with_binary;
 pub use harness::setup_stopped_debug_session;
 pub use harness::setup_stopped_fake_debug_session;
 pub use harness::spawn_proxy_from_config;
+pub use harness::start_stopped_debug_session;
 
 pub const REVERSE_DEBUG_GATING_MSG: &str =
     "does not advertise the DAP `supportsStepBack` capability";

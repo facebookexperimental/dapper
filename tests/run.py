@@ -147,23 +147,33 @@ def _run_test(test_name: str, dapper: Path, adapter: Path | None) -> int:
     ).returncode
 
 
-def _parse_test_name() -> str:
+def _parse_test_name() -> str | None:
     parser = argparse.ArgumentParser(description="Run Dapper end-to-end tests")
     parser.add_argument(
         "--test",
         choices=TEST_NAMES,
-        default="help_topics",
-        help="E2E test target to run",
+        help="Run only this E2E test target",
     )
-    return cast(str, parser.parse_args().test)
+    return cast(str | None, parser.parse_args().test)
 
 
 def main() -> int:
-    test_name = _parse_test_name()
+    selected_test = _parse_test_name()
+    test_names = (selected_test,) if selected_test is not None else TEST_NAMES
     try:
         dapper = _build_dapper()
-        adapter = _build_fake_adapter() if test_name in FAKE_ADAPTER_TESTS else None
-        return _run_test(test_name, dapper, adapter)
+        adapter = (
+            _build_fake_adapter()
+            if any(test_name in FAKE_ADAPTER_TESTS for test_name in test_names)
+            else None
+        )
+        return_code = 0
+        for test_name in test_names:
+            print(f"\n==> {test_name}", file=sys.stderr)
+            test_return_code = _run_test(test_name, dapper, adapter)
+            if test_return_code != 0:
+                return_code = test_return_code
+        return return_code
     except subprocess.CalledProcessError as error:
         return error.returncode
     except (OSError, RuntimeError) as error:

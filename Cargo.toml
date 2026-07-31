@@ -10,6 +10,7 @@ members = [
   "dapper_proxy_server",
   "dapper_session",
   "dapper_tracing",
+  "tests",
 ]
 resolver = "2"
 

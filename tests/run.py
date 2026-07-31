@@ -16,7 +16,7 @@ from typing import cast
 
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parent.parent
 TEST_MANIFEST: Path = REPOSITORY_ROOT / "tests" / "Cargo.toml"
-TEST_NAMES: tuple[str, ...] = ("help_topics",)
+TEST_NAMES: tuple[str, ...] = ("help_topics", "mcp_server_info")
 
 
 def _render_compiler_message(message: dict[object, object]) -> None:

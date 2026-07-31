@@ -3,17 +3,22 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use anyhow::Context;
 use anyhow::Result;
+use dapper_proxy_server::ProgressEvent;
 use dapper_session::ScopeId;
+use dapper_session::config::DebugSessionConfig;
 use debugserver_types::Event;
 use tempfile::NamedTempFile;
+use tokio::process::Child;
 use tokio::process::Command as TokioCommand;
 
 use crate::dap_client::DapClient as GeneralDapClient;
@@ -301,6 +306,44 @@ pub async fn run_debug_command_with_binary(
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         success: output.status.success(),
     })
+}
+
+/// Parses a progress event from a Dapper stdout line.
+pub fn parse_progress_event(line: &str) -> Option<ProgressEvent> {
+    line.strip_prefix("[DAPPER_SESSION] ")
+        .and_then(|json| serde_json::from_str(json).ok())
+}
+
+/// Spawns a headless Dapper proxy from a generated configuration file.
+pub async fn spawn_proxy_from_config(
+    config: &DebugSessionConfig,
+    scope_id: &ScopeId,
+) -> Result<(Child, NamedTempFile, AdapterLog)> {
+    let mut config_file = NamedTempFile::new()?;
+    serde_json::to_writer(&mut config_file, config)?;
+    config_file.flush()?;
+
+    let dapper_path = dapper_executable()?;
+    let adapter_log = AdapterLog::new()?;
+
+    let child = TokioCommand::new(&dapper_path)
+        .arg("proxy")
+        .arg("--scope-id")
+        .arg(scope_id.as_str())
+        .arg("from-config")
+        .arg(config_file.path())
+        .env(
+            "DAPPER_SESSIONS_DIR",
+            dapper_session::get_user_temp_dir().join("test_sessions"),
+        )
+        .env("DAPPER_DISABLE_SCUBA", "1")
+        .env("LLDBDAP_LOG", adapter_log.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("failed to spawn Dapper proxy")?;
+
+    Ok((child, config_file, adapter_log))
 }
 
 fn dapper_executable() -> Result<String> {

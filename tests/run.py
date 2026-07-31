@@ -18,12 +18,17 @@ REPOSITORY_ROOT: Path = Path(__file__).resolve().parent.parent
 TEST_MANIFEST: Path = REPOSITORY_ROOT / "tests" / "Cargo.toml"
 TEST_NAMES: tuple[str, ...] = (
     "debug_cli_reverse_navigate",
+    "headless_child_session",
     "help_topics",
     "mcp_server_info",
     "mcp_tool_reverse_navigate",
 )
 FAKE_ADAPTER_TESTS: frozenset[str] = frozenset(
-    {"debug_cli_reverse_navigate", "mcp_tool_reverse_navigate"}
+    {
+        "debug_cli_reverse_navigate",
+        "headless_child_session",
+        "mcp_tool_reverse_navigate",
+    }
 )
 
 

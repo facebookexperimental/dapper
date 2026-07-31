@@ -8,6 +8,7 @@ use anyhow::Result;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_mcp_server::DebugTool;
 use dapper_mcp_server::Toolset;
+pub use dapper_proxy_server::ProgressEvent;
 use dapper_session::NavigationType;
 use dapper_session::ScopeId;
 use rmcp::RoleClient;
@@ -27,9 +28,11 @@ pub use harness::DapClient;
 pub use harness::DebugCliOutput;
 pub use harness::dapper_command;
 pub use harness::generate_test_scope_id;
+pub use harness::parse_progress_event;
 pub use harness::run_debug_command;
 pub use harness::run_debug_command_with_binary;
 pub use harness::setup_stopped_fake_debug_session;
+pub use harness::spawn_proxy_from_config;
 
 pub const REVERSE_DEBUG_GATING_MSG: &str =
     "does not advertise the DAP `supportsStepBack` capability";

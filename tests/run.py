@@ -8,8 +8,10 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,8 +21,14 @@ from typing import cast
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parent.parent
 TEST_MANIFEST: Path = REPOSITORY_ROOT / "tests" / "Cargo.toml"
 DEBUGPY_FIXTURE: Path = REPOSITORY_ROOT / "tests" / "fixtures" / "python_example.py"
+LLDB_FIXTURE: Path = REPOSITORY_ROOT / "tests" / "fixtures" / "cpp_example.cpp"
 DEBUGPY_SETUP_COMMAND: str = (
-    "uv run --project tests/profiles/debugpy --frozen python tests/run.py --test launch"
+    "uv run --project tests/profiles/debugpy --frozen python tests/run.py "
+    "--test launch --adapter debugpy"
+)
+LLDB_SETUP_COMMAND: str = (
+    "python3 tests/run.py --test launch --adapter lldb "
+    "--lldb-dap /path/to/lldb-dap --cxx /path/to/clang++"
 )
 
 
@@ -28,6 +36,7 @@ class AdapterProfile(Enum):
     NONE = "none"
     FAKE = "fake"
     DEBUGPY = "debugpy"
+    LLDB = "lldb"
 
 
 @dataclass(frozen=True)
@@ -45,9 +54,20 @@ class AdapterCommand:
 @dataclass(frozen=True)
 class RunnerOptions:
     test_name: str | None
+    adapter_profile: AdapterProfile | None
     debugpy_python: Path | None
     debugpy_adapter: Path | None
+    lldb_dap: Path | None
+    cxx: Path | None
     required_profiles: frozenset[AdapterProfile]
+
+
+@dataclass(frozen=True)
+class ResolvedProfiles:
+    test_specs: tuple[TestSpec, ...]
+    debugpy_adapter: AdapterCommand | None
+    lldb_adapter: AdapterCommand | None
+    lldb_compiler: Path | None
 
 
 TEST_SPECS: tuple[TestSpec, ...] = (
@@ -55,12 +75,13 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("headless_child_session", AdapterProfile.FAKE),
     TestSpec("help_topics", AdapterProfile.NONE),
     TestSpec("launch", AdapterProfile.DEBUGPY),
+    TestSpec("launch", AdapterProfile.LLDB),
     TestSpec("mcp_list_tools", AdapterProfile.NONE),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),
 )
-TEST_NAMES: tuple[str, ...] = tuple(spec.name for spec in TEST_SPECS)
+TEST_NAMES: tuple[str, ...] = tuple(dict.fromkeys(spec.name for spec in TEST_SPECS))
 
 
 def _render_compiler_message(message: dict[object, object]) -> None:
@@ -213,21 +234,91 @@ def _resolve_debugpy_adapter(
     return AdapterCommand(python, ("-m", "debugpy.adapter")), None
 
 
+def _resolve_command(
+    configured: Path | None,
+    environment_variable: str,
+    candidates: tuple[str, ...],
+    description: str,
+) -> tuple[Path | None, str | None]:
+    if configured is None:
+        environment_path = os.environ.get(environment_variable)
+        configured = Path(environment_path) if environment_path else None
+    if configured is not None:
+        discovered = shutil.which(str(configured))
+        try:
+            return _validate_executable(
+                Path(discovered) if discovered else configured, description
+            ), None
+        except RuntimeError as error:
+            return None, str(error)
+
+    for candidate in candidates:
+        discovered = shutil.which(candidate)
+        if discovered is not None:
+            return _validate_executable(Path(discovered), description), None
+    return None, f"{description} was not found on PATH"
+
+
+def _resolve_lldb_adapter(
+    options: RunnerOptions,
+) -> tuple[AdapterCommand | None, str | None]:
+    executable, failure = _resolve_command(
+        options.lldb_dap,
+        "DAPPER_TEST_LLDB_DAP",
+        ("lldb-dap", "lldb-vscode"),
+        "the LLDB DAP adapter",
+    )
+    return (
+        (AdapterCommand(executable), None)
+        if executable is not None
+        else (None, failure)
+    )
+
+
+def _resolve_lldb_compiler(options: RunnerOptions) -> tuple[Path | None, str | None]:
+    return _resolve_command(
+        options.cxx,
+        "DAPPER_TEST_CXX",
+        ("clang++", "c++", "g++"),
+        "the C++ compiler",
+    )
+
+
+def _compile_lldb_fixture(compiler: Path, output_directory: Path) -> Path:
+    output = output_directory / (
+        "cpp_example.exe" if os.name == "nt" else "cpp_example"
+    )
+    command = [
+        str(compiler),
+        "-std=c++17",
+        "-g",
+        "-O0",
+        str(LLDB_FIXTURE.resolve(strict=True)),
+        "-o",
+        str(output),
+    ]
+    # @lint-ignore FIXIT1 NoUnsafeExecRule
+    subprocess.run(command, cwd=REPOSITORY_ROOT, check=True)
+    return _validate_executable(output, "the compiled LLDB test fixture")
+
+
 def _run_test(
     test_spec: TestSpec,
     dapper: Path,
     adapter: AdapterCommand | None,
+    debuggee: Path | None,
 ) -> int:
     environment = os.environ.copy()
     environment["DAPPER_TEST_EXECUTABLE"] = str(dapper)
     environment.pop("DAPPER_TEST_ADAPTER_EXECUTABLE", None)
     environment.pop("DAPPER_TEST_ADAPTER_ARGUMENTS", None)
     environment.pop("DAPPER_TEST_DEBUGGEE", None)
+    environment.pop("DAPPER_TEST_DEBUGGEE_DEBUGINFO", None)
     if adapter is not None:
         environment["DAPPER_TEST_ADAPTER_EXECUTABLE"] = str(adapter.executable)
         environment["DAPPER_TEST_ADAPTER_ARGUMENTS"] = json.dumps(adapter.arguments)
-    if test_spec.profile is AdapterProfile.DEBUGPY:
-        environment["DAPPER_TEST_DEBUGGEE"] = str(DEBUGPY_FIXTURE.resolve(strict=True))
+    if debuggee is not None:
+        environment["DAPPER_TEST_DEBUGGEE"] = str(debuggee)
     command = [
         "cargo",
         "test",
@@ -254,6 +345,11 @@ def _parse_options() -> RunnerOptions:
         choices=TEST_NAMES,
         help="Run only this E2E test target",
     )
+    parser.add_argument(
+        "--adapter",
+        choices=(AdapterProfile.DEBUGPY.value, AdapterProfile.LLDB.value),
+        help="Run only variants for this external adapter",
+    )
     debugpy_source = parser.add_mutually_exclusive_group()
     debugpy_source.add_argument(
         "--debugpy-python",
@@ -268,9 +364,21 @@ def _parse_options() -> RunnerOptions:
         help="Prebuilt debugpy DAP adapter executable",
     )
     parser.add_argument(
+        "--lldb-dap",
+        type=Path,
+        metavar="PATH",
+        help="Existing lldb-dap executable",
+    )
+    parser.add_argument(
+        "--cxx",
+        type=Path,
+        metavar="PATH",
+        help="C++ compiler used to build LLDB fixtures",
+    )
+    parser.add_argument(
         "--require-profile",
         action="append",
-        choices=(AdapterProfile.DEBUGPY.value,),
+        choices=(AdapterProfile.DEBUGPY.value, AdapterProfile.LLDB.value),
         default=[],
         help="Fail rather than skip when this adapter profile is unavailable",
     )
@@ -281,66 +389,142 @@ def _parse_options() -> RunnerOptions:
     )
     return RunnerOptions(
         test_name=cast(str | None, arguments.test),
+        adapter_profile=(
+            AdapterProfile(cast(str, arguments.adapter))
+            if arguments.adapter is not None
+            else None
+        ),
         debugpy_python=cast(Path | None, arguments.debugpy_python),
         debugpy_adapter=cast(Path | None, arguments.debugpy_adapter),
+        lldb_dap=cast(Path | None, arguments.lldb_dap),
+        cxx=cast(Path | None, arguments.cxx),
         required_profiles=required_profiles,
     )
 
 
-def _selected_tests(test_name: str | None) -> tuple[TestSpec, ...]:
-    if test_name is None:
-        return TEST_SPECS
-    return tuple(spec for spec in TEST_SPECS if spec.name == test_name)
+def _selected_tests(options: RunnerOptions) -> tuple[TestSpec, ...]:
+    return tuple(
+        spec
+        for spec in TEST_SPECS
+        if (options.test_name is None or spec.name == options.test_name)
+        and (options.adapter_profile is None or spec.profile is options.adapter_profile)
+    )
+
+
+def _profile_is_required(profile: AdapterProfile, options: RunnerOptions) -> bool:
+    return (
+        options.test_name is not None
+        or options.adapter_profile is profile
+        or profile in options.required_profiles
+        or (
+            profile is AdapterProfile.DEBUGPY
+            and (
+                options.debugpy_python is not None
+                or options.debugpy_adapter is not None
+                or "DAPPER_TEST_DEBUGPY_PYTHON" in os.environ
+            )
+        )
+        or (
+            profile is AdapterProfile.LLDB
+            and (
+                options.lldb_dap is not None
+                or options.cxx is not None
+                or "DAPPER_TEST_LLDB_DAP" in os.environ
+                or "DAPPER_TEST_CXX" in os.environ
+            )
+        )
+    )
+
+
+def _skip_unavailable_profile(
+    test_specs: tuple[TestSpec, ...],
+    profile: AdapterProfile,
+    reason: str | None,
+    setup_command: str,
+    options: RunnerOptions,
+) -> tuple[TestSpec, ...]:
+    if _profile_is_required(profile, options):
+        raise RuntimeError(f"{reason}\nMake it available with:\n  {setup_command}")
+    print(
+        f"\n==> {profile.value} tests skipped: {reason}\n"
+        f"    Make them available with: {setup_command}",
+        file=sys.stderr,
+    )
+    return tuple(spec for spec in test_specs if spec.profile is not profile)
+
+
+def _resolve_profiles(
+    options: RunnerOptions, test_specs: tuple[TestSpec, ...]
+) -> ResolvedProfiles:
+    debugpy_adapter: AdapterCommand | None = None
+    if any(spec.profile is AdapterProfile.DEBUGPY for spec in test_specs):
+        debugpy_adapter, reason = _resolve_debugpy_adapter(options)
+        if debugpy_adapter is None:
+            test_specs = _skip_unavailable_profile(
+                test_specs,
+                AdapterProfile.DEBUGPY,
+                reason,
+                DEBUGPY_SETUP_COMMAND,
+                options,
+            )
+
+    lldb_adapter: AdapterCommand | None = None
+    lldb_compiler: Path | None = None
+    if any(spec.profile is AdapterProfile.LLDB for spec in test_specs):
+        lldb_adapter, reason = _resolve_lldb_adapter(options)
+        if lldb_adapter is not None:
+            lldb_compiler, reason = _resolve_lldb_compiler(options)
+        if lldb_adapter is None or lldb_compiler is None:
+            test_specs = _skip_unavailable_profile(
+                test_specs, AdapterProfile.LLDB, reason, LLDB_SETUP_COMMAND, options
+            )
+
+    return ResolvedProfiles(test_specs, debugpy_adapter, lldb_adapter, lldb_compiler)
+
+
+def _run_selected_tests(profiles: ResolvedProfiles, dapper: Path) -> int:
+    fake_adapter = (
+        AdapterCommand(_build_fake_adapter())
+        if any(spec.profile is AdapterProfile.FAKE for spec in profiles.test_specs)
+        else None
+    )
+    with tempfile.TemporaryDirectory(prefix="dapper-e2e-lldb-") as temporary_directory:
+        lldb_debuggee = (
+            _compile_lldb_fixture(
+                cast(Path, profiles.lldb_compiler), Path(temporary_directory)
+            )
+            if any(spec.profile is AdapterProfile.LLDB for spec in profiles.test_specs)
+            else None
+        )
+        return_code = 0
+        for test_spec in profiles.test_specs:
+            adapter = None
+            debuggee = None
+            if test_spec.profile is AdapterProfile.FAKE:
+                adapter = fake_adapter
+            elif test_spec.profile is AdapterProfile.DEBUGPY:
+                adapter = profiles.debugpy_adapter
+                debuggee = DEBUGPY_FIXTURE.resolve(strict=True)
+            elif test_spec.profile is AdapterProfile.LLDB:
+                adapter = profiles.lldb_adapter
+                debuggee = lldb_debuggee
+            print(
+                f"\n==> {test_spec.name} ({test_spec.profile.value})", file=sys.stderr
+            )
+            test_return_code = _run_test(test_spec, dapper, adapter, debuggee)
+            if test_return_code != 0:
+                return_code = test_return_code
+        return return_code
 
 
 def main() -> int:
     options = _parse_options()
-    test_specs = _selected_tests(options.test_name)
+    test_specs = _selected_tests(options)
     try:
-        debugpy_adapter: AdapterCommand | None = None
-        if any(spec.profile is AdapterProfile.DEBUGPY for spec in test_specs):
-            debugpy_adapter, unavailable_reason = _resolve_debugpy_adapter(options)
-            debugpy_required = (
-                options.test_name is not None
-                or AdapterProfile.DEBUGPY in options.required_profiles
-                or options.debugpy_python is not None
-                or options.debugpy_adapter is not None
-                or "DAPPER_TEST_DEBUGPY_PYTHON" in os.environ
-            )
-            if debugpy_adapter is None and debugpy_required:
-                raise RuntimeError(
-                    f"{unavailable_reason}\nProvision it with:\n  {DEBUGPY_SETUP_COMMAND}"
-                )
-            if debugpy_adapter is None:
-                print(
-                    f"\n==> debugpy tests skipped: {unavailable_reason}\n"
-                    f"    Provision them with: {DEBUGPY_SETUP_COMMAND}",
-                    file=sys.stderr,
-                )
-                test_specs = tuple(
-                    spec
-                    for spec in test_specs
-                    if spec.profile is not AdapterProfile.DEBUGPY
-                )
-
-        dapper = _build_dapper()
-        fake_adapter = (
-            AdapterCommand(_build_fake_adapter())
-            if any(spec.profile is AdapterProfile.FAKE for spec in test_specs)
-            else None
-        )
-        return_code = 0
-        for test_spec in test_specs:
-            adapter = None
-            if test_spec.profile is AdapterProfile.FAKE:
-                adapter = fake_adapter
-            elif test_spec.profile is AdapterProfile.DEBUGPY:
-                adapter = debugpy_adapter
-            print(f"\n==> {test_spec.name}", file=sys.stderr)
-            test_return_code = _run_test(test_spec, dapper, adapter)
-            if test_return_code != 0:
-                return_code = test_return_code
-        return return_code
+        if not test_specs:
+            raise RuntimeError("no tests match the requested test and adapter")
+        profiles = _resolve_profiles(options, test_specs)
+        return _run_selected_tests(profiles, _build_dapper())
     except subprocess.CalledProcessError as error:
         return error.returncode
     except (OSError, RuntimeError) as error:

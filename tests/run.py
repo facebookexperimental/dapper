@@ -78,6 +78,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("debug_cli_stop", AdapterProfile.LLDB),
     TestSpec("debug_cli_threads", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_threads", AdapterProfile.LLDB),
+    TestSpec("error_recovery", AdapterProfile.DEBUGPY),
+    TestSpec("error_recovery", AdapterProfile.LLDB),
     TestSpec("headless_child_session", AdapterProfile.FAKE),
     TestSpec("help_topics", AdapterProfile.NONE),
     TestSpec("launch", AdapterProfile.DEBUGPY),

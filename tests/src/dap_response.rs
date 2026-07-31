@@ -51,10 +51,10 @@ fn normalize_dap_value(value: &mut serde_json::Value) {
             // Zero out `id` in Breakpoint-shaped objects (has verified).
             let is_breakpoint = map.contains_key("id") && map.contains_key("verified");
 
-            if is_stack_frame || is_breakpoint {
-                if let Some(value) = map.get_mut("id") {
-                    *value = serde_json::Value::Number(0.into());
-                }
+            if (is_stack_frame || is_breakpoint)
+                && let Some(value) = map.get_mut("id")
+            {
+                *value = serde_json::Value::Number(0.into());
             }
 
             for value in map.values_mut() {

@@ -111,10 +111,10 @@ impl DapClient {
     }
 
     pub fn kill(&mut self) -> Result<()> {
-        if let Err(e) = self.child.kill() {
-            if e.kind() == ErrorKind::InvalidInput {
-                anyhow::bail!("Child process has already exited");
-            }
+        if let Err(error) = self.child.kill()
+            && error.kind() == ErrorKind::InvalidInput
+        {
+            anyhow::bail!("Child process has already exited");
         }
         Ok(())
     }

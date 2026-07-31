@@ -71,6 +71,8 @@ class ResolvedProfiles:
 
 
 TEST_SPECS: tuple[TestSpec, ...] = (
+    TestSpec("breakpoint_lifecycle", AdapterProfile.DEBUGPY),
+    TestSpec("breakpoint_lifecycle", AdapterProfile.LLDB),
     TestSpec("debug_cli_dap", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_dap", AdapterProfile.LLDB),
     TestSpec("debug_cli_navigate", AdapterProfile.DEBUGPY),

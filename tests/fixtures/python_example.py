@@ -15,6 +15,8 @@ def main() -> int:
     # breakpoint default_stop
     for num in numbers:
         total += num
+        # breakpoint secondary_stop
+        total += 0
 
     print(f"Sum: {total}")
     return total

@@ -5,6 +5,7 @@
 
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::thread;
@@ -281,6 +282,53 @@ pub fn generate_test_scope_id(test_name: &str) -> ScopeId {
     .into()
 }
 
+fn test_debuggee_path() -> Result<PathBuf> {
+    let debuggee = std::env::var("DAPPER_TEST_DEBUGGEE")
+        .context("DAPPER_TEST_DEBUGGEE must name the test debuggee")?;
+    std::fs::canonicalize(&debuggee)
+        .with_context(|| format!("failed to resolve test debuggee: {debuggee}"))
+}
+
+fn launch_argument_overrides() -> Result<serde_json::Map<String, serde_json::Value>> {
+    match std::env::var("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES") {
+        Ok(overrides) => serde_json::from_str(&overrides)
+            .context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be a JSON object"),
+        Err(std::env::VarError::NotPresent) => Ok(serde_json::Map::new()),
+        Err(error) => {
+            Err(error).context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be valid Unicode")
+        }
+    }
+}
+
+/// Verifies the session context rendered around a real-adapter tool response.
+pub fn assert_context_contains_session_info(content: &str) -> Result<()> {
+    let debuggee = test_debuggee_path()?;
+    let overrides = launch_argument_overrides()?;
+    let debugger = overrides
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .context("launch argument overrides must identify the debugger with `type`")?;
+
+    anyhow::ensure!(
+        content.contains("Session: "),
+        "response should contain a session ID in its context header: {content}"
+    );
+    anyhow::ensure!(
+        content.contains(&format!("Debugger: {debugger}")),
+        "response should identify debugger `{debugger}` in its context header: {content}"
+    );
+    anyhow::ensure!(
+        content.contains("Type: launch"),
+        "response should identify a launch request in its context header: {content}"
+    );
+    anyhow::ensure!(
+        content.contains(&format!("Program: {}", debuggee.display())),
+        "response should identify program `{}` in its context header: {content}",
+        debuggee.display()
+    );
+    Ok(())
+}
+
 /// Starts a stopped debug session backed by the fake DAP adapter.
 pub fn setup_stopped_fake_debug_session(
     test_name: &str,
@@ -298,10 +346,7 @@ pub fn setup_stopped_fake_debug_session(
 
 /// Starts an injected real adapter and pauses its debuggee at program entry.
 pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClient)> {
-    let debuggee = std::env::var("DAPPER_TEST_DEBUGGEE")
-        .context("DAPPER_TEST_DEBUGGEE must name the test debuggee")?;
-    let debuggee = std::fs::canonicalize(&debuggee)
-        .with_context(|| format!("failed to resolve test debuggee: {debuggee}"))?;
+    let debuggee = test_debuggee_path()?;
     let scope_id = generate_test_scope_id(test_name);
 
     let mut dap_client = DapClient::new(Some(scope_id.clone()))?;
@@ -312,22 +357,10 @@ pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClien
         "args": [],
         "stopOnEntry": true,
     });
-    match std::env::var("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES") {
-        Ok(overrides) => {
-            let overrides: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(&overrides)
-                    .context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be a JSON object")?;
-            launch_arguments
-                .as_object_mut()
-                .expect("launch arguments literal should be an object")
-                .extend(overrides);
-        }
-        Err(std::env::VarError::NotPresent) => {}
-        Err(error) => {
-            return Err(error)
-                .context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be valid Unicode");
-        }
-    }
+    launch_arguments
+        .as_object_mut()
+        .expect("launch arguments literal should be an object")
+        .extend(launch_argument_overrides()?);
     dap_client.launch(launch_arguments)?;
     dap_client.wait_for_event("stopped")?;
 

@@ -96,6 +96,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_list_tools", AdapterProfile.NONE),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
+    TestSpec("mcp_tool_threads", AdapterProfile.DEBUGPY),
+    TestSpec("mcp_tool_threads", AdapterProfile.LLDB),
     TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),
     TestSpec("proxy_from_config", AdapterProfile.LLDB),
     TestSpec("proxy_response_filtering", AdapterProfile.DEBUGPY),
@@ -340,9 +342,14 @@ def _run_test(
         environment["DAPPER_TEST_ADAPTER_ARGUMENTS"] = json.dumps(adapter.arguments)
     if debuggee is not None:
         environment["DAPPER_TEST_DEBUGGEE"] = str(debuggee)
-    if test_spec.profile is AdapterProfile.LLDB:
+    if test_spec.profile is AdapterProfile.DEBUGPY:
+        environment["DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES"] = json.dumps(
+            {"type": "debugpy"}
+        )
+    elif test_spec.profile is AdapterProfile.LLDB:
         environment["DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES"] = json.dumps(
             {
+                "type": "lldb-dap",
                 "stopOnEntry": False,
                 "initCommands": ["breakpoint set --name sum_values"],
             }

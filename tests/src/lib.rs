@@ -30,6 +30,7 @@ pub use harness::AdapterLog;
 pub use harness::DapClient;
 pub use harness::DebugCliOutput;
 pub use harness::adapter_command;
+pub use harness::assert_context_contains_session_info;
 pub use harness::dapper_command;
 pub use harness::generate_test_scope_id;
 pub use harness::parse_progress_event;

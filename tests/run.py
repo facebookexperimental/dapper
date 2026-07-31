@@ -73,6 +73,8 @@ class ResolvedProfiles:
 TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("debug_cli_dap", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_dap", AdapterProfile.LLDB),
+    TestSpec("debug_cli_navigate", AdapterProfile.DEBUGPY),
+    TestSpec("debug_cli_navigate", AdapterProfile.LLDB),
     TestSpec("debug_cli_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("debug_cli_eval", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_scopes", AdapterProfile.DEBUGPY),

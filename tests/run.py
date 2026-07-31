@@ -80,6 +80,7 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),
+    TestSpec("proxy_from_config", AdapterProfile.LLDB),
 )
 TEST_NAMES: tuple[str, ...] = tuple(dict.fromkeys(spec.name for spec in TEST_SPECS))
 

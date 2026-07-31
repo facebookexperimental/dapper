@@ -308,6 +308,32 @@ fn test_debuggee_path() -> Result<PathBuf> {
         .with_context(|| format!("failed to resolve test debuggee: {debuggee}"))
 }
 
+/// Returns the canonical source path supplied by the E2E runner.
+pub fn test_source_path() -> Result<PathBuf> {
+    let source = std::env::var("DAPPER_TEST_SOURCE")
+        .context("DAPPER_TEST_SOURCE must name the debuggee source file")?;
+    std::fs::canonicalize(&source)
+        .with_context(|| format!("failed to resolve test source: {source}"))
+}
+
+/// Finds the line immediately after a marker comment in a debuggee source.
+pub async fn find_breakpoint_line_by_marker(source: &Path, marker: &str) -> Result<i64> {
+    let content = tokio::fs::read_to_string(source)
+        .await
+        .with_context(|| format!("failed to read test source: {}", source.display()))?;
+
+    for (index, line) in content.lines().enumerate() {
+        if line.contains(marker) {
+            return Ok((index + 2) as i64);
+        }
+    }
+
+    anyhow::bail!(
+        "marker `{marker}` not found in test source: {}",
+        source.display()
+    )
+}
+
 fn launch_argument_overrides() -> Result<serde_json::Map<String, serde_json::Value>> {
     match std::env::var("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES") {
         Ok(overrides) => serde_json::from_str(&overrides)

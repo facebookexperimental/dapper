@@ -35,6 +35,7 @@ pub use harness::RealAdapterProfile;
 pub use harness::adapter_command;
 pub use harness::assert_context_contains_session_info;
 pub use harness::dapper_command;
+pub use harness::find_breakpoint_line_by_marker;
 pub use harness::generate_test_scope_id;
 pub use harness::parse_progress_event;
 pub use harness::real_adapter_profile;
@@ -44,6 +45,7 @@ pub use harness::setup_stopped_debug_session;
 pub use harness::setup_stopped_fake_debug_session;
 pub use harness::spawn_proxy_from_config;
 pub use harness::start_stopped_debug_session;
+pub use harness::test_source_path;
 
 pub const REVERSE_DEBUG_GATING_MSG: &str =
     "does not advertise the DAP `supportsStepBack` capability";

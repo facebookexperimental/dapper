@@ -79,6 +79,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("debug_cli_scopes", AdapterProfile.LLDB),
     TestSpec("debug_cli_sessions", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_sessions", AdapterProfile.LLDB),
+    TestSpec("debug_cli_set_variable", AdapterProfile.DEBUGPY),
+    TestSpec("debug_cli_set_variable", AdapterProfile.LLDB),
     TestSpec("debug_cli_stack_trace", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_stack_trace", AdapterProfile.LLDB),
     TestSpec("debug_cli_status", AdapterProfile.DEBUGPY),
@@ -357,6 +359,7 @@ def _run_test(
     environment.pop("DAPPER_TEST_DEBUGGEE", None)
     environment.pop("DAPPER_TEST_DEBUGGEE_DEBUGINFO", None)
     environment.pop("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES", None)
+    environment.pop("DAPPER_TEST_SOURCE", None)
     if adapter is not None:
         environment["DAPPER_TEST_ADAPTER_EXECUTABLE"] = str(adapter.executable)
         environment["DAPPER_TEST_ADAPTER_ARGUMENTS"] = json.dumps(adapter.arguments)
@@ -365,10 +368,12 @@ def _run_test(
     if debuggee is not None:
         environment["DAPPER_TEST_DEBUGGEE"] = str(debuggee)
     if test_spec.profile is AdapterProfile.DEBUGPY:
+        environment["DAPPER_TEST_SOURCE"] = str(DEBUGPY_FIXTURE.resolve(strict=True))
         environment["DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES"] = json.dumps(
             {"type": "debugpy"}
         )
     elif test_spec.profile is AdapterProfile.LLDB:
+        environment["DAPPER_TEST_SOURCE"] = str(LLDB_FIXTURE.resolve(strict=True))
         environment["DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES"] = json.dumps(
             {
                 "type": "lldb-dap",

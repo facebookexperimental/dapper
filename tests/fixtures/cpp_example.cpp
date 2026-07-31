@@ -3,12 +3,15 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-#include <numeric>
 #include <vector>
 
 int sum_values(const std::vector<int>& values) {
-  // breakpoint default_stop
-  return std::accumulate(values.begin(), values.end(), 0);
+  int total = 0;
+  for (const int value : values) {
+    // breakpoint default_stop
+    total += value;
+  }
+  return total;
 }
 
 int main() {

@@ -96,6 +96,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_list_tools", AdapterProfile.NONE),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
+    TestSpec("mcp_tool_stack_trace", AdapterProfile.DEBUGPY),
+    TestSpec("mcp_tool_stack_trace", AdapterProfile.LLDB),
     TestSpec("mcp_tool_threads", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_threads", AdapterProfile.LLDB),
     TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),

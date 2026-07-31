@@ -57,6 +57,7 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("launch", AdapterProfile.DEBUGPY),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
+    TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),
 )
 TEST_NAMES: tuple[str, ...] = tuple(spec.name for spec in TEST_SPECS)
 

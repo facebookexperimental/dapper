@@ -28,6 +28,12 @@ pub struct AdapterLog {
     file: NamedTempFile,
 }
 
+/// Executable and arguments used to spawn the selected DAP adapter.
+pub struct AdapterCommand {
+    pub executable: String,
+    pub arguments: Vec<String>,
+}
+
 impl AdapterLog {
     pub fn new() -> Result<Self> {
         let file = NamedTempFile::new().context("Failed to create adapter log file")?;
@@ -113,8 +119,7 @@ impl DapClient {
         scope_id: Option<ScopeId>,
         adapter_args: &[&str],
     ) -> Result<Self> {
-        let adapter_path = std::env::var("DAPPER_TEST_ADAPTER_EXECUTABLE")
-            .context("DAPPER_TEST_ADAPTER_EXECUTABLE must name the DAP adapter")?;
+        let adapter = adapter_command()?;
 
         let mut command = dapper_command(dapper_path, "proxy");
         if let Some(port) = control_port {
@@ -123,8 +128,8 @@ impl DapClient {
         if let Some(scope) = scope_id {
             command.arg("--scope-id").arg(scope.as_str());
         }
-        command.arg("process").arg(adapter_path);
-        command.args(adapter_arguments()?);
+        command.arg("process").arg(adapter.executable);
+        command.args(adapter.arguments);
         command.args(adapter_args);
 
         let adapter_log = AdapterLog::new()?;
@@ -232,17 +237,23 @@ impl DapClient {
     }
 }
 
-fn adapter_arguments() -> Result<Vec<String>> {
+/// Returns the adapter command supplied by the E2E runner or Buck target.
+pub fn adapter_command() -> Result<AdapterCommand> {
+    let executable = std::env::var("DAPPER_TEST_ADAPTER_EXECUTABLE")
+        .context("DAPPER_TEST_ADAPTER_EXECUTABLE must name the DAP adapter")?;
     let arguments = match std::env::var("DAPPER_TEST_ADAPTER_ARGUMENTS") {
-        Ok(arguments) => arguments,
-        Err(std::env::VarError::NotPresent) => return Ok(Vec::new()),
+        Ok(arguments) => serde_json::from_str(&arguments)
+            .context("DAPPER_TEST_ADAPTER_ARGUMENTS must be a JSON string array")?,
+        Err(std::env::VarError::NotPresent) => Vec::new(),
         Err(error) => {
             return Err(error).context("DAPPER_TEST_ADAPTER_ARGUMENTS must be valid Unicode");
         }
     };
 
-    serde_json::from_str(&arguments)
-        .context("DAPPER_TEST_ADAPTER_ARGUMENTS must be a JSON string array")
+    Ok(AdapterCommand {
+        executable,
+        arguments,
+    })
 }
 
 /// Creates a Dapper command with the test session directory and logging policy.

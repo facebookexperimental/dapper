@@ -55,6 +55,7 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("headless_child_session", AdapterProfile.FAKE),
     TestSpec("help_topics", AdapterProfile.NONE),
     TestSpec("launch", AdapterProfile.DEBUGPY),
+    TestSpec("mcp_list_tools", AdapterProfile.NONE),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("proxy_from_config", AdapterProfile.DEBUGPY),

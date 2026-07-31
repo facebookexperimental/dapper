@@ -24,8 +24,11 @@ mod harness;
 
 pub use harness::AdapterLog;
 pub use harness::DapClient;
+pub use harness::DebugCliOutput;
 pub use harness::dapper_command;
 pub use harness::generate_test_scope_id;
+pub use harness::run_debug_command;
+pub use harness::run_debug_command_with_binary;
 pub use harness::setup_stopped_fake_debug_session;
 
 pub const REVERSE_DEBUG_GATING_MSG: &str =
@@ -133,4 +136,28 @@ pub async fn call_navigate_command(
         })
         .await
         .context("failed to call the MCP navigate tool")
+}
+
+/// Returns all thread IDs reported by the debug CLI for a scope.
+pub async fn get_thread_ids(scope_id: &ScopeId) -> Result<Vec<i64>> {
+    let result = run_debug_command(Some(scope_id.clone()), &["threads", "--json"]).await?;
+    anyhow::ensure!(
+        result.success,
+        "threads --json command failed, stderr: {}",
+        result.stderr
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&result.stdout)
+        .with_context(|| format!("threads --json output is not valid JSON: {}", result.stdout))?;
+    let threads = parsed["result"]["threads"]
+        .as_array()
+        .context("threads response should contain a 'threads' array")?;
+    anyhow::ensure!(!threads.is_empty(), "threads array should not be empty");
+    threads
+        .iter()
+        .map(|thread| {
+            thread["id"]
+                .as_i64()
+                .context("thread should have a numeric 'id'")
+        })
+        .collect()
 }

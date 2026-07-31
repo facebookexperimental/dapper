@@ -14,6 +14,7 @@ use anyhow::Result;
 use dapper_session::ScopeId;
 use debugserver_types::Event;
 use tempfile::NamedTempFile;
+use tokio::process::Command as TokioCommand;
 
 use crate::dap_client::DapClient as GeneralDapClient;
 
@@ -65,6 +66,13 @@ impl Drop for AdapterLog {
 pub struct DapClient {
     inner_client: GeneralDapClient,
     _adapter_log: AdapterLog,
+}
+
+/// Captured output from a Dapper debug CLI invocation.
+pub struct DebugCliOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
 }
 
 impl DapClient {
@@ -256,6 +264,43 @@ pub fn setup_stopped_fake_debug_session(
     dap_client.wait_for_event("stopped")?;
 
     Ok((scope_id, dap_client))
+}
+
+/// Runs a Dapper debug CLI command against an optional test scope.
+pub async fn run_debug_command(scope_id: Option<ScopeId>, args: &[&str]) -> Result<DebugCliOutput> {
+    let dapper_path = dapper_executable()?;
+    run_debug_command_with_binary(&dapper_path, scope_id, args).await
+}
+
+/// Runs a debug CLI command using an explicit Dapper executable.
+pub async fn run_debug_command_with_binary(
+    dapper_path: &str,
+    scope_id: Option<ScopeId>,
+    args: &[&str],
+) -> Result<DebugCliOutput> {
+    let mut command = TokioCommand::new(dapper_path);
+    command.arg("debug");
+    if let Some(scope) = scope_id {
+        command.arg("--scope-id").arg(scope.as_str());
+    }
+    command.args(args);
+    command.env(
+        "DAPPER_SESSIONS_DIR",
+        dapper_session::get_user_temp_dir().join("test_sessions"),
+    );
+    command.env("DAPPER_DISABLE_SCUBA", "1");
+    command.kill_on_drop(true);
+
+    let output = command
+        .output()
+        .await
+        .context("failed to run Dapper debug command")?;
+
+    Ok(DebugCliOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        success: output.status.success(),
+    })
 }
 
 fn dapper_executable() -> Result<String> {

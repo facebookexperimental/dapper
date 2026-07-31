@@ -97,6 +97,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_dap_request", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_dap_request", AdapterProfile.LLDB),
+    TestSpec("mcp_tool_evaluate", AdapterProfile.DEBUGPY),
+    TestSpec("mcp_tool_evaluate", AdapterProfile.LLDB),
     TestSpec("mcp_tool_reverse_navigate", AdapterProfile.FAKE),
     TestSpec("mcp_tool_scopes", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_scopes", AdapterProfile.LLDB),
@@ -340,12 +342,15 @@ def _run_test(
     environment["DAPPER_TEST_EXECUTABLE"] = str(dapper)
     environment.pop("DAPPER_TEST_ADAPTER_EXECUTABLE", None)
     environment.pop("DAPPER_TEST_ADAPTER_ARGUMENTS", None)
+    environment.pop("DAPPER_TEST_ADAPTER_PROFILE", None)
     environment.pop("DAPPER_TEST_DEBUGGEE", None)
     environment.pop("DAPPER_TEST_DEBUGGEE_DEBUGINFO", None)
     environment.pop("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES", None)
     if adapter is not None:
         environment["DAPPER_TEST_ADAPTER_EXECUTABLE"] = str(adapter.executable)
         environment["DAPPER_TEST_ADAPTER_ARGUMENTS"] = json.dumps(adapter.arguments)
+    if test_spec.profile in (AdapterProfile.DEBUGPY, AdapterProfile.LLDB):
+        environment["DAPPER_TEST_ADAPTER_PROFILE"] = test_spec.profile.value
     if debuggee is not None:
         environment["DAPPER_TEST_DEBUGGEE"] = str(debuggee)
     if test_spec.profile is AdapterProfile.DEBUGPY:

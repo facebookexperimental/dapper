@@ -35,6 +35,12 @@ pub struct AdapterCommand {
     pub arguments: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RealAdapterProfile {
+    Debugpy,
+    Lldb,
+}
+
 impl AdapterLog {
     pub fn new() -> Result<Self> {
         let file = NamedTempFile::new().context("Failed to create adapter log file")?;
@@ -255,6 +261,19 @@ pub fn adapter_command() -> Result<AdapterCommand> {
         executable,
         arguments,
     })
+}
+
+/// Returns the real-adapter profile selected by the E2E runner.
+pub fn real_adapter_profile() -> Result<RealAdapterProfile> {
+    match std::env::var("DAPPER_TEST_ADAPTER_PROFILE") {
+        Ok(profile) if profile == "debugpy" => Ok(RealAdapterProfile::Debugpy),
+        Ok(profile) if profile == "lldb" => Ok(RealAdapterProfile::Lldb),
+        Ok(profile) => anyhow::bail!("unsupported real-adapter profile: {profile}"),
+        Err(std::env::VarError::NotPresent) => {
+            anyhow::bail!("DAPPER_TEST_ADAPTER_PROFILE must identify the real adapter")
+        }
+        Err(error) => Err(error).context("DAPPER_TEST_ADAPTER_PROFILE must be valid Unicode"),
+    }
 }
 
 /// Creates a Dapper command with the test session directory and logging policy.

@@ -167,3 +167,35 @@ pub async fn get_thread_ids(scope_id: &ScopeId) -> Result<Vec<i64>> {
         })
         .collect()
 }
+
+/// Runs `stack-trace --json` and returns all frame IDs for a thread.
+pub async fn get_frame_ids(scope_id: &ScopeId, thread_id: i64) -> Result<Vec<i64>> {
+    let result = run_debug_command(
+        Some(scope_id.clone()),
+        &["stack-trace", &thread_id.to_string(), "--json"],
+    )
+    .await?;
+    anyhow::ensure!(
+        result.success,
+        "stack-trace --json command failed, stderr: {}",
+        result.stderr
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&result.stdout).with_context(|| {
+        format!(
+            "stack-trace --json output is not valid JSON: {}",
+            result.stdout
+        )
+    })?;
+    let frames = parsed["result"]["stackFrames"]
+        .as_array()
+        .context("stack-trace response should contain a 'stackFrames' array")?;
+    anyhow::ensure!(!frames.is_empty(), "stackFrames array should not be empty");
+    frames
+        .iter()
+        .map(|frame| {
+            frame["id"]
+                .as_i64()
+                .context("frame should have a numeric 'id'")
+        })
+        .collect()
+}

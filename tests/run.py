@@ -94,6 +94,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("mcp_error_paths", AdapterProfile.DEBUGPY),
     TestSpec("mcp_error_paths", AdapterProfile.LLDB),
     TestSpec("mcp_list_tools", AdapterProfile.NONE),
+    TestSpec("mcp_session_fallback", AdapterProfile.DEBUGPY),
+    TestSpec("mcp_session_fallback", AdapterProfile.LLDB),
     TestSpec("mcp_server_info", AdapterProfile.NONE),
     TestSpec("mcp_tool_dap_request", AdapterProfile.DEBUGPY),
     TestSpec("mcp_tool_dap_request", AdapterProfile.LLDB),

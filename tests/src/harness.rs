@@ -124,6 +124,7 @@ impl DapClient {
             command.arg("--scope-id").arg(scope.as_str());
         }
         command.arg("process").arg(adapter_path);
+        command.args(adapter_arguments()?);
         command.args(adapter_args);
 
         let adapter_log = AdapterLog::new()?;
@@ -229,6 +230,19 @@ impl DapClient {
     pub fn kill(&mut self) -> Result<()> {
         self.inner_client.kill()
     }
+}
+
+fn adapter_arguments() -> Result<Vec<String>> {
+    let arguments = match std::env::var("DAPPER_TEST_ADAPTER_ARGUMENTS") {
+        Ok(arguments) => arguments,
+        Err(std::env::VarError::NotPresent) => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).context("DAPPER_TEST_ADAPTER_ARGUMENTS must be valid Unicode");
+        }
+    };
+
+    serde_json::from_str(&arguments)
+        .context("DAPPER_TEST_ADAPTER_ARGUMENTS must be a JSON string array")
 }
 
 /// Creates a Dapper command with the test session directory and logging policy.

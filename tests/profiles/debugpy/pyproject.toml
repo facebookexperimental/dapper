@@ -1,0 +1,13 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
+[project]
+name = "dapper-debugpy-tests"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = ["debugpy==1.8.21"]
+
+[tool.uv]
+package = false

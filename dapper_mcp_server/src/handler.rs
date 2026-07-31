@@ -34,6 +34,7 @@ use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock as Content;
 use rmcp::model::ListToolsResult;
@@ -1037,7 +1038,7 @@ impl ServerHandler for McpHandler {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         let tool_name = request.name.clone();
         let mcp_client_name = context
             .peer
@@ -1058,7 +1059,7 @@ impl ServerHandler for McpHandler {
             .unwrap_or("");
 
         match &result {
-            Ok(r) if r.is_error.unwrap_or(false) => {
+            Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
                 tracing::warn!(
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
@@ -1095,8 +1096,7 @@ impl ServerHandler for McpHandler {
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult {
             tools: self.tool_router.list_all(),
-            meta: None,
-            next_cursor: None,
+            ..Default::default()
         })
     }
 

@@ -16,7 +16,12 @@ from typing import cast
 
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parent.parent
 TEST_MANIFEST: Path = REPOSITORY_ROOT / "tests" / "Cargo.toml"
-TEST_NAMES: tuple[str, ...] = ("help_topics", "mcp_server_info")
+TEST_NAMES: tuple[str, ...] = (
+    "help_topics",
+    "mcp_server_info",
+    "mcp_tool_reverse_navigate",
+)
+FAKE_ADAPTER_TESTS: frozenset[str] = frozenset({"mcp_tool_reverse_navigate"})
 
 
 def _render_compiler_message(message: dict[object, object]) -> None:
@@ -30,26 +35,19 @@ def _render_compiler_message(message: dict[object, object]) -> None:
         sys.stderr.write(rendered)
 
 
-def _artifact_executable(message: dict[object, object]) -> Path | None:
+def _artifact_executable(
+    message: dict[object, object], executable_name: str
+) -> Path | None:
     if message.get("reason") != "compiler-artifact":
         return None
     target = message.get("target")
-    if not isinstance(target, dict) or target.get("name") != "dapper":
+    if not isinstance(target, dict) or target.get("name") != executable_name:
         return None
     executable = message.get("executable")
     return Path(executable) if isinstance(executable, str) else None
 
 
-def _build_dapper() -> Path:
-    command = [
-        "cargo",
-        "build",
-        "--package",
-        "dapper_cli",
-        "--bin",
-        "dapper",
-        "--message-format=json-render-diagnostics",
-    ]
+def _build_executable(command: list[str], executable_name: str) -> Path:
     # @lint-ignore FIXIT1 NoUnsafeExecRule
     process = subprocess.Popen(
         command,
@@ -71,7 +69,7 @@ def _build_dapper() -> Path:
         if not isinstance(decoded, dict):
             continue
         _render_compiler_message(decoded)
-        artifact = _artifact_executable(decoded)
+        artifact = _artifact_executable(decoded, executable_name)
         if artifact is not None:
             executable = artifact
 
@@ -79,13 +77,49 @@ def _build_dapper() -> Path:
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, command)
     if executable is None:
-        raise RuntimeError("Cargo did not report the `dapper` executable artifact")
+        raise RuntimeError(
+            f"Cargo did not report the `{executable_name}` executable artifact"
+        )
     return executable.resolve(strict=True)
 
 
-def _run_test(test_name: str, dapper: Path) -> int:
+def _build_dapper() -> Path:
+    return _build_executable(
+        [
+            "cargo",
+            "build",
+            "--package",
+            "dapper_cli",
+            "--bin",
+            "dapper",
+            "--message-format=json-render-diagnostics",
+        ],
+        "dapper",
+    )
+
+
+def _build_fake_adapter() -> Path:
+    return _build_executable(
+        [
+            "cargo",
+            "build",
+            "--manifest-path",
+            str(TEST_MANIFEST),
+            "--features",
+            "e2e-tests",
+            "--bin",
+            "fake_dap_adapter",
+            "--message-format=json-render-diagnostics",
+        ],
+        "fake_dap_adapter",
+    )
+
+
+def _run_test(test_name: str, dapper: Path, adapter: Path | None) -> int:
     environment = os.environ.copy()
     environment["DAPPER_TEST_EXECUTABLE"] = str(dapper)
+    if adapter is not None:
+        environment["DAPPER_TEST_ADAPTER_EXECUTABLE"] = str(adapter)
     command = [
         "cargo",
         "test",
@@ -120,7 +154,8 @@ def main() -> int:
     test_name = _parse_test_name()
     try:
         dapper = _build_dapper()
-        return _run_test(test_name, dapper)
+        adapter = _build_fake_adapter() if test_name in FAKE_ADAPTER_TESTS else None
+        return _run_test(test_name, dapper, adapter)
     except subprocess.CalledProcessError as error:
         return error.returncode
     except (OSError, RuntimeError) as error:

@@ -5,14 +5,31 @@
 
 use anyhow::Context;
 use anyhow::Result;
+use dapper_dap_protocol::data_types::ThreadId;
+use dapper_mcp_server::DebugTool;
 use dapper_mcp_server::Toolset;
+use dapper_session::NavigationType;
 use dapper_session::ScopeId;
 use rmcp::RoleClient;
+use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResult;
 use rmcp::service::RunningService;
 use rmcp::service::ServiceExt;
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
+
+pub mod dap_client;
+mod harness;
+
+pub use harness::AdapterLog;
+pub use harness::DapClient;
+pub use harness::dapper_command;
+pub use harness::generate_test_scope_id;
+pub use harness::setup_stopped_fake_debug_session;
+
+pub const REVERSE_DEBUG_GATING_MSG: &str =
+    "does not advertise the DAP `supportsStepBack` capability";
 
 /// An initialized MCP client connected to a Dapper child process.
 pub type McpClient = RunningService<RoleClient, ()>;
@@ -60,4 +77,60 @@ pub async fn create_mcp_client_with_binary(
         .await?;
 
     Ok(service)
+}
+
+/// Extracts all text blocks from an MCP tool result.
+pub fn extract_text_content(tool_result: &CallToolResult) -> String {
+    tool_result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            rmcp::model::ContentBlock::Text(text) => Some(text.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// Parses the first thread ID from Dapper's rendered threads response.
+pub fn parse_thread_id_from_threads_response(threads_content: &str) -> Result<ThreadId> {
+    threads_content
+        .lines()
+        .find(|line| line.trim().starts_with("Thread "))
+        .and_then(|line| {
+            line.split(':')
+                .next()?
+                .trim()
+                .strip_prefix("Thread ")?
+                .parse::<ThreadId>()
+                .ok()
+        })
+        .with_context(|| format!("could not parse thread ID from: {threads_content}"))
+}
+
+/// Calls the MCP navigation tool with a navigation type and thread ID.
+pub async fn call_navigate_command(
+    mcp_client: &McpClient,
+    navigation_type: NavigationType,
+    thread_id: ThreadId,
+) -> Result<CallToolResult> {
+    mcp_client
+        .call_tool({
+            let mut params = CallToolRequestParams::new(DebugTool::Navigate);
+            params.arguments = Some({
+                let mut arguments = serde_json::Map::new();
+                arguments.insert(
+                    "navigation_type".to_string(),
+                    serde_json::Value::String(navigation_type.to_string()),
+                );
+                arguments.insert(
+                    "thread_id".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(thread_id.0)),
+                );
+                arguments
+            });
+            params
+        })
+        .await
+        .context("failed to call the MCP navigate tool")
 }

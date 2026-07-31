@@ -6,9 +6,13 @@
 #include <numeric>
 #include <vector>
 
+int sum_values(const std::vector<int>& values) {
+  // breakpoint default_stop
+  return std::accumulate(values.begin(), values.end(), 0);
+}
+
 int main() {
   const std::vector<int> values{1, 2, 3};
-  // breakpoint default_stop
-  const int total = std::accumulate(values.begin(), values.end(), 0);
+  const int total = sum_values(values);
   return total == 6 ? 0 : 1;
 }

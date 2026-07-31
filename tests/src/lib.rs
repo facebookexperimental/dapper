@@ -5,7 +5,9 @@
 
 use anyhow::Context;
 use anyhow::Result;
+use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::ThreadId;
+use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_mcp_server::DebugTool;
 use dapper_mcp_server::Toolset;
 pub use dapper_proxy_server::ProgressEvent;
@@ -117,6 +119,35 @@ pub fn parse_thread_id_from_threads_response(threads_content: &str) -> Result<Th
         .with_context(|| format!("could not parse thread ID from: {threads_content}"))
 }
 
+/// Parses the first frame ID from rendered `stack-trace` output.
+pub fn parse_frame_id_from_stack_trace_response(stack_trace_content: &str) -> Result<FrameId> {
+    stack_trace_content
+        .lines()
+        .find_map(|line| {
+            let after_start = line.split_once("(frame id: ")?.1;
+            after_start.split_once(')')?.0.parse::<FrameId>().ok()
+        })
+        .with_context(|| format!("could not parse frame ID from: {stack_trace_content}"))
+}
+
+/// Parses the first variables reference from rendered `scopes` output.
+pub fn parse_variables_reference_from_scopes_response(
+    scopes_content: &str,
+) -> Result<VariablesReference> {
+    scopes_content
+        .lines()
+        .find_map(|line| {
+            let after_start = line.split_once("(ref: ")?.1;
+            after_start
+                .split_once(',')?
+                .0
+                .trim()
+                .parse::<VariablesReference>()
+                .ok()
+        })
+        .with_context(|| format!("could not parse variables reference from: {scopes_content}"))
+}
+
 /// Calls the MCP navigation tool with a navigation type and thread ID.
 pub async fn call_navigate_command(
     mcp_client: &McpClient,
@@ -196,6 +227,34 @@ pub async fn get_frame_ids(scope_id: &ScopeId, thread_id: i64) -> Result<Vec<i64
             frame["id"]
                 .as_i64()
                 .context("frame should have a numeric 'id'")
+        })
+        .collect()
+}
+
+/// Runs `scopes --json` and returns all variables references for a frame.
+pub async fn get_scope_variables_references(scope_id: &ScopeId, frame_id: i64) -> Result<Vec<i64>> {
+    let result = run_debug_command(
+        Some(scope_id.clone()),
+        &["scopes", &frame_id.to_string(), "--json"],
+    )
+    .await?;
+    anyhow::ensure!(
+        result.success,
+        "scopes --json command failed, stderr: {}",
+        result.stderr
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&result.stdout)
+        .with_context(|| format!("scopes --json output is not valid JSON: {}", result.stdout))?;
+    let scopes = parsed["result"]["scopes"]
+        .as_array()
+        .context("scopes response should contain a 'scopes' array")?;
+    anyhow::ensure!(!scopes.is_empty(), "scopes array should not be empty");
+    scopes
+        .iter()
+        .map(|scope| {
+            scope["variablesReference"]
+                .as_i64()
+                .context("scope should have a numeric 'variablesReference'")
         })
         .collect()
 }

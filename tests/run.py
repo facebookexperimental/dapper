@@ -82,6 +82,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("debug_cli_stop", AdapterProfile.LLDB),
     TestSpec("debug_cli_threads", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_threads", AdapterProfile.LLDB),
+    TestSpec("debug_cli_variable_inspection", AdapterProfile.DEBUGPY),
+    TestSpec("debug_cli_variable_inspection", AdapterProfile.LLDB),
     TestSpec("error_recovery", AdapterProfile.DEBUGPY),
     TestSpec("error_recovery", AdapterProfile.LLDB),
     TestSpec("headless_child_session", AdapterProfile.FAKE),
@@ -329,11 +331,19 @@ def _run_test(
     environment.pop("DAPPER_TEST_ADAPTER_ARGUMENTS", None)
     environment.pop("DAPPER_TEST_DEBUGGEE", None)
     environment.pop("DAPPER_TEST_DEBUGGEE_DEBUGINFO", None)
+    environment.pop("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES", None)
     if adapter is not None:
         environment["DAPPER_TEST_ADAPTER_EXECUTABLE"] = str(adapter.executable)
         environment["DAPPER_TEST_ADAPTER_ARGUMENTS"] = json.dumps(adapter.arguments)
     if debuggee is not None:
         environment["DAPPER_TEST_DEBUGGEE"] = str(debuggee)
+    if test_spec.profile is AdapterProfile.LLDB:
+        environment["DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES"] = json.dumps(
+            {
+                "stopOnEntry": False,
+                "initCommands": ["breakpoint set --name sum_values"],
+            }
+        )
     command = [
         "cargo",
         "test",

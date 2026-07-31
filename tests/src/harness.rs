@@ -296,6 +296,44 @@ pub fn setup_stopped_fake_debug_session(
     Ok((scope_id, dap_client))
 }
 
+/// Starts an injected real adapter and pauses its debuggee at program entry.
+pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClient)> {
+    let debuggee = std::env::var("DAPPER_TEST_DEBUGGEE")
+        .context("DAPPER_TEST_DEBUGGEE must name the test debuggee")?;
+    let debuggee = std::fs::canonicalize(&debuggee)
+        .with_context(|| format!("failed to resolve test debuggee: {debuggee}"))?;
+    let scope_id = generate_test_scope_id(test_name);
+
+    let mut dap_client = DapClient::new(Some(scope_id.clone()))?;
+    dap_client.initialize()?;
+    let mut launch_arguments = serde_json::json!({
+        "noDebug": false,
+        "program": debuggee,
+        "args": [],
+        "stopOnEntry": true,
+    });
+    match std::env::var("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES") {
+        Ok(overrides) => {
+            let overrides: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&overrides)
+                    .context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be a JSON object")?;
+            launch_arguments
+                .as_object_mut()
+                .expect("launch arguments literal should be an object")
+                .extend(overrides);
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => {
+            return Err(error)
+                .context("DAPPER_TEST_LAUNCH_ARGUMENT_OVERRIDES must be valid Unicode");
+        }
+    }
+    dap_client.launch(launch_arguments)?;
+    dap_client.wait_for_event("stopped")?;
+
+    Ok((scope_id, dap_client))
+}
+
 /// Runs a Dapper debug CLI command against an optional test scope.
 pub async fn run_debug_command(scope_id: Option<ScopeId>, args: &[&str]) -> Result<DebugCliOutput> {
     let dapper_path = dapper_executable()?;

@@ -33,6 +33,7 @@ pub use harness::generate_test_scope_id;
 pub use harness::parse_progress_event;
 pub use harness::run_debug_command;
 pub use harness::run_debug_command_with_binary;
+pub use harness::setup_stopped_debug_session;
 pub use harness::setup_stopped_fake_debug_session;
 pub use harness::spawn_proxy_from_config;
 

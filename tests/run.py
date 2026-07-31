@@ -81,6 +81,8 @@ TEST_SPECS: tuple[TestSpec, ...] = (
     TestSpec("debug_cli_scopes", AdapterProfile.LLDB),
     TestSpec("debug_cli_sessions", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_sessions", AdapterProfile.LLDB),
+    TestSpec("debug_cli_set_breakpoints", AdapterProfile.DEBUGPY),
+    TestSpec("debug_cli_set_breakpoints", AdapterProfile.LLDB),
     TestSpec("debug_cli_set_variable", AdapterProfile.DEBUGPY),
     TestSpec("debug_cli_set_variable", AdapterProfile.LLDB),
     TestSpec("debug_cli_stack_trace", AdapterProfile.DEBUGPY),

@@ -23,10 +23,8 @@ use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 
 pub mod dap_client;
-mod dap_response;
 mod harness;
 
-pub use dap_response::normalize_dap_response;
 pub use harness::AdapterCommand;
 pub use harness::AdapterLog;
 pub use harness::DapClient;

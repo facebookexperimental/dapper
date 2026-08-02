@@ -3,19 +3,8 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use dapper_e2e_support::normalize_dap_response;
 use dapper_e2e_support::run_debug_command;
 use dapper_e2e_support::setup_stopped_debug_session;
-
-fn assert_normalized_eq(a: &serde_json::Value, b: &serde_json::Value, msg: &str) {
-    let norm_a = normalize_dap_response(a);
-    let norm_b = normalize_dap_response(b);
-    assert_eq!(
-        norm_a, norm_b,
-        "{}\n\nnormalized a: {:#}\nnormalized b: {:#}\n\noriginal a: {:#}\noriginal b: {:#}",
-        msg, norm_a, norm_b, a, b
-    );
-}
 
 #[tokio::test]
 async fn debug_cli_dap_threads() -> anyhow::Result<()> {
@@ -57,7 +46,6 @@ async fn debug_cli_dap_threads() -> anyhow::Result<()> {
         first_thread
     );
 
-    // Verify --json produces equivalent but compact output
     let json_result = run_debug_command(Some(scope_id), &["dap", "threads", "--json"]).await?;
     assert!(
         json_result.success,
@@ -76,12 +64,13 @@ async fn debug_cli_dap_threads() -> anyhow::Result<()> {
             json_stdout
         )
     });
-    // Normalize proactively: while threads responses currently have no non-idempotent
-    // fields, server-side cascading expansion could add stack traces with sourceReference.
-    assert_normalized_eq(
-        &parsed,
-        &json_parsed,
-        "dap threads --json parsed value should equal default parsed value (after normalizing non-idempotent fields)",
+    assert!(
+        json_parsed
+            .get("threads")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty()),
+        "dap threads --json output should carry a non-empty 'threads' array, got: {}",
+        json_stdout
     );
 
     dap_client.kill()?;
@@ -145,7 +134,6 @@ async fn debug_cli_dap_stacktrace() -> anyhow::Result<()> {
         first_frame
     );
 
-    // Verify --json produces equivalent but compact output
     let json_result = run_debug_command(
         Some(scope_id),
         &["dap", "stackTrace", "--arguments", &args_json, "--json"],
@@ -168,10 +156,13 @@ async fn debug_cli_dap_stacktrace() -> anyhow::Result<()> {
             json_stdout
         )
     });
-    assert_normalized_eq(
-        &parsed,
-        &json_parsed,
-        "dap stackTrace --json parsed value should equal default parsed value (after normalizing non-idempotent fields)",
+    assert!(
+        json_parsed
+            .get("stackFrames")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty()),
+        "dap stackTrace --json output should carry a non-empty 'stackFrames' array, got: {}",
+        json_stdout
     );
 
     dap_client.kill()?;
@@ -258,7 +249,6 @@ async fn debug_cli_dap_scopes() -> anyhow::Result<()> {
         first_scope
     );
 
-    // Verify --json produces equivalent but compact output
     let json_result = run_debug_command(
         Some(scope_id),
         &["dap", "scopes", "--arguments", &args_json, "--json"],
@@ -281,93 +271,15 @@ async fn debug_cli_dap_scopes() -> anyhow::Result<()> {
             json_stdout
         )
     });
-    assert_normalized_eq(
-        &parsed,
-        &json_parsed,
-        "dap scopes --json parsed value should equal default parsed value (after normalizing non-idempotent fields)",
+    assert!(
+        json_parsed
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty()),
+        "dap scopes --json output should carry a non-empty 'scopes' array, got: {}",
+        json_stdout
     );
 
     dap_client.kill()?;
     Ok(())
-}
-
-#[test]
-fn normalize_dap_response_zeroes_non_idempotent_fields() {
-    use serde_json::json;
-
-    let value = json!({
-        "threads": [
-            {"id": 12345, "name": "main"}
-        ],
-        "stackFrames": [
-            {
-                "id": 100,
-                "name": "foo",
-                "line": 42,
-                "column": 1,
-                "source": {
-                    "name": "main.py",
-                    "path": "/tmp/main.py",
-                    "sourceReference": 7
-                },
-                "instructionPointerReference": "0xdeadbeef"
-            }
-        ],
-        "scopes": [
-            {
-                "name": "Locals",
-                "variablesReference": 33554433,
-                "expensive": false
-            }
-        ],
-        "breakpoints": [
-            {"id": 5, "verified": true, "line": 10}
-        ],
-        "variables": [
-            {
-                "name": "x",
-                "value": "42",
-                "variablesReference": 100,
-                "memoryReference": "0x1234",
-                "declarationLocationReference": 50,
-                "valueLocationReference": 51
-            }
-        ]
-    });
-
-    let value = normalize_dap_response(&value);
-
-    // Thread IDs should be preserved (id + name only, no line/column)
-    assert_eq!(value["threads"][0]["id"], 12345);
-    assert_eq!(value["threads"][0]["name"], "main");
-
-    // StackFrame id should be zeroed (has name + line + column)
-    assert_eq!(value["stackFrames"][0]["id"], 0);
-    // But name/line/column are preserved
-    assert_eq!(value["stackFrames"][0]["name"], "foo");
-    assert_eq!(value["stackFrames"][0]["line"], 42);
-    assert_eq!(value["stackFrames"][0]["column"], 1);
-    // sourceReference zeroed
-    assert_eq!(value["stackFrames"][0]["source"]["sourceReference"], 0);
-    // instructionPointerReference blanked
-    assert_eq!(value["stackFrames"][0]["instructionPointerReference"], "");
-
-    // Scope variablesReference zeroed
-    assert_eq!(value["scopes"][0]["variablesReference"], 0);
-    assert_eq!(value["scopes"][0]["name"], "Locals");
-    assert_eq!(value["scopes"][0]["expensive"], false);
-
-    // Breakpoint id zeroed (has verified)
-    assert_eq!(value["breakpoints"][0]["id"], 0);
-    assert_eq!(value["breakpoints"][0]["verified"], true);
-    assert_eq!(value["breakpoints"][0]["line"], 10);
-
-    // Variable reference fields zeroed/blanked
-    assert_eq!(value["variables"][0]["variablesReference"], 0);
-    assert_eq!(value["variables"][0]["memoryReference"], "");
-    assert_eq!(value["variables"][0]["declarationLocationReference"], 0);
-    assert_eq!(value["variables"][0]["valueLocationReference"], 0);
-    // Variable name and value preserved
-    assert_eq!(value["variables"][0]["name"], "x");
-    assert_eq!(value["variables"][0]["value"], "42");
 }

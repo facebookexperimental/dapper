@@ -585,6 +585,8 @@ mod tests {
     use dapper_dap_protocol::events::ExitedEventBody;
     use dapper_dap_protocol::events::StoppedEventBody;
     use dapper_dap_protocol::events::UnknownEvent;
+    use dapper_dap_protocol::responses::ScopesResponseBody;
+    use dapper_dap_protocol::responses::StackTraceResponseBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
     use dapper_dap_protocol::responses::UnknownResponseBody;
 
@@ -643,26 +645,71 @@ mod tests {
     }
 
     #[test]
-    fn render_json_is_compact_and_parseable() {
-        let result = RawDapResult {
-            body: ResponseBody::Threads(ThreadsResponseBody {
-                threads: vec![Thread {
-                    id: ThreadId(1),
-                    name: "main".to_string(),
-                }],
-                ..Default::default()
-            }),
-            event: None,
-            extra: Default::default(),
-        };
+    fn render_json_matches_display_but_is_compact() {
+        let cases = [
+            (
+                ResponseBody::Threads(ThreadsResponseBody {
+                    threads: vec![Thread {
+                        id: ThreadId(1),
+                        name: "main".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                "/threads/0/name",
+                "main",
+            ),
+            (
+                ResponseBody::StackTrace(StackTraceResponseBody {
+                    stack_frames: vec![StackFrame {
+                        name: "sum_values".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                "/stackFrames/0/name",
+                "sum_values",
+            ),
+            (
+                ResponseBody::Scopes(ScopesResponseBody {
+                    scopes: vec![Scope {
+                        name: "Locals".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                "/scopes/0/name",
+                "Locals",
+            ),
+        ];
 
-        let output = result.render_json();
-        assert!(
-            !output.contains('\n'),
-            "compact rendering should be a single line, got: {output}"
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
-        assert_eq!(parsed["threads"][0]["id"], 1);
+        for (body, pointer, expected_name) in cases {
+            let result = RawDapResult {
+                body,
+                event: None,
+                extra: Default::default(),
+            };
+
+            let compact = result.render_json();
+            let pretty = result.to_string();
+
+            assert!(
+                !compact.contains('\n'),
+                "render_json should emit a single line, got: {compact}"
+            );
+
+            let compact_value: serde_json::Value =
+                serde_json::from_str(&compact).expect("compact is valid JSON");
+            assert_eq!(
+                compact_value.pointer(pointer).and_then(|v| v.as_str()),
+                Some(expected_name),
+                "render_json should carry the response payload at {pointer}, got: {compact}"
+            );
+            assert_eq!(
+                pretty,
+                serde_json::to_string_pretty(&compact_value).expect("pretty-printable"),
+                "Display should be the pretty rendering of the same value"
+            );
+        }
     }
 
     #[test]

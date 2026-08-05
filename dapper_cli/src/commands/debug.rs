@@ -64,12 +64,15 @@ enum BreakpointArg {
 }
 
 impl FromStr for BreakpointArg {
-    type Err = String;
+    type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(line) = s.parse::<i64>() {
             return Ok(BreakpointArg::Line(line));
         }
-        serde_json::from_str(s).map_err(|e| format!("invalid breakpoint spec: {e}"))
+        // Interpolate the serde error rather than attaching it as context:
+        // clap renders value-parser errors via `Display`, which drops the
+        // source chain.
+        serde_json::from_str(s).map_err(|e| anyhow::anyhow!("invalid breakpoint spec: {e}"))
     }
 }
 
@@ -647,5 +650,51 @@ mod tests {
         };
         assert!(filters.is_empty());
         assert!(!clear_existing);
+    }
+
+    #[test]
+    fn breakpoint_arg_parses_bare_line() {
+        let arg: BreakpointArg = "10".parse().expect("bare line number");
+        assert!(matches!(arg, BreakpointArg::Line(10)));
+        assert_eq!(SourceBreakpoint::from(arg).line, 10);
+    }
+
+    #[test]
+    fn breakpoint_arg_parses_json_spec() {
+        let arg: BreakpointArg = r#"{"line":20,"condition":"x>5"}"#.parse().expect("json spec");
+        let bp = SourceBreakpoint::from(arg);
+        assert_eq!(bp.line, 20);
+        assert_eq!(bp.condition.as_deref(), Some("x>5"));
+        assert_eq!(bp.log_message, None);
+    }
+
+    #[test]
+    fn breakpoint_arg_accepts_log_message_alias() {
+        let arg: BreakpointArg = r#"{"line":30,"logMessage":"x={x}"}"#
+            .parse()
+            .expect("logMessage alias");
+        assert_eq!(
+            SourceBreakpoint::from(arg).log_message.as_deref(),
+            Some("x={x}")
+        );
+    }
+
+    #[test]
+    fn breakpoint_arg_rejects_non_line_non_json() {
+        let err = "not-a-breakpoint"
+            .parse::<BreakpointArg>()
+            .expect_err("neither a line number nor JSON");
+        assert!(
+            err.to_string().starts_with("invalid breakpoint spec: "),
+            "clap renders this via Display, so the serde detail must be inline: {err}"
+        );
+    }
+
+    #[test]
+    fn breakpoint_arg_rejects_json_without_line() {
+        assert!(
+            r#"{"condition":"x>5"}"#.parse::<BreakpointArg>().is_err(),
+            "a spec with no line has nowhere to set a breakpoint"
+        );
     }
 }

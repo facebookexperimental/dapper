@@ -22,6 +22,8 @@ use dapper_control_api::RenderedResponse;
 use dapper_control_api::render_plaintext;
 use dapper_control_api::resolve_unique_session;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
+use dapper_dap_protocol::requests::ReadMemoryArguments;
+use dapper_dap_protocol::requests::WriteMemoryArguments;
 use dapper_dap_protocol::responses::ResponseBody;
 use dapper_session::Port;
 use dapper_session::ScopeClause;
@@ -121,6 +123,12 @@ fn ok_text(text: impl Into<String>) -> CallToolResult {
 /// Shorthand for a failed text tool result.
 fn err_text(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(text.into())])
+}
+
+/// Render typed DAP request arguments for the raw-request transport, which
+/// carries them as JSON. Infallible: the argument types are plain data.
+fn dap_args(args: &impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(args).expect("DAP request arguments are plain serializable")
 }
 
 #[tool_router]
@@ -841,17 +849,21 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(err_text(format!("{e:#}"))),
         };
 
-        let mut args = serde_json::json!({
-            "memoryReference": memory_reference,
-            "count": count.get(),
-        });
-        if let Some(offset) = offset {
-            args["offset"] = serde_json::json!(offset);
-        }
+        let args = ReadMemoryArguments {
+            memory_reference,
+            offset,
+            count: count.get(),
+            extra: Default::default(),
+        };
 
         Ok(
             match client
-                .send_dap_request("readMemory", Some(args), false, default_timeout())
+                .send_dap_request(
+                    "readMemory",
+                    Some(dap_args(&args)),
+                    false,
+                    default_timeout(),
+                )
                 .await
             {
                 Ok(result) => match &result.body {
@@ -897,19 +909,23 @@ Response is JSON from the debug adapter."#
                 return Ok(err_text(format!("{e:#}")));
             }
         };
-        let b64_data = base64::engine::general_purpose::STANDARD.encode(&raw_bytes);
 
-        let mut args = serde_json::json!({
-            "memoryReference": memory_reference,
-            "data": b64_data,
-        });
-        if let Some(offset) = offset {
-            args["offset"] = serde_json::json!(offset);
-        }
+        let args = WriteMemoryArguments {
+            memory_reference,
+            offset,
+            allow_partial: None,
+            data: base64::engine::general_purpose::STANDARD.encode(&raw_bytes),
+            extra: Default::default(),
+        };
 
         Ok(
             match client
-                .send_dap_request("writeMemory", Some(args), false, default_timeout())
+                .send_dap_request(
+                    "writeMemory",
+                    Some(dap_args(&args)),
+                    false,
+                    default_timeout(),
+                )
                 .await
             {
                 Ok(result) => match &result.body {
@@ -917,11 +933,11 @@ Response is JSON from the debug adapter."#
                         let written = body.bytes_written.unwrap_or(raw_bytes.len() as i64);
                         ok_text(format!(
                             "Successfully wrote {} byte(s) to {}.",
-                            written, memory_reference
+                            written, args.memory_reference
                         ))
                     }
                     ResponseBody::WriteMemory(None) => {
-                        ok_text(format!("Write completed to {}.", memory_reference))
+                        ok_text(format!("Write completed to {}.", args.memory_reference))
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },

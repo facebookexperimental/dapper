@@ -895,6 +895,51 @@ fn hex_string_to_bytes_rejects_oversized_payload() {
 }
 
 #[test]
+fn read_memory_arguments_render_the_dap_wire_shape() {
+    let args = ReadMemoryArguments {
+        memory_reference: "0xdeadbeef".to_owned(),
+        offset: Some(16),
+        count: 64,
+        extra: Default::default(),
+    };
+    assert_eq!(
+        dap_args(&args),
+        serde_json::json!({"memoryReference": "0xdeadbeef", "offset": 16, "count": 64})
+    );
+}
+
+#[test]
+fn read_memory_arguments_omit_an_absent_offset() {
+    let args = ReadMemoryArguments {
+        memory_reference: "0xdeadbeef".to_owned(),
+        offset: None,
+        count: 64,
+        extra: Default::default(),
+    };
+    assert_eq!(
+        dap_args(&args),
+        serde_json::json!({"memoryReference": "0xdeadbeef", "count": 64}),
+        "an absent offset must not reach the adapter as an explicit null"
+    );
+}
+
+#[test]
+fn write_memory_arguments_render_the_dap_wire_shape() {
+    let args = WriteMemoryArguments {
+        memory_reference: "0xdeadbeef".to_owned(),
+        offset: None,
+        allow_partial: None,
+        data: "SGVsbG8=".to_owned(),
+        extra: Default::default(),
+    };
+    assert_eq!(
+        dap_args(&args),
+        serde_json::json!({"memoryReference": "0xdeadbeef", "data": "SGVsbG8="}),
+        "allowPartial is not exposed by this tool and must stay off the wire"
+    );
+}
+
+#[test]
 fn read_byte_count_accepts_the_inclusive_range() {
     assert_eq!(ReadByteCount::try_new(1).expect("1 is in range").get(), 1);
     assert_eq!(

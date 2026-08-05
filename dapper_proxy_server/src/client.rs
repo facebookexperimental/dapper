@@ -29,7 +29,14 @@ use dapper_dap_protocol::requests::SetVariableArguments;
 use dapper_dap_protocol::requests::StackTraceArguments;
 use dapper_dap_protocol::requests::UnknownCommand;
 use dapper_dap_protocol::requests::VariablesArguments;
+use dapper_dap_protocol::responses::EvaluateResponseBody;
 use dapper_dap_protocol::responses::ResponseBody;
+use dapper_dap_protocol::responses::ResponseBodyMismatch;
+use dapper_dap_protocol::responses::ScopesResponseBody;
+use dapper_dap_protocol::responses::SetVariableResponseBody;
+use dapper_dap_protocol::responses::StackTraceResponseBody;
+use dapper_dap_protocol::responses::ThreadsResponseBody;
+use dapper_dap_protocol::responses::VariablesResponseBody;
 use dapper_session::ExceptionFilterEntry;
 use dapper_session::NavigateResult;
 use dapper_session::NavigationType;
@@ -195,6 +202,25 @@ impl ProxyClient {
         Ok((response, messages))
     }
 
+    /// [`round_trip`](Self::round_trip) for the commands that only want a
+    /// typed body. Nothing ties `B` to `request`'s command, so pairing them is
+    /// the caller's job; what the type system does buy is the mismatch error,
+    /// which names the request's own command instead of a literal.
+    async fn round_trip_body<B>(&self, request: dap::Request) -> anyhow::Result<B>
+    where
+        B: TryFrom<ResponseBody, Error = ResponseBodyMismatch>,
+    {
+        let expected = request.command_name().to_owned();
+        let (response, _) = self.round_trip(request).await?;
+        response.body.try_into().map_err(|e: ResponseBodyMismatch| {
+            anyhow::anyhow!(
+                "Unexpected response body for {}: got `{}`",
+                expected,
+                e.input.command_name()
+            )
+        })
+    }
+
     pub async fn repl(&self, cmd: String, frame_id: Option<FrameId>) -> anyhow::Result<String> {
         let request = dap::Request::new(RequestCommand::Evaluate(EvaluateArguments {
             expression: cmd,
@@ -203,36 +229,16 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
+        let body: EvaluateResponseBody = self.round_trip_body(request).await?;
 
-        // Extract result from the response body
-        let result = match response.body {
-            ResponseBody::Evaluate(body) => body.result,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for evaluate: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
-
-        Ok(result)
+        Ok(body.result)
     }
 
     pub async fn threads(&self) -> anyhow::Result<dapper_session::ThreadsResult> {
         let request = dap::Request::new(RequestCommand::Threads);
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let threads = match response.body {
-            ResponseBody::Threads(body) => body.threads,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for threads: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
+        let body: ThreadsResponseBody = self.round_trip_body(request).await?;
+        let threads = body.threads;
 
         let stack_trace = if self.config.threads.show_stacktrace
             && threads.len() <= self.config.threads.expand_stacktrace_threshold
@@ -267,17 +273,8 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let all_frames = match response.body {
-            ResponseBody::StackTrace(body) => body.stack_frames,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for stackTrace: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
+        let body: StackTraceResponseBody = self.round_trip_body(request).await?;
+        let all_frames = body.stack_frames;
 
         let (frames_to_show, has_more_frames) =
             helpers::select_frames(all_frames.len(), effective_levels);
@@ -308,17 +305,8 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let scopes = match response.body {
-            ResponseBody::Scopes(body) => body.scopes,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for scopes: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
+        let body: ScopesResponseBody = self.round_trip_body(request).await?;
+        let scopes = body.scopes;
 
         let locals = if self.config.scopes.expand_locals {
             let locals_scope = scopes
@@ -354,20 +342,10 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let variables = match response.body {
-            ResponseBody::Variables(body) => body.variables,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for variables: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
+        let body: VariablesResponseBody = self.round_trip_body(request).await?;
 
         Ok(dapper_session::VariablesResult {
-            variables,
+            variables: body.variables,
             variables_reference,
             ..Default::default()
         })
@@ -386,17 +364,7 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let body = match response.body {
-            ResponseBody::SetVariable(body) => body,
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Unexpected response body for setVariable: got `{}`",
-                    other.command_name()
-                ));
-            }
-        };
+        let body: SetVariableResponseBody = self.round_trip_body(request).await?;
 
         Ok(dapper_session::SetVariableResult {
             body,
@@ -1561,8 +1529,8 @@ mod tests {
     }
 
     /// Spawn a mock backend that answers the next request with a
-    /// `success: true` response carrying a deliberately mismatched
-    /// body (`Next`), so the caller's body match hits its `_` arm.
+    /// `success: true` response carrying a deliberately mismatched body
+    /// (`Next`), so `round_trip_body`'s conversion fails.
     fn spawn_mismatched_body_mock(mut rx: mpsc::UnboundedReceiver<ProxyRequest>) {
         tokio::spawn(async move {
             if let Some(req) = rx.recv().await {
@@ -1595,9 +1563,9 @@ mod tests {
         spawn_mismatched_body_mock(rx);
 
         let err = client.threads().await.unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for threads: got `next`"
         );
     }
 
@@ -1610,9 +1578,9 @@ mod tests {
             .stack_trace(ThreadId(1), None, None)
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for stackTrace: got `next`"
         );
     }
 
@@ -1622,9 +1590,9 @@ mod tests {
         spawn_mismatched_body_mock(rx);
 
         let err = client.scopes(FrameId(1)).await.unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for scopes: got `next`"
         );
     }
 
@@ -1634,9 +1602,9 @@ mod tests {
         spawn_mismatched_body_mock(rx);
 
         let err = client.variables(VariablesReference(1)).await.unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for variables: got `next`"
         );
     }
 
@@ -1646,9 +1614,9 @@ mod tests {
         spawn_mismatched_body_mock(rx);
 
         let err = client.repl("x".to_owned(), None).await.unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for evaluate: got `next`"
         );
     }
 
@@ -1661,9 +1629,9 @@ mod tests {
             .set_variable(VariablesReference(1), "x", "1")
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("Unexpected response body"),
-            "expected an unexpected-body error, got: {err}"
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for setVariable: got `next`"
         );
     }
 

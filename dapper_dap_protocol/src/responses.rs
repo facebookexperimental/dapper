@@ -327,7 +327,8 @@ pub struct LocationsResponseBody {
     Serialize,
     Deserialize,
     AsRefStr,
-    strum::EnumDiscriminants
+    strum::EnumDiscriminants,
+    derive_more::TryInto
 )]
 #[strum_discriminants(derive(strum::EnumIter, Hash))]
 #[serde(tag = "command", content = "body", rename_all = "camelCase")]
@@ -390,6 +391,11 @@ pub struct UnknownResponseBody {
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
     pub extra: IndexMap<String, Value>,
 }
+
+/// Failure of a derived `TryFrom<ResponseBody>`: the adapter answered with a
+/// body for a different command. Aliased here so callers can name it without
+/// taking a `derive_more` dependency; `input` carries the original body.
+pub type ResponseBodyMismatch = derive_more::TryIntoError<ResponseBody>;
 
 impl ResponseBody {
     pub fn command_name(&self) -> &str {

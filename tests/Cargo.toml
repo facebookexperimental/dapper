@@ -202,7 +202,7 @@ tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
 
 [dev-dependencies]
 regex = "1.13.1"
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 
 [features]
 e2e-tests = []

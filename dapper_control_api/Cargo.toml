@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-anyhow = "1.0.103"
+anyhow = "1.0.104"
 async-trait = "0.1.91"
 dapper_config = { path = "../dapper_config" }
 dapper_control_proto = { path = "../dapper_control_proto" }

@@ -446,9 +446,7 @@ pub fn resolve_unique_session(
 ) -> anyhow::Result<SessionInfo> {
     use std::fmt::Write as _;
 
-    let scope_clause = scope_id
-        .as_ref()
-        .map_or(String::new(), |s| format!(" in scope '{}'", s));
+    let scope_clause = ScopeId::clause(scope_id.as_ref());
     match sessions.len() {
         0 => Err(anyhow::anyhow!(
             "No active debug sessions found{}.",

@@ -38,6 +38,7 @@ mod session_id;
 pub use session_id::SessionId;
 
 mod scope_id;
+pub use scope_id::ScopeClause;
 pub use scope_id::ScopeId;
 
 // Shared debug-session domain types. These live here — the leaf crate both

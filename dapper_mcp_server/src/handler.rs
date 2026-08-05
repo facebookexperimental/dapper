@@ -24,6 +24,7 @@ use dapper_control_api::resolve_unique_session;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::responses::ResponseBody;
 use dapper_session::Port;
+use dapper_session::ScopeClause;
 use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
@@ -179,11 +180,8 @@ impl McpHandler {
         *self.last_session() = Some(session_id.clone());
     }
 
-    /// " in scope '<id>'" when a scope filter is active, empty otherwise.
-    fn scope_suffix(&self) -> String {
-        self.scope_id
-            .as_ref()
-            .map_or(String::new(), |s| format!(" in scope '{}'", s))
+    fn scope_suffix(&self) -> ScopeClause<'_> {
+        ScopeId::clause(self.scope_id.as_ref())
     }
 
     /// Resolve the target session from an optional explicit session ID.

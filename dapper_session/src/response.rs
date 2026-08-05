@@ -296,14 +296,10 @@ fn serialize_sessions_without_debugger_args<S: serde::Serializer>(
 
 impl fmt::Display for SessionsResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let scope_clause = crate::ScopeId::clause(self.scope_id.as_ref());
+
         if self.sessions.is_empty() {
-            write!(
-                f,
-                "No active sessions found{}.",
-                self.scope_id
-                    .as_ref()
-                    .map_or(String::new(), |s| format!(" in scope '{}'", s))
-            )?;
+            write!(f, "No active sessions found{}.", scope_clause)?;
             return Ok(());
         }
 
@@ -311,9 +307,7 @@ impl fmt::Display for SessionsResult {
             f,
             "Found {} active session(s){}:\n",
             self.sessions.len(),
-            self.scope_id
-                .as_ref()
-                .map_or(String::new(), |s| format!(" in scope '{}'", s))
+            scope_clause
         )?;
 
         for (i, session) in self.sessions.iter().enumerate() {

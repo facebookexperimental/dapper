@@ -11,6 +11,7 @@ use serde_json::to_value;
 
 use super::format::parse_address;
 use super::params::BreakpointSpec;
+use super::params::MAX_READ_BYTES;
 use super::params::MAX_STACK_DEPTH;
 use super::params::MAX_THREADS_HARD_CAP;
 use super::params::MAX_WRITE_BYTES;
@@ -891,6 +892,35 @@ fn hex_string_to_bytes_rejects_oversized_payload() {
     let oversize = "AA".repeat(MAX_WRITE_BYTES + 1);
     let err = hex_string_to_bytes(&oversize).unwrap_err().to_string();
     assert!(err.contains("exceeds maximum"), "got: {err}");
+}
+
+#[test]
+fn read_byte_count_accepts_the_inclusive_range() {
+    assert_eq!(ReadByteCount::try_new(1).expect("1 is in range").get(), 1);
+    assert_eq!(
+        ReadByteCount::try_new(MAX_READ_BYTES)
+            .expect("the cap itself is in range")
+            .get(),
+        MAX_READ_BYTES
+    );
+}
+
+#[test]
+fn read_byte_count_rejects_zero_and_negative() {
+    for count in [0, -1] {
+        let err = ReadByteCount::try_new(count).unwrap_err().to_string();
+        assert_eq!(err, format!("count must be > 0, got {count}"));
+    }
+}
+
+#[test]
+fn read_byte_count_rejects_above_the_cap() {
+    let over = MAX_READ_BYTES + 1;
+    let err = ReadByteCount::try_new(over).unwrap_err().to_string();
+    assert_eq!(
+        err,
+        format!("count {over} exceeds maximum of {MAX_READ_BYTES} bytes")
+    );
 }
 
 // -- format_memory_read: header, ASCII sidebar, multi-chunk, decode failure, no-data --

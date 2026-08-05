@@ -61,9 +61,9 @@ use format::format_memory_read;
 use params::EmptyParams;
 use params::EvaluateRequest;
 use params::FrameIdRequest;
-use params::MAX_READ_BYTES;
 use params::NavigateRequest;
 use params::RawDapRequestParams;
+use params::ReadByteCount;
 use params::ReadMemoryRequest;
 use params::SessionTargeted;
 use params::SetBreakpointsRequest;
@@ -836,19 +836,14 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(e),
         };
 
-        if count <= 0 {
-            return Ok(err_text(format!("count must be > 0, got {}", count)));
-        }
-        if count > MAX_READ_BYTES {
-            return Ok(err_text(format!(
-                "count {} exceeds maximum of {} bytes",
-                count, MAX_READ_BYTES
-            )));
-        }
+        let count = match ReadByteCount::try_new(count) {
+            Ok(count) => count,
+            Err(e) => return Ok(err_text(format!("{e:#}"))),
+        };
 
         let mut args = serde_json::json!({
             "memoryReference": memory_reference,
-            "count": count,
+            "count": count.get(),
         });
         if let Some(offset) = offset {
             args["offset"] = serde_json::json!(offset);

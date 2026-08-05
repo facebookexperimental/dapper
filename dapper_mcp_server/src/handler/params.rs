@@ -275,6 +275,30 @@ pub(super) const MAX_READ_BYTES: i64 = 1 << 20;
 /// force before the adapter sees the request.
 pub(super) const MAX_WRITE_BYTES: usize = 1 << 20;
 
+/// A `readMemory` byte count known to be within `1..=MAX_READ_BYTES`.
+///
+/// Deliberately built at the tool boundary rather than during deserialization:
+/// an out-of-range count has to reach the caller as an error-flagged tool
+/// result it can read and retry from, and a `Deserialize` rejection would
+/// instead surface as a protocol-level invalid-params fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ReadByteCount(i64);
+
+impl ReadByteCount {
+    pub(super) fn try_new(count: i64) -> anyhow::Result<Self> {
+        anyhow::ensure!(count > 0, "count must be > 0, got {count}");
+        anyhow::ensure!(
+            count <= MAX_READ_BYTES,
+            "count {count} exceeds maximum of {MAX_READ_BYTES} bytes"
+        );
+        Ok(Self(count))
+    }
+
+    pub(super) fn get(self) -> i64 {
+        self.0
+    }
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadMemoryRequest {
     /// Memory reference address (e.g., "0x7fff5fbff8a0") or expression that evaluates to a memory address. Obtain memory references from `debug_evaluate_command` or variable `memoryReference` fields.

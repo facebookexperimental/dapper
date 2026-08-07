@@ -1043,6 +1043,103 @@ fn format_memory_read_unparseable_address_uses_relative_offsets() {
     assert!(!out.contains("0x0000000000000000:"));
 }
 
+// -- thread_snapshot: oversized responses are bounded and spilled --
+
+#[tokio::test]
+async fn thread_snapshot_response_is_bounded() {
+    // Mirrors the private dapper_control_api::rendered_response::MAX_RESPONSE_SIZE.
+    // Drift is self-detecting: a different production cap fails the prefix and
+    // "showing first {}" assertions below.
+    const MAX_RESPONSE_SIZE: usize = 100_000;
+
+    let response = json!({
+        "thread_count": 1,
+        "total_thread_count": 1,
+        // The thread-list flag (max_threads), unrelated to the byte cap under test.
+        "truncated": false,
+        "threads": [{"id": 1, "name": "x".repeat(2 * MAX_RESPONSE_SIZE)}],
+    });
+    let full_text = format!("{:#}", response);
+    let result = McpHandler::finalize_thread_snapshot_response(response).await;
+    let bounded_text = match result.content.as_slice() {
+        [Content::Text(text)] => &text.text,
+        content => panic!("expected exactly one text content block, got {content:?}"),
+    };
+
+    // Recover and delete the spill file before asserting on its contents, so a
+    // failing assertion cannot strand a 200 KB file in the user temp dir. The
+    // truncation notice is rendered even when the spill IO fails, so echo it to
+    // tell "spill failed" apart from "bounding never ran".
+    let saved_path = bounded_text
+        .rsplit_once("Full response saved to: ")
+        .and_then(|(_, path)| path.strip_suffix(']'))
+        .unwrap_or_else(|| {
+            let notice = bounded_text
+                .rsplit_once("\n\n[")
+                .map_or("<none>", |(_, notice)| notice);
+            panic!("oversized response must spill to a temp file; truncation notice was {notice}")
+        });
+    let saved_text = tokio::fs::read_to_string(saved_path).await;
+    tokio::fs::remove_file(saved_path)
+        .await
+        .expect("spill file must be removable");
+    let saved_text = saved_text.expect("spill file must be readable");
+
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "bounding a snapshot must not turn it into an error result"
+    );
+    assert!(
+        bounded_text.starts_with(&full_text[..MAX_RESPONSE_SIZE]),
+        "bounded text must reproduce the first {MAX_RESPONSE_SIZE} bytes verbatim"
+    );
+    assert!(
+        bounded_text.contains(&format!(
+            "Response truncated: {} bytes total, showing first {}",
+            full_text.len(),
+            MAX_RESPONSE_SIZE
+        )),
+        "bounded text must state the full size and the shown prefix size"
+    );
+    assert_eq!(
+        saved_text.len(),
+        full_text.len(),
+        "spill file must hold the untruncated response"
+    );
+    assert!(
+        saved_text == full_text,
+        "spill file contents must match the untruncated response byte for byte"
+    );
+}
+
+/// Negative case for the byte cap: an under-cap snapshot must pass through
+/// untouched — no truncation notice, no spill file.
+#[tokio::test]
+async fn thread_snapshot_under_cap_response_is_unmodified() {
+    let response = json!({
+        "thread_count": 1,
+        "total_thread_count": 1,
+        "truncated": false,
+        "threads": [{"id": 1, "name": "main"}],
+    });
+    let full_text = format!("{:#}", response);
+    let result = McpHandler::finalize_thread_snapshot_response(response).await;
+    assert_eq!(
+        result.is_error,
+        Some(false),
+        "bounding a snapshot must not turn it into an error result"
+    );
+    let text = match result.content.as_slice() {
+        [Content::Text(text)] => &text.text,
+        content => panic!("expected exactly one text content block, got {content:?}"),
+    };
+    assert_eq!(
+        *text, full_text,
+        "an under-cap snapshot must pass through verbatim, with no truncation notice"
+    );
+}
+
 // -- thread_snapshot: include_stacks, stack_depth, max_threads --
 
 #[tokio::test]

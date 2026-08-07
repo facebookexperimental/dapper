@@ -349,6 +349,12 @@ impl McpHandler {
             .expect("response spill task should not panic")
     }
 
+    /// Pretty-print a thread snapshot and bound it. Split out of the tool body
+    /// so the bounding path is reachable without a live DAP client.
+    async fn finalize_thread_snapshot_response(response: serde_json::Value) -> CallToolResult {
+        ok_text(Self::bounded_dap_text(format!("{:#}", response)).await)
+    }
+
     /// The shared skeleton of every plaintext-rendering tool: resolve the
     /// target client, run `f` against it, render success with the handler's
     /// config, and prefix errors with `err_ctx`.
@@ -1032,7 +1038,7 @@ Response is JSON from the debug adapter."#
             "threads": entries,
         });
 
-        Ok(ok_text(format!("{:#}", response)))
+        Ok(Self::finalize_thread_snapshot_response(response).await)
     }
 }
 

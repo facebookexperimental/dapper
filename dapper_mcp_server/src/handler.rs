@@ -719,14 +719,12 @@ Example:
         request: Parameters<SessionTargeted<EmptyParams>>,
     ) -> Result<CallToolResult, ErrorData> {
         let Parameters(SessionTargeted { session_id, .. }) = request;
-        let client = match self.get_client_or_error(session_id.as_ref()) {
-            Ok(c) => c,
-            Err(e) => return Ok(e),
-        };
-        Ok(match client.capabilities().await {
-            Ok(result) => ok_text(result.result.to_string()),
-            Err(e) => err_text(format!("Error querying capabilities: {:#}", e)),
-        })
+        self.run_rendered(
+            session_id.as_ref(),
+            "Error querying capabilities",
+            async |c| c.capabilities().await,
+        )
+        .await
     }
 
     #[tool(

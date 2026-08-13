@@ -466,15 +466,13 @@ impl Debug {
                     .capabilities()
                     .await
                     .context("Error fetching capabilities")?;
-                match caps {
-                    Some(json) => try_println(format_args!("{}", json))?,
-                    None => {
-                        eprintln!(
-                            "Adapter capabilities not yet available (initialize response not received)."
-                        );
-                        try_println(format_args!("null"))?;
-                    }
+                if caps.result.0.is_none() {
+                    eprintln!(
+                        "Adapter capabilities not yet available (initialize response not received)."
+                    );
                 }
+                // Serializes to the adapter's blob, or `null` before it arrives.
+                try_println(format_args!("{}", serde_json::to_string(&caps.result)?))?;
             }
             DebugCommands::Dap {
                 command,

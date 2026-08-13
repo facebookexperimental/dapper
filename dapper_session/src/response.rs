@@ -4,7 +4,9 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::fmt;
+use std::fmt::Write as _;
 
+use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::Scope;
 use dapper_dap_protocol::data_types::StackFrame;
@@ -119,6 +121,114 @@ impl fmt::Display for RawDapResult {
         // `Value`'s `Display` is infallible; `{:#}` is its pretty format.
         write!(f, "{:#}", self.to_json_value())
     }
+}
+
+/// The adapter's capabilities, as reported in its `initialize` response.
+/// `None` is the state before that response arrives.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CapabilitiesResult(pub Option<Capabilities>);
+
+impl fmt::Display for CapabilitiesResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            None => write!(
+                f,
+                "Adapter capabilities not yet available (initialize response not received)."
+            ),
+            // Summarized from the serialized form so the walker also reports
+            // the adapter-specific keys `Capabilities::extra` collects.
+            Some(capabilities) => {
+                let value =
+                    serde_json::to_value(capabilities).expect("Capabilities is plain serializable");
+                write!(f, "{}", format_capabilities(&value))
+            }
+        }
+    }
+}
+
+fn format_capabilities(value: &Value) -> String {
+    let mut supported = Vec::new();
+    if let Some(obj) = value.as_object() {
+        for (key, val) in obj {
+            if val == &Value::Bool(true) {
+                supported.push(key.as_str());
+            }
+        }
+    }
+    let exception_filters_section: Option<String> = value
+        .get("exceptionBreakpointFilters")
+        .and_then(|v| v.as_array())
+        .filter(|arr| !arr.is_empty())
+        .map(|arr| format_exception_breakpoint_filters(arr.as_slice()));
+    if supported.is_empty() && exception_filters_section.is_none() {
+        return "No optional capabilities reported by the adapter.".to_string();
+    }
+    let mut output = String::new();
+    if !supported.is_empty() {
+        supported.sort();
+        output.push_str("Supported capabilities:\n");
+        for cap in &supported {
+            let _ = writeln!(output, "  - {cap}");
+        }
+        output.push('\n');
+    }
+    if let Some(section) = exception_filters_section {
+        output.push_str(&section);
+        output.push('\n');
+    }
+    output.push_str("Capabilities not listed are unsupported by this adapter.");
+    output
+}
+
+/// Render the `exceptionBreakpointFilters` array (advertised in the
+/// `Capabilities` response) as a sorted list of filter ids with optional
+/// label/default/supports_condition annotations. The bool-only walker
+/// above silently drops this array, so it gets its own dedicated section.
+fn format_exception_breakpoint_filters(filters: &[Value]) -> String {
+    let mut entries: Vec<&Value> = filters.iter().collect();
+    entries.sort_by(|a, b| {
+        a.get("filter")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("filter").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+
+    let mut output = String::from("Exception breakpoint filters:\n");
+    for entry in entries {
+        let filter = entry
+            .get("filter")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+        // Up to 3 annotations: label, default, supports_condition.
+        let mut annotations: Vec<String> = Vec::with_capacity(3);
+        // Debug-format the label so values containing whitespace or
+        // punctuation render with visible quotes — useful for an LLM
+        // agent reading the capability output.
+        if let Some(label) = entry.get("label").and_then(|v| v.as_str()) {
+            annotations.push(format!("label: {label:?}"));
+        }
+        if entry
+            .get("default")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            annotations.push("default: true".to_string());
+        }
+        if entry
+            .get("supportsCondition")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            annotations.push("supports_condition: true".to_string());
+        }
+        if annotations.is_empty() {
+            let _ = writeln!(output, "  - {filter}");
+        } else {
+            let _ = writeln!(output, "  - {filter} ({})", annotations.join(", "));
+        }
+    }
+    output
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1843,5 +1953,129 @@ mod tests {
             result.extra.get("newField"),
             Some(&serde_json::json!("value"))
         );
+    }
+}
+
+#[cfg(test)]
+mod capabilities_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn format_capabilities_renders_exception_filters() {
+        let value = json!({
+            "supportsStepBack": true,
+            "exceptionBreakpointFilters": [
+                {"filter": "uncaught", "label": "Uncaught", "default": true, "supportsCondition": true},
+                {"filter": "raised", "label": "Raised"}
+            ]
+        });
+        let rendered = format_capabilities(&value);
+        // Bool capabilities come first.
+        assert!(rendered.contains("Supported capabilities:\n  - supportsStepBack\n"));
+        // Exception filters section follows, sorted by filter id.
+        assert!(rendered.contains("Exception breakpoint filters:\n"));
+        let raised_pos = rendered.find("- raised").expect("raised line missing");
+        let uncaught_pos = rendered.find("- uncaught").expect("uncaught line missing");
+        assert!(
+            raised_pos < uncaught_pos,
+            "filters should be sorted by id; got:\n{rendered}"
+        );
+        // Annotations are present where expected.
+        assert!(
+            rendered.contains(
+                "- uncaught (label: \"Uncaught\", default: true, supports_condition: true)"
+            ),
+            "expected uncaught annotations: {rendered}"
+        );
+        assert!(
+            rendered.contains("- raised (label: \"Raised\")"),
+            "expected raised annotations: {rendered}"
+        );
+    }
+
+    #[test]
+    fn format_capabilities_omits_section_when_array_missing() {
+        let value = json!({"supportsStepBack": true});
+        assert!(!format_capabilities(&value).contains("Exception breakpoint filters:"));
+    }
+
+    #[test]
+    fn format_capabilities_omits_section_when_array_empty() {
+        let value = json!({
+            "supportsStepBack": true,
+            "exceptionBreakpointFilters": []
+        });
+        assert!(!format_capabilities(&value).contains("Exception breakpoint filters:"));
+    }
+
+    #[test]
+    fn format_capabilities_only_exception_filters_no_supported_caps() {
+        let value = json!({
+            "exceptionBreakpointFilters": [{"filter": "raised"}]
+        });
+        let rendered = format_capabilities(&value);
+        // No "Supported capabilities:" preamble when there are no bool caps.
+        assert!(!rendered.contains("Supported capabilities:"));
+        assert!(rendered.contains("Exception breakpoint filters:\n  - raised\n"));
+    }
+
+    fn caps_from(blob: &str) -> CapabilitiesResult {
+        CapabilitiesResult(Some(
+            serde_json::from_str(blob).expect("valid capabilities"),
+        ))
+    }
+
+    #[test]
+    fn capabilities_result_displays_the_prose_summary() {
+        let caps = caps_from(r#"{"supportsStepBack":true}"#);
+        assert!(
+            caps.to_string()
+                .contains("Supported capabilities:\n  - supportsStepBack\n"),
+            "got {caps}"
+        );
+    }
+
+    #[test]
+    fn capabilities_result_displays_the_pre_initialize_state() {
+        assert_eq!(
+            CapabilitiesResult(None).to_string(),
+            "Adapter capabilities not yet available (initialize response not received)."
+        );
+    }
+
+    #[test]
+    fn capabilities_result_serializes_as_null_before_initialize() {
+        let json = serde_json::to_string(&CapabilitiesResult(None)).expect("serialize");
+        assert_eq!(json, "null");
+    }
+
+    /// Both ends serialize the same struct, so a round trip must reproduce the
+    /// bytes the adapter reported, including adapter-specific keys that land in
+    /// `Capabilities::extra` and the order they arrived in.
+    #[test]
+    fn capabilities_result_round_trip_is_byte_identical() {
+        let blob = r#"{"supportsStepBack":true,"zzzVendorFlag":true,"aaaVendorFlag":1}"#;
+        let caps = caps_from(blob);
+
+        let wire = serde_json::to_string(&caps).expect("serialize");
+        assert_eq!(wire, blob, "the blob must cross the wire untouched");
+
+        let restored: CapabilitiesResult = serde_json::from_str(&wire).expect("deserialize");
+        assert_eq!(
+            serde_json::to_string(&restored).expect("re-serialize"),
+            blob
+        );
+    }
+
+    /// `extra` collects adapter-specific keys, so the summary must report them
+    /// alongside the ones `Capabilities` names explicitly.
+    #[test]
+    fn capabilities_result_summarizes_vendor_keys() {
+        let caps = caps_from(r#"{"supportsStepBack":true,"zzzVendorFlag":true}"#);
+        let rendered = caps.to_string();
+        assert!(rendered.contains("- supportsStepBack"), "got {rendered}");
+        assert!(rendered.contains("- zzzVendorFlag"), "got {rendered}");
     }
 }

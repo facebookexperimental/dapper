@@ -161,7 +161,11 @@ message RawDapResponse {
 
 message CapabilitiesRequest {}
 message CapabilitiesResponse {
+  // Legacy raw adapter blob; prefer result_json when populated. Kept populated
+  // until every deployed dapper reads result_json.
   string capabilities_json = 1;
+  string result_json = 2;
+  string context_json = 3;
 }
 
 message StatusRequest {}

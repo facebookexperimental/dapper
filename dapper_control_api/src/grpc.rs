@@ -44,6 +44,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::CapabilitiesResult;
 use dapper_session::Port;
 use dapper_session::ScopeId;
 use dapper_session::SessionId;
@@ -389,8 +390,20 @@ where
         _request: Request<CapabilitiesRequest>,
     ) -> Result<Response<CapabilitiesResponse>, Status> {
         to_tonic(async {
-            let capabilities_json = self.control_plane.capabilities().await?.unwrap_or_default();
-            Ok(CapabilitiesResponse { capabilities_json })
+            let result = self.control_plane.capabilities().await?;
+            // Dual-write while older clients are still deployed: they only read
+            // `capabilities_json`, and treat empty as "not yet available". Stop
+            // populating it once every deployed dapper reads `result_json`.
+            let capabilities_json = match &result.result.0 {
+                Some(capabilities) => serde_json::to_string(capabilities)?,
+                None => String::new(),
+            };
+            let (result_json, context_json) = result.to_json_fields()?;
+            Ok(CapabilitiesResponse {
+                capabilities_json,
+                result_json,
+                context_json,
+            })
         })
         .await
     }
@@ -849,17 +862,32 @@ impl DapperControlPlane for DapperControlPlaneClient {
         }
     }
 
-    async fn capabilities(&self) -> anyhow::Result<Option<String>> {
+    async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
         let mut client = self.get_client().await?;
-        let CapabilitiesResponse { capabilities_json } = client
+        let CapabilitiesResponse {
+            capabilities_json,
+            result_json,
+            context_json,
+        } = client
             .capabilities(CapabilitiesRequest {})
             .await?
             .into_inner();
-        if capabilities_json.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(capabilities_json))
+
+        // A proxy predating `result_json` fills only the legacy field. An
+        // adapter that has not initialized yet still yields a non-empty
+        // `result_json` (`null`), so this only matches the older proxy.
+        if result_json.is_empty() {
+            let capabilities = match capabilities_json.is_empty() {
+                true => None,
+                false => Some(serde_json::from_str(&capabilities_json)?),
+            };
+            return Ok(ControlPlaneResult {
+                result: CapabilitiesResult(capabilities),
+                context: None,
+            });
         }
+
+        ControlPlaneResult::from_proto_fields(result_json, context_json)
     }
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::StatusResult>> {
@@ -1156,10 +1184,13 @@ mod tests {
             })
         }
 
-        async fn capabilities(&self) -> anyhow::Result<Option<String>> {
-            Ok(Some(
-                r#"{"supportsStepBack":true,"supportsSetVariable":true}"#.to_string(),
-            ))
+        async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
+            Ok(ControlPlaneResult {
+                result: CapabilitiesResult(Some(serde_json::from_str(
+                    r#"{"supportsStepBack":true,"supportsSetVariable":true}"#,
+                )?)),
+                context: None,
+            })
         }
 
         async fn status(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::StatusResult>> {
@@ -1367,10 +1398,12 @@ mod tests {
         ));
         assert!(dap_request_no_args.event.is_none());
 
+        // The blob crosses the wire byte for byte, so a caller that forwards it
+        // verbatim sees the key order the adapter chose.
         let caps = client.capabilities().await?;
         assert_eq!(
-            caps,
-            Some(r#"{"supportsStepBack":true,"supportsSetVariable":true}"#.to_string())
+            serde_json::to_string(&caps.result)?,
+            r#"{"supportsStepBack":true,"supportsSetVariable":true}"#
         );
 
         Ok(())

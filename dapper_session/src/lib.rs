@@ -67,6 +67,7 @@ mod navigation_type;
 pub use navigation_type::NavigationType;
 
 mod response;
+pub use response::CapabilitiesResult;
 pub use response::NavigateResult;
 pub use response::NavigationResult;
 pub use response::RawDapResult;

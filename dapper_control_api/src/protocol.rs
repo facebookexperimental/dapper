@@ -7,6 +7,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::CapabilitiesResult;
 use dapper_session::NavigationResult;
 use dapper_session::RawDapResult;
 use dapper_session::ScopesResult;
@@ -107,7 +108,7 @@ pub trait DapperControlPlane: Send + Sync {
     ) -> anyhow::Result<RawDapResult>;
 
     /// Query the debug adapter's capabilities
-    async fn capabilities(&self) -> anyhow::Result<Option<String>>;
+    async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>>;
 
     /// Get session status and context (execution state, stop reason, breakpoints, etc.)
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>>;

@@ -58,7 +58,6 @@ use crate::toolsets::Toolset;
 mod format;
 mod params;
 
-use format::format_capabilities;
 use format::format_memory_read;
 use params::EmptyParams;
 use params::EvaluateRequest;
@@ -714,16 +713,7 @@ Example:
             Err(e) => return Ok(e),
         };
         Ok(match client.capabilities().await {
-            Ok(Some(json)) => {
-                let output = match serde_json::from_str::<serde_json::Value>(&json) {
-                    Ok(value) => format_capabilities(&value),
-                    Err(_) => json,
-                };
-                ok_text(output)
-            }
-            Ok(None) => ok_text(
-                "Adapter capabilities not yet available (initialize response not received).",
-            ),
+            Ok(result) => ok_text(result.result.to_string()),
             Err(e) => err_text(format!("Error querying capabilities: {:#}", e)),
         })
     }

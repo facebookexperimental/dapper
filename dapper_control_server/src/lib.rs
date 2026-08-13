@@ -24,6 +24,7 @@ use dapper_dap_protocol::requests::RequestCommand;
 use dapper_proxy_server::ControlPlaneStatus;
 use dapper_proxy_server::DapperEvent;
 use dapper_proxy_server::ProxyClient;
+use dapper_session::CapabilitiesResult;
 use dapper_session::NavigationResult;
 use dapper_session::NavigationType;
 use dapper_session::Port;
@@ -181,15 +182,15 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
             .await
     }
 
-    async fn capabilities(&self) -> anyhow::Result<Option<String>> {
-        let caps = self
+    async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
+        let capabilities = self
             .proxy_client
             .debug_session_tracker()
             .adapter_capabilities();
-        match caps {
-            Some(c) => Ok(Some(serde_json::to_string(&c)?)),
-            None => Ok(None),
-        }
+        Ok(ControlPlaneResult {
+            result: CapabilitiesResult(capabilities),
+            context: None,
+        })
     }
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>> {

@@ -766,68 +766,6 @@ async fn set_exception_breakpoints_accepts_empty_filters_with_clear() {
     assert_params_accepted(&result, "empty filters + clear_existing: true (clear-all)");
 }
 
-// -- format_capabilities: exceptionBreakpointFilters extension --
-
-#[test]
-fn format_capabilities_renders_exception_filters() {
-    let value = json!({
-        "supportsStepBack": true,
-        "exceptionBreakpointFilters": [
-            {"filter": "uncaught", "label": "Uncaught", "default": true, "supportsCondition": true},
-            {"filter": "raised", "label": "Raised"}
-        ]
-    });
-    let rendered = format_capabilities(&value);
-    // Bool capabilities come first.
-    assert!(rendered.contains("Supported capabilities:\n  - supportsStepBack\n"));
-    // Exception filters section follows, sorted by filter id.
-    assert!(rendered.contains("Exception breakpoint filters:\n"));
-    let raised_pos = rendered.find("- raised").expect("raised line missing");
-    let uncaught_pos = rendered.find("- uncaught").expect("uncaught line missing");
-    assert!(
-        raised_pos < uncaught_pos,
-        "filters should be sorted by id; got:\n{rendered}"
-    );
-    // Annotations are present where expected.
-    assert!(
-        rendered
-            .contains("- uncaught (label: \"Uncaught\", default: true, supports_condition: true)"),
-        "expected uncaught annotations: {rendered}"
-    );
-    assert!(
-        rendered.contains("- raised (label: \"Raised\")"),
-        "expected raised annotations: {rendered}"
-    );
-}
-
-#[test]
-fn format_capabilities_omits_section_when_array_missing() {
-    let value = json!({"supportsStepBack": true});
-    let rendered = format_capabilities(&value);
-    assert!(!rendered.contains("Exception breakpoint filters:"));
-}
-
-#[test]
-fn format_capabilities_omits_section_when_array_empty() {
-    let value = json!({
-        "supportsStepBack": true,
-        "exceptionBreakpointFilters": []
-    });
-    let rendered = format_capabilities(&value);
-    assert!(!rendered.contains("Exception breakpoint filters:"));
-}
-
-#[test]
-fn format_capabilities_only_exception_filters_no_supported_caps() {
-    let value = json!({
-        "exceptionBreakpointFilters": [{"filter": "raised"}]
-    });
-    let rendered = format_capabilities(&value);
-    // No "Supported capabilities:" preamble when there are no bool caps.
-    assert!(!rendered.contains("Supported capabilities:"));
-    assert!(rendered.contains("Exception breakpoint filters:\n  - raised\n"));
-}
-
 // -- parse_address: hex with prefix, decimal without, junk --
 
 #[test]

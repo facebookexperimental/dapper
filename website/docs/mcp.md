@@ -37,6 +37,20 @@ dapper mcp --toolset=full
 
 Use `raw` only when the agent needs to send adapter-specific DAP requests that are not represented by typed tools.
 
+## JSON Output
+
+Pass `--json` when the consumer parses tool results rather than reading them:
+
+```bash
+dapper mcp --json
+```
+
+Results use the same envelope as the CLI, with the response under `result` and any session context under `context`. Errors render as `{"error": "..."}` so a client can parse success and failure the same way.
+
+A few tools are exempt: memory reads and writes stay textual, and raw DAP requests, thread snapshots and config return their own JSON payload with no envelope. See [dapper mcp](./reference/mcp.md) for the full list.
+
+The flag is global, so `dapper --json mcp` works too, and `DAPPER_OUTPUT_JSON=true` or `output_format = "json"` in Dapper's `config.toml` sets the same thing. The env var is a strict boolean, so a value like `1` aborts the command rather than enabling JSON.
+
 ## Session Targeting
 
 For long-lived agent sessions, pass a stable scope through `DAPPER_SCOPE_ID` when your agent environment provides one:

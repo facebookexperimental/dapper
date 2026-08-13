@@ -35,6 +35,31 @@ Instead of a builtin toolset, enable specific tools individually. When `--enable
 
 `--enable-tool` accepts the strum-serialized tool names (e.g. `debug_threads_command`, `debug_dap_request`) — the same identifiers the MCP server exposes to clients — **not** the abbreviated forms shown in the toolset table above. Run `{{program}} mcp --help` for the full accepted list.
 
+## JSON output
+
+`--json` (or `DAPPER_OUTPUT_JSON=true`, or `output_format = "json"` in Dapper's `config.toml`, which lives in `$DAPPER_CONFIG_DIR` when set and otherwise under the platform config dir, `~/.config/dapper` on Linux) makes tool results machine-readable instead of prose. It is a global flag, so it may appear before or after the subcommand:
+
+```bash
+{{program}} mcp --json
+{{program}} --json mcp
+```
+
+`DAPPER_OUTPUT_JSON` is parsed as a strict boolean, so it accepts only `true` or `false`. Any other value, including `1`, aborts the command.
+
+The result is still a single text content block; `--json` only changes the string inside it, so a client parses that string rather than reading MCP fields. Results carry the same envelope the CLI emits, with the response under `result` and any session context under `context`:
+
+```json
+{"context":{"session":{"sessionId":"abc123"}},"result":{"threads":[{"id":1,"name":"main"}]}}
+```
+
+Failures are objects too, so one parse handles both outcomes. They also still set `isError` on the tool result, so the `error` key is a convenience rather than the only signal:
+
+```json
+{"error":"specify at least one filter or set clear_existing: true to disable all exception breakpoints"}
+```
+
+Five tools sit outside that envelope. `debug_dap_request`, `debug_thread_snapshot` and `debug_config_command` return JSON in both modes, though the first two stop being parseable past 100 KB, where the response is truncated and spilled to a temp file. `debug_read_memory_command` and `debug_write_memory_command` render their successful payload as text in both modes; their failures are still the `error` object above.
+
 ## Per-call session targeting
 
 Unlike the CLI, an MCP server is a long-lived connection. New sessions can come and go during a single MCP session, so MCP tool calls additionally accept a `session_id` argument that overrides the server's startup-time `--control-port`/`--scope-id`. Use it when a single agent is driving multiple debuggees over the lifetime of one MCP connection.

@@ -3,6 +3,8 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::net::TcpListener;
+
 use dapper_config::OutputFormat;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
 use dapper_session::ThreadsResult;
@@ -138,8 +140,12 @@ fn isolated_env() -> McpServerEnv {
 }
 
 fn full_toolset_handler() -> McpHandler {
+    full_toolset_handler_with(isolated_env())
+}
+
+fn full_toolset_handler_with(env: McpServerEnv) -> McpHandler {
     let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
-    McpHandler::new(isolated_env(), &toolset)
+    McpHandler::new(env, &toolset)
 }
 
 // -- render_result: plaintext vs json --
@@ -235,8 +241,6 @@ fn render_result_reports_serialization_failure_as_tool_error() {
 /// a stale client, so that fallback to another active session still works.
 #[test]
 fn get_client_fast_path_respects_cached_session_liveness() {
-    use std::net::TcpListener;
-
     let handler = full_toolset_handler(); // control_port = None
     let sid = SessionId::from("fast-path-session");
     let client = Arc::new(DapperControlPlaneClient::discover(isolated_store(), None));
@@ -307,8 +311,6 @@ fn get_client_fast_path_respects_cached_session_liveness() {
 /// resolves by port and errors here since no session listens on the port.
 #[test]
 fn get_client_skips_fast_path_when_control_port_set() {
-    use std::net::TcpListener;
-
     let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
     // Port 1: no dapper session listens here, so resolve-by-port fails.
     let handler = McpHandler::new(
@@ -539,6 +541,133 @@ fn sessions_tool_not_in_any_toolset_definition() {
     }
 }
 
+/// `sessions` needs no live control plane, so it can pin the end-to-end
+/// contract an MCP client sees.
+#[tokio::test]
+async fn sessions_tool_emits_json_when_configured() {
+    let handler = full_toolset_handler_with(McpServerEnv {
+        config: config_with_format(OutputFormat::Json),
+        ..isolated_env()
+    });
+    let result = call_tool_e2e_with(handler, "debug_sessions_command", json!({}))
+        .await
+        .expect("sessions must succeed against an empty isolated store");
+    let parsed: Value = serde_json::from_str(text_of(&result))
+        .expect("the json output format must produce parseable JSON");
+    assert_eq!(
+        parsed,
+        json!({"result": {"sessions": []}}),
+        "an empty store must render as an empty list, not prose"
+    );
+}
+
+#[tokio::test]
+async fn sessions_tool_emits_plaintext_by_default() {
+    let result = call_tool_e2e("debug_sessions_command", json!({}))
+        .await
+        .expect("sessions must succeed against an empty isolated store");
+    assert_eq!(
+        text_of(&result),
+        "No active sessions found.",
+        "plaintext must match the CLI's SessionsResult rendering"
+    );
+}
+
+/// A live session for the seeded-store tests. The returned listener must be
+/// held for the duration: `is_active()` probes the port. `envValue` sits only
+/// inside `debugger_args`, unlike `type` and `program`, which `generate`
+/// promotes to fields of their own.
+fn seeded_session() -> (TcpListener, SessionInfo) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = Port::try_new(listener.local_addr().unwrap().port()).unwrap();
+    let session = SessionInfo::generate(
+        "seeded".into(),
+        Some(port),
+        None,
+        None,
+        Some(json!({
+            "type": "debugpy",
+            "program": "/prog.py",
+            "env": {"TOKEN": "envValue"},
+        })),
+    );
+    (listener, session)
+}
+
+/// Exercises the store-to-`SessionsResult` pass-through, which the empty-store
+/// cases above cannot reach.
+#[tokio::test]
+async fn sessions_tool_lists_the_store_contents() {
+    let (listener, session) = seeded_session();
+
+    let env = isolated_env();
+    let store = env.sessions.clone();
+    store.save(&session).expect("seed the isolated store");
+    let handler = full_toolset_handler_with(env);
+    let result = call_tool_e2e_with(handler, "debug_sessions_command", json!({}))
+        .await
+        .expect("sessions must succeed against the seeded store");
+
+    let text = text_of(&result);
+    store.delete(&session).expect("clean up the seeded store");
+    drop(listener);
+
+    assert!(
+        text.contains("Found 1 active session(s)") && text.contains("Session seeded:"),
+        "the handler must forward the store's active sessions, got:\n{text}"
+    );
+}
+
+/// `SessionsResult` drops `debugger_args`, so the launch configuration must not
+/// reach an MCP client through the session list.
+#[tokio::test]
+async fn sessions_tool_json_redacts_debugger_args() {
+    let (listener, session) = seeded_session();
+
+    let env = McpServerEnv {
+        config: config_with_format(OutputFormat::Json),
+        ..isolated_env()
+    };
+    let store = env.sessions.clone();
+    store.save(&session).expect("seed the isolated store");
+    let handler = full_toolset_handler_with(env);
+    let result = call_tool_e2e_with(handler, "debug_sessions_command", json!({}))
+        .await
+        .expect("sessions must succeed against the seeded store");
+
+    let text = text_of(&result);
+    store.delete(&session).expect("clean up the seeded store");
+    drop(listener);
+
+    let parsed: Value =
+        serde_json::from_str(text).expect("the json output format must produce parseable JSON");
+    assert_eq!(
+        parsed["result"]["sessions"][0]["sessionId"],
+        json!("seeded"),
+        "the seeded session must reach the JSON output, got: {parsed}"
+    );
+    assert!(
+        !text.contains("debuggerArgs") && !text.contains("envValue"),
+        "the launch configuration must not reach an MCP client, got:\n{text}"
+    );
+}
+
+#[tokio::test]
+async fn sessions_tool_reports_the_handler_scope() {
+    let handler = full_toolset_handler_with(McpServerEnv {
+        scope_id: Some(ScopeId::new("my-scope")),
+        ..isolated_env()
+    });
+    let result = call_tool_e2e_with(handler, "debug_sessions_command", json!({}))
+        .await
+        .expect("sessions must succeed against an empty isolated store");
+    assert_eq!(
+        text_of(&result),
+        "No active sessions found in scope 'my-scope'.",
+        "the handler must pass its scope into SessionsResult"
+    );
+}
+
 fn is_degenerate_schema(schema: &Value) -> bool {
     match schema {
         Value::Bool(b) => *b,
@@ -571,10 +700,19 @@ fn is_degenerate_schema(schema: &Value) -> bool {
     }
 }
 
-/// Send a `tools/call` MCP request through a full in-process MCP
-/// client/server pair (using `tokio::io::duplex`), returning the
-/// result or error exactly as a real MCP client would see it.
+/// [`call_tool_e2e_with`] against the default full-toolset handler.
 async fn call_tool_e2e(
+    tool_name: impl Into<String>,
+    arguments: Value,
+) -> Result<CallToolResult, rmcp::service::ServiceError> {
+    call_tool_e2e_with(full_toolset_handler(), tool_name, arguments).await
+}
+
+/// Send a `tools/call` MCP request to `handler` through a full in-process MCP
+/// client/server pair (using `tokio::io::duplex`), returning the result or
+/// error exactly as a real MCP client would see it.
+async fn call_tool_e2e_with(
+    handler: McpHandler,
     tool_name: impl Into<String>,
     arguments: Value,
 ) -> Result<CallToolResult, rmcp::service::ServiceError> {
@@ -593,7 +731,6 @@ async fn call_tool_e2e(
 
     let (server_transport, client_transport) = tokio::io::duplex(4096);
 
-    let handler = full_toolset_handler();
     let server_handle = tokio::spawn(async move {
         handler.serve(server_transport).await?.waiting().await?;
         anyhow::Ok(())

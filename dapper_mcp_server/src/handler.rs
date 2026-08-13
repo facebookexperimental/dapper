@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -31,6 +30,7 @@ use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
+use dapper_session::SessionsResult;
 use rmcp::ErrorData;
 use rmcp::ServerHandler;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -674,22 +674,14 @@ Example:
             .sessions
             .iter_active_sessions(self.scope_id.clone())
             .collect();
-        if sessions.is_empty() {
-            Ok(ok_text(format!(
-                "No active debug sessions found{}.",
-                self.scope_suffix()
-            )))
-        } else {
-            let mut output = format!(
-                "Found {} active session(s){}:\n\n",
-                sessions.len(),
-                self.scope_suffix()
-            );
-            for session in &sessions {
-                let _ = writeln!(output, "{}", session);
-            }
-            Ok(ok_text(output))
-        }
+        let result = ControlPlaneResult {
+            result: SessionsResult {
+                sessions,
+                scope_id: self.scope_id.clone(),
+            },
+            context: None,
+        };
+        Ok(render_result(&result, &self.config))
     }
 
     #[tool(

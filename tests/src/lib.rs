@@ -5,6 +5,7 @@
 
 use anyhow::Context;
 use anyhow::Result;
+use dapper_config::OutputFormat;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
@@ -33,6 +34,7 @@ pub use harness::RealAdapterProfile;
 pub use harness::adapter_command;
 pub use harness::assert_context_contains_session_info;
 pub use harness::dapper_command;
+use harness::dapper_executable;
 pub use harness::find_breakpoint_line_by_marker;
 pub use harness::generate_test_scope_id;
 pub use harness::parse_progress_event;
@@ -61,9 +63,12 @@ pub async fn create_mcp_client_with_toolset(
     scope_id: Option<ScopeId>,
     toolset: Option<Toolset>,
 ) -> Result<McpClient> {
-    let dapper_path = std::env::var("DAPPER_TEST_EXECUTABLE")
-        .context("DAPPER_TEST_EXECUTABLE must name the Dapper binary")?;
-    create_mcp_client_with_binary(&dapper_path, scope_id, toolset).await
+    create_mcp_client_with_binary(&dapper_executable()?, scope_id, toolset).await
+}
+
+/// Starts Dapper's MCP server with `--json`, so tool results render as JSON.
+pub async fn create_mcp_client_with_json(scope_id: Option<ScopeId>) -> Result<McpClient> {
+    spawn_mcp_client(&dapper_executable()?, scope_id, None, OutputFormat::Json).await
 }
 
 /// Starts an MCP server using an explicit Dapper executable.
@@ -71,6 +76,15 @@ pub async fn create_mcp_client_with_binary(
     dapper_path: &str,
     scope_id: Option<ScopeId>,
     toolset: Option<Toolset>,
+) -> Result<McpClient> {
+    spawn_mcp_client(dapper_path, scope_id, toolset, OutputFormat::Plaintext).await
+}
+
+async fn spawn_mcp_client(
+    dapper_path: &str,
+    scope_id: Option<ScopeId>,
+    toolset: Option<Toolset>,
+    output_format: OutputFormat,
 ) -> Result<McpClient> {
     let dapper_path = dapper_path.to_owned();
     let service = ()
@@ -83,11 +97,26 @@ pub async fn create_mcp_client_with_binary(
                 if let Some(toolset) = toolset {
                     command.arg("--toolset").arg(toolset.name);
                 }
+                match output_format {
+                    OutputFormat::Json => {
+                        command.arg("--json");
+                    }
+                    OutputFormat::Plaintext => {}
+                }
 
                 command.env(
                     "DAPPER_SESSIONS_DIR",
                     dapper_session::get_user_temp_dir().join("test_sessions"),
                 );
+                // The child is a non-test build and would otherwise read the
+                // developer's real config; this directory is never created, so
+                // it falls back to defaults.
+                command.env(
+                    "DAPPER_CONFIG_DIR",
+                    dapper_session::get_user_temp_dir()
+                        .join(format!("dapper-e2e-absent-config-{}", std::process::id())),
+                );
+                command.env_remove("DAPPER_OUTPUT_JSON");
                 command.env("DAPPER_DISABLE_SCUBA", "1");
             }),
         )?)

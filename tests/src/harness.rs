@@ -494,7 +494,7 @@ pub async fn spawn_proxy_from_config(
     Ok((child, config_file, adapter_log))
 }
 
-fn dapper_executable() -> Result<String> {
+pub(crate) fn dapper_executable() -> Result<String> {
     std::env::var("DAPPER_TEST_EXECUTABLE")
         .context("DAPPER_TEST_EXECUTABLE must name the Dapper binary")
 }

@@ -3,7 +3,9 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use dapper_config::OutputFormat;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
+use dapper_session::ThreadsResult;
 use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
@@ -131,6 +133,91 @@ fn isolated_env() -> McpServerEnv {
 fn full_toolset_handler() -> McpHandler {
     let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
     McpHandler::new(isolated_env(), &toolset)
+}
+
+// -- render_result: plaintext vs json --
+
+fn text_of(result: &CallToolResult) -> &str {
+    match result.content.as_slice() {
+        [Content::Text(text)] => &text.text,
+        content => panic!("expected exactly one text content block, got {content:?}"),
+    }
+}
+
+fn config_with_format(output_format: OutputFormat) -> DapperConfig {
+    DapperConfig {
+        output_format,
+        ..DapperConfig::default()
+    }
+}
+
+#[test]
+fn render_result_emits_json_when_configured() {
+    let result = ControlPlaneResult {
+        result: ThreadsResult::default(),
+        context: None,
+    };
+    let rendered = render_result(&result, &config_with_format(OutputFormat::Json));
+    assert_eq!(
+        rendered.is_error,
+        Some(false),
+        "rendering a successful result must not produce a tool error"
+    );
+    let parsed: Value = serde_json::from_str(text_of(&rendered))
+        .expect("the json output format must produce parseable JSON");
+    assert_eq!(parsed, json!({"result": {"threads": []}}));
+}
+
+#[test]
+fn render_result_emits_plaintext_when_configured() {
+    let result = ControlPlaneResult {
+        result: ThreadsResult::default(),
+        context: None,
+    };
+    let rendered = render_result(&result, &config_with_format(OutputFormat::Plaintext));
+    assert_eq!(
+        rendered.is_error,
+        Some(false),
+        "rendering a successful result must not produce a tool error"
+    );
+    assert_eq!(
+        text_of(&rendered),
+        ThreadsResult::default().to_string(),
+        "plaintext must stay the bare Display rendering"
+    );
+}
+
+#[test]
+fn render_result_reports_serialization_failure_as_tool_error() {
+    struct Unserializable;
+
+    impl std::fmt::Display for Unserializable {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "unserializable")
+        }
+    }
+
+    impl serde::Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("boom"))
+        }
+    }
+
+    let result = ControlPlaneResult {
+        result: Unserializable,
+        context: None,
+    };
+    let rendered = render_result(&result, &config_with_format(OutputFormat::Json));
+    assert_eq!(
+        rendered.is_error,
+        Some(true),
+        "a render failure must surface as a tool error rather than an empty success"
+    );
+    assert!(
+        text_of(&rendered).contains("Error rendering response"),
+        "got {}",
+        text_of(&rendered)
+    );
 }
 
 /// The cache-first fast path in `get_client` must return the cached client

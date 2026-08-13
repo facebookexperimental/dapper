@@ -19,7 +19,7 @@ use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
 use dapper_control_api::RenderedResponse;
-use dapper_control_api::render_plaintext;
+use dapper_control_api::render;
 use dapper_control_api::resolve_unique_session;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::requests::ReadMemoryArguments;
@@ -128,6 +128,17 @@ fn err_text(text: impl Into<String>) -> CallToolResult {
 /// carries them as JSON. Infallible: the argument types are plain data.
 fn dap_args(args: &impl serde::Serialize) -> serde_json::Value {
     serde_json::to_value(args).expect("DAP request arguments are plain serializable")
+}
+
+/// Render a control-plane result in `config`'s output format.
+fn render_result<T: std::fmt::Display + serde::Serialize>(
+    result: &ControlPlaneResult<T>,
+    config: &DapperConfig,
+) -> CallToolResult {
+    match render(result, config) {
+        Ok(text) => ok_text(text),
+        Err(e) => err_text(format!("Error rendering response: {e:#}")),
+    }
 }
 
 #[tool_router]
@@ -354,10 +365,11 @@ impl McpHandler {
         ok_text(Self::bounded_dap_text(format!("{:#}", response)).await)
     }
 
-    /// The shared skeleton of every plaintext-rendering tool: resolve the
-    /// target client, run `f` against it, render success with the handler's
-    /// config, and prefix errors with `err_ctx`.
-    async fn run_rendered<T: std::fmt::Display>(
+    /// The shared skeleton of the tools that fetch and render a
+    /// `ControlPlaneResult`: resolve the target client, run `f` against it,
+    /// render success with the handler's config, and prefix errors with
+    /// `err_ctx`.
+    async fn run_rendered<T: std::fmt::Display + serde::Serialize>(
         &self,
         session_id: Option<&SessionId>,
         err_ctx: &str,
@@ -368,7 +380,7 @@ impl McpHandler {
             Err(e) => return Ok(e),
         };
         Ok(match f(client).await {
-            Ok(result) => ok_text(render_plaintext(&result, &self.config)),
+            Ok(result) => render_result(&result, &self.config),
             Err(e) => err_text(format!("{err_ctx}: {e:#}")),
         })
     }
@@ -391,7 +403,7 @@ impl McpHandler {
                     context: dapper_config::ContextConfig::all_enabled(),
                     ..self.config.clone()
                 };
-                ok_text(render_plaintext(&result, &config))
+                render_result(&result, &config)
             }
             Err(e) => err_text(format!("Error getting status: {:#}", e)),
         })

@@ -107,14 +107,21 @@ fn breakpoint_spec_schema_shape() {
 }
 
 /// A store at a unique empty directory, so tests can never see — let
-/// alone mutate — real sessions on the developer's machine.
+/// alone mutate — real sessions on the developer's machine. The timestamp
+/// keeps a store a test wrote to from being inherited by a later run that
+/// recycles this pid.
 fn isolated_store() -> SessionStore {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     SessionStore::at(std::env::temp_dir().join(format!(
-        "dapper-mcp-test-sessions-{}-{}",
+        "dapper-mcp-test-sessions-{}-{}-{}",
         std::process::id(),
+        started_at,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )))
 }

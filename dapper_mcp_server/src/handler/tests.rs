@@ -700,6 +700,50 @@ fn is_degenerate_schema(schema: &Value) -> bool {
     }
 }
 
+// -- err_text: plaintext vs json --
+
+/// An empty isolated store makes every session-backed tool fail.
+#[tokio::test]
+async fn tool_errors_are_json_objects_when_configured() {
+    let handler = full_toolset_handler_with(McpServerEnv {
+        config: config_with_format(OutputFormat::Json),
+        ..isolated_env()
+    });
+    let result = call_tool_e2e_with(handler, "debug_threads_command", json!({}))
+        .await
+        .expect("the call itself must succeed at the MCP layer");
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "an unreachable session must surface as a tool error"
+    );
+    let parsed: Value = serde_json::from_str(text_of(&result))
+        .expect("the json output format must stay parseable on the error path");
+    assert!(
+        parsed["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("Error connecting to session")),
+        "expected the message under an `error` key; got {parsed}"
+    );
+}
+
+#[tokio::test]
+async fn tool_errors_are_bare_text_by_default() {
+    let result = call_tool_e2e("debug_threads_command", json!({}))
+        .await
+        .expect("the call itself must succeed at the MCP layer");
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "an unreachable session must surface as a tool error"
+    );
+    assert!(
+        text_of(&result).starts_with("Error connecting to session"),
+        "plaintext errors must stay unwrapped; got {}",
+        text_of(&result)
+    );
+}
+
 /// [`call_tool_e2e_with`] against the default full-toolset handler.
 async fn call_tool_e2e(
     tool_name: impl Into<String>,

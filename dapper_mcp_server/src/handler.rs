@@ -14,6 +14,7 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use dapper_config::DapperConfig;
+use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
@@ -119,9 +120,14 @@ fn ok_text(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text.into())])
 }
 
-/// Shorthand for a failed text tool result.
-fn err_text(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(text.into())])
+/// Shorthand for a failed text tool result in `output_format`.
+fn err_text(output_format: OutputFormat, text: impl Into<String>) -> CallToolResult {
+    let text = text.into();
+    let body = match output_format {
+        OutputFormat::Json => serde_json::json!({ "error": text }).to_string(),
+        OutputFormat::Plaintext => text,
+    };
+    CallToolResult::error(vec![Content::text(body)])
 }
 
 /// Render typed DAP request arguments for the raw-request transport, which
@@ -137,7 +143,10 @@ fn render_result<T: std::fmt::Display + serde::Serialize>(
 ) -> CallToolResult {
     match render(result, config) {
         Ok(text) => ok_text(text),
-        Err(e) => err_text(format!("Error rendering response: {e:#}")),
+        Err(e) => err_text(
+            config.output_format,
+            format!("Error rendering response: {e:#}"),
+        ),
     }
 }
 
@@ -200,6 +209,12 @@ impl McpHandler {
 
     fn scope_suffix(&self) -> ScopeClause<'_> {
         ScopeId::clause(self.scope_id.as_ref())
+    }
+
+    /// [`err_text`] in the handler's configured format, so no call site can
+    /// report a failure in a format its success branch would not have used.
+    fn err(&self, text: impl Into<String>) -> CallToolResult {
+        err_text(self.config.output_format, text)
     }
 
     /// Resolve the target session from an optional explicit session ID.
@@ -347,7 +362,7 @@ impl McpHandler {
         session_id: Option<&SessionId>,
     ) -> Result<Arc<DapperControlPlaneClient>, CallToolResult> {
         self.get_client(session_id)
-            .map_err(|e| err_text(format!("Error connecting to session: {:#}", e)))
+            .map_err(|e| self.err(format!("Error connecting to session: {:#}", e)))
     }
 
     /// Bound an already-rendered DAP payload, spilling oversized text to a
@@ -381,7 +396,7 @@ impl McpHandler {
         };
         Ok(match f(client).await {
             Ok(result) => render_result(&result, &self.config),
-            Err(e) => err_text(format!("{err_ctx}: {e:#}")),
+            Err(e) => self.err(format!("{err_ctx}: {e:#}")),
         })
     }
 
@@ -405,7 +420,7 @@ impl McpHandler {
                 };
                 render_result(&result, &config)
             }
-            Err(e) => err_text(format!("Error getting status: {:#}", e)),
+            Err(e) => self.err(format!("Error getting status: {:#}", e)),
         })
     }
 
@@ -607,7 +622,7 @@ Example:
         // rather than a confusing "no active session" — the caller can
         // fix the request shape regardless of session state.
         if filters.is_empty() && !clear_existing {
-            return Ok(err_text(
+            return Ok(self.err(
                 "specify at least one filter or set clear_existing: true to disable all exception breakpoints",
             ));
         }
@@ -707,7 +722,7 @@ Example:
                 });
                 ok_text(format!("{:#}", output))
             }
-            Err(e) => err_text(format!("Error resolving session: {:#}", e)),
+            Err(e) => self.err(format!("Error resolving session: {:#}", e)),
         })
     }
 
@@ -823,7 +838,7 @@ Response is JSON from the debug adapter."#
                 .await
             {
                 Ok(result) => ok_text(Self::bounded_dap_text(result.to_string()).await),
-                Err(e) => err_text(format!("DAP request '{}' failed: {:#}", command, e)),
+                Err(e) => self.err(format!("DAP request '{}' failed: {:#}", command, e)),
             },
         )
     }
@@ -851,7 +866,7 @@ Response is JSON from the debug adapter."#
 
         let count = match ReadByteCount::try_new(count) {
             Ok(count) => count,
-            Err(e) => return Ok(err_text(format!("{e:#}"))),
+            Err(e) => return Ok(self.err(format!("{e:#}"))),
         };
 
         let args = ReadMemoryArguments {
@@ -874,14 +889,14 @@ Response is JSON from the debug adapter."#
                 Ok(result) => match &result.body {
                     ResponseBody::ReadMemory(Some(body)) => match format_memory_read(body) {
                         Ok(text) => ok_text(text),
-                        Err(e) => err_text(format!("Error decoding memory response: {}", e)),
+                        Err(e) => self.err(format!("Error decoding memory response: {}", e)),
                     },
                     ResponseBody::ReadMemory(None) => {
                         ok_text("No memory data returned by the debug adapter.")
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
-                Err(e) => err_text(format!("Error reading memory: {:#}", e)),
+                Err(e) => self.err(format!("Error reading memory: {:#}", e)),
             },
         )
     }
@@ -911,7 +926,7 @@ Response is JSON from the debug adapter."#
         let raw_bytes = match hex_string_to_bytes(&data) {
             Ok(bytes) => bytes,
             Err(e) => {
-                return Ok(err_text(format!("{e:#}")));
+                return Ok(self.err(format!("{e:#}")));
             }
         };
 
@@ -946,7 +961,7 @@ Response is JSON from the debug adapter."#
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
-                Err(e) => err_text(format!("Error writing memory: {:#}", e)),
+                Err(e) => self.err(format!("Error writing memory: {:#}", e)),
             },
         )
     }
@@ -973,7 +988,7 @@ Response is JSON from the debug adapter."#
         let threads_result = match client.threads().await {
             Ok(r) => r.result,
             Err(e) => {
-                return Ok(err_text(format!("Error getting threads: {}", e)));
+                return Ok(self.err(format!("Error getting threads: {}", e)));
             }
         };
 

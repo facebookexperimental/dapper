@@ -67,8 +67,11 @@ pub async fn create_mcp_client_with_toolset(
 }
 
 /// Starts Dapper's MCP server with `--json`, so tool results render as JSON.
-pub async fn create_mcp_client_with_json(scope_id: Option<ScopeId>) -> Result<McpClient> {
-    spawn_mcp_client(&dapper_executable()?, scope_id, None, OutputFormat::Json).await
+pub async fn create_mcp_client_with_json(
+    scope_id: Option<ScopeId>,
+    toolset: Option<Toolset>,
+) -> Result<McpClient> {
+    spawn_mcp_client(&dapper_executable()?, scope_id, toolset, OutputFormat::Json).await
 }
 
 /// Starts an MCP server using an explicit Dapper executable.

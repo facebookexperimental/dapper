@@ -39,6 +39,12 @@ async fn error_recovery_after_stop() -> anyhow::Result<()> {
         extract_text_content(&stop_result)
     );
 
+    assert_eq!(
+        extract_text_content(&stop_result),
+        "Dapper proxy server stopped.",
+        "stop's plaintext body should render without an envelope"
+    );
+
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     let threads_after_stop = mcp_client

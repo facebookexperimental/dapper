@@ -635,14 +635,17 @@ Example:
                     frame_id,
                 },
         }) = request;
-        let client = match self.get_client_or_error(session_id.as_ref()) {
-            Ok(c) => c,
-            Err(e) => return Ok(e),
-        };
-        Ok(match client.eval_repl(&expression, frame_id).await {
-            Ok(result) => ok_text(result),
-            Err(e) => err_text(format!("Error evaluating expression: {:#}", e)),
-        })
+        self.run_rendered(
+            session_id.as_ref(),
+            "Error evaluating expression",
+            async |c| {
+                Ok(ControlPlaneResult {
+                    result: c.eval_repl(&expression, frame_id).await?,
+                    context: None,
+                })
+            },
+        )
+        .await
     }
 
     #[tool(
@@ -660,7 +663,11 @@ Example:
         // When stopping, the server shuts down immediately. Connection errors
         // are expected.
         let _ = client.stop().await;
-        Ok(ok_text("Dapper proxy server stopped."))
+        let result = ControlPlaneResult {
+            result: "Dapper proxy server stopped.",
+            context: None,
+        };
+        Ok(render_result(&result, &self.config))
     }
 
     #[tool(

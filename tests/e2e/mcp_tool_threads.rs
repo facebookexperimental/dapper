@@ -70,7 +70,7 @@ async fn threads_request() -> anyhow::Result<()> {
 async fn threads_and_status_json_output() -> anyhow::Result<()> {
     let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-threads-json")?;
 
-    let mcp_client = create_mcp_client_with_json(Some(scope_id)).await?;
+    let mcp_client = create_mcp_client_with_json(Some(scope_id), None).await?;
     let tool_result = mcp_client
         .call_tool(CallToolRequestParams::new(DebugTool::Threads))
         .await?;

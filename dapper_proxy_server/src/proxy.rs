@@ -145,6 +145,18 @@ fn translate_cancel(request: &mut dap::Request, remapper: &MessageRemapper) {
 /// only one task is writing at a time, so the lock is uncontended and cheap.
 type SharedBackendWriter = Arc<tokio::sync::Mutex<WriteChannel>>;
 
+/// Where a message flowing toward the main client originated.
+///
+/// `EventChannel` messages are synthesized by this proxy (control-plane status,
+/// breakpoint notifications) and injected into the stream. They are derived
+/// from tracker state rather than reported by the adapter, so they must not
+/// feed back into it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MessageSource {
+    Backend,
+    EventChannel,
+}
+
 pub struct ProxyServer {
     backend: Backend,
     /// This receiver is the single stream of messages that will be consumed by the backend
@@ -363,21 +375,21 @@ impl ProxyServer {
         let mut event_seq_counter: i64 = 1;
 
         loop {
-            let mut message = tokio::select! {
+            let (mut message, source) = tokio::select! {
                 // Messages from backend process (debugger)
                 result = backend_read.recv() => {
                     match result? {
-                        Some(msg) => msg,
+                        Some(msg) => (msg, MessageSource::Backend),
                         None => break, // Backend closed
                     }
                 }
                 // Messages from EventChannel
-                Some(msg) = event_channel_rx.recv() => msg,
+                Some(msg) = event_channel_rx.recv() => (msg, MessageSource::EventChannel),
             };
 
             tracing::trace!(target: "dap", source = %DapSource::Backend, message = ?message);
 
-            Self::track_then_publish_backend_message(&debug_session_tracker, &message, || {
+            Self::track_then_publish_message(&debug_session_tracker, &message, source, || {
                 // Avoid cloning nested DAP payloads when no listener is subscribed.
                 if to_listeners_tx.receiver_count() > 0 {
                     let _ = to_listeners_tx.send(Arc::new(message.clone()));
@@ -419,19 +431,24 @@ impl ProxyServer {
         Ok(())
     }
 
-    fn track_then_publish_backend_message(
+    fn track_then_publish_message(
         debug_session_tracker: &DebugSessionTracker,
         message: &Message,
+        source: MessageSource,
         publish: impl FnOnce(),
     ) {
-        match message {
-            Message::Response(response) => {
-                debug_session_tracker.track_execution_response_from_backend(response);
+        // Only adapter-originated messages update the session model. Publishing
+        // stays unconditional so injected events still reach clients.
+        if source == MessageSource::Backend {
+            match message {
+                Message::Response(response) => {
+                    debug_session_tracker.track_execution_response_from_backend(response);
+                }
+                Message::Event(event) => {
+                    debug_session_tracker.track_execution_event_from_backend(event);
+                }
+                _ => {}
             }
-            Message::Event(event) => {
-                debug_session_tracker.track_execution_event_from_backend(event);
-            }
-            _ => {}
         }
         publish();
     }
@@ -1142,12 +1159,38 @@ mod tests {
         let message = make_stopped_event();
         let mut published = false;
 
-        ProxyServer::track_then_publish_backend_message(&tracker, &message, || {
+        ProxyServer::track_then_publish_message(&tracker, &message, MessageSource::Backend, || {
             assert!(tracker.is_stopped());
             published = true;
         });
 
         assert!(published);
+    }
+
+    #[test]
+    fn event_channel_message_is_published_but_not_tracked() {
+        let tracker = DebugSessionTracker::new(
+            SessionId::from("event-channel-provenance-test"),
+            DapperConfig::default(),
+            None,
+        );
+        let message = make_stopped_event();
+        let mut published = false;
+
+        ProxyServer::track_then_publish_message(
+            &tracker,
+            &message,
+            MessageSource::EventChannel,
+            || {
+                published = true;
+            },
+        );
+
+        assert!(published, "injected events must still reach clients");
+        assert!(
+            !tracker.is_stopped(),
+            "a proxy-synthesized Stopped event is not evidence the debuggee stopped"
+        );
     }
 
     #[tokio::test]

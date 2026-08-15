@@ -9,7 +9,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
-async-trait = "0.1.91"
+async-trait = "0.1.92"
 dapper_control_api = { path = "../dapper_control_api" }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_proxy_server = { path = "../dapper_proxy_server" }

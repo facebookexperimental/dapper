@@ -17,6 +17,6 @@ dapper_session = { path = "../dapper_session" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
-tokio-stream = { version = "0.1.18", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }
 tonic = { version = "0.14.6", features = ["codegen", "gzip", "tls-native-roots", "tls-ring", "tls-webpki-roots", "transport"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

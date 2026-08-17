@@ -151,6 +151,9 @@ pub struct Proxy {
     /// session's `SessionInfo` so the parent/child relationship is discoverable.
     #[arg(long)]
     parent_session_id: Option<SessionId>,
+    /// Detect when the backend is itself a dapper proxy.
+    #[arg(long)]
+    detect_double_proxy: bool,
     /// Backend configuration
     #[command(subcommand)]
     backend: BackendMode,
@@ -218,6 +221,7 @@ impl Proxy {
             sessions.clone(),
             session_id.clone(),
             self.parent_session_id.clone(),
+            self.detect_double_proxy,
         );
         let control_client = proxy_server.create_client(ClientId::new("control-plane"));
 

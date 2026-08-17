@@ -43,6 +43,8 @@ pub(super) struct DebugSessionTrackerInner {
     pub session_file_written: bool,
     /// Full adapter capabilities from the initialize response
     pub adapter_capabilities: Option<Capabilities>,
+    /// Whether the backend was detected to be a dapper proxy itself.
+    pub backend_is_dapper: bool,
 }
 
 impl DebugSessionTrackerInner {
@@ -60,6 +62,7 @@ impl DebugSessionTrackerInner {
             session_info: None,
             session_file_written: false,
             adapter_capabilities: None,
+            backend_is_dapper: false,
         }
     }
 

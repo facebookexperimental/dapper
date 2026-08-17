@@ -39,6 +39,8 @@ use dapper_session::SessionStore;
 pub use execution_state::ExecutionState;
 use tracker_inner::DebugSessionTrackerInner;
 
+use crate::dapper_event::DapperEvent;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientType {
     Main,
@@ -59,6 +61,8 @@ pub struct DebugSessionTracker {
     /// `None` when no sessions dir is available: session files are skipped
     /// (with a warning) and other-session discovery is empty.
     sessions: Option<SessionStore>,
+    /// Detect whether the backend is itself a dapper proxy.
+    detect_double_proxy: bool,
     inner: Arc<Mutex<DebugSessionTrackerInner>>,
 }
 
@@ -83,6 +87,7 @@ impl DebugSessionTracker {
             parent_session_id: None,
             config,
             sessions,
+            detect_double_proxy: false,
             inner,
         }
     }
@@ -92,6 +97,13 @@ impl DebugSessionTracker {
     /// it. `None` for root sessions.
     pub fn with_parent_session_id(mut self, parent_session_id: Option<SessionId>) -> Self {
         self.parent_session_id = parent_session_id;
+        self
+    }
+
+    /// Enable double-proxy detection. Must be set before any client is created
+    /// so all tracker clones observe it.
+    pub fn with_detect_double_proxy(mut self, detect_double_proxy: bool) -> Self {
+        self.detect_double_proxy = detect_double_proxy;
         self
     }
 
@@ -218,6 +230,20 @@ impl DebugSessionTracker {
                 );
             });
         }
+        // A backend that emits a successful `controlPlaneStatus` is itself a
+        // dapper proxy.
+        if self.detect_double_proxy
+            && let Ok(DapperEvent::ControlPlaneStatus(status)) = DapperEvent::try_from(&event.event)
+            && status.success
+            && self.mark_backend_is_dapper()
+        {
+            tracing::info!(
+                relay_mode_triggered = true,
+                backend_session_id = %status.session_id,
+                backend_control_port = ?status.port,
+                "detected backend is a dapper proxy; relay candidate"
+            );
+        }
         ExecutionState::track_event(&self.inner, event);
     }
 
@@ -244,6 +270,23 @@ impl DebugSessionTracker {
 
     pub fn adapter_capabilities(&self) -> Option<Capabilities> {
         self.with_inner(|inner| inner.adapter_capabilities.clone())
+    }
+
+    /// Record that the backend was detected to be a dapper proxy.
+    pub(crate) fn mark_backend_is_dapper(&self) -> bool {
+        self.with_inner(|inner| {
+            if inner.backend_is_dapper {
+                false
+            } else {
+                inner.backend_is_dapper = true;
+                true
+            }
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_is_dapper(&self) -> bool {
+        self.with_inner(|inner| inner.backend_is_dapper)
     }
 
     pub fn get_execution_state(&self) -> ExecutionState {

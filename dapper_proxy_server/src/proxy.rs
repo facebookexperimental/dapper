@@ -184,6 +184,7 @@ impl ProxyServer {
         sessions: Option<SessionStore>,
         session_id: SessionId,
         parent_session_id: Option<SessionId>,
+        detect_double_proxy: bool,
     ) -> Self {
         let (to_backend_tx, to_backend_rx) = mpsc::unbounded_channel();
         let (to_listeners_tx, _) = broadcast::channel(8192);
@@ -191,7 +192,8 @@ impl ProxyServer {
         let (event_channel, event_channel_rx) = EventChannel::new_pair();
 
         let debug_session_tracker = DebugSessionTracker::new(session_id, config.clone(), sessions)
-            .with_parent_session_id(parent_session_id);
+            .with_parent_session_id(parent_session_id)
+            .with_detect_double_proxy(detect_double_proxy);
 
         Self {
             backend,
@@ -568,10 +570,13 @@ mod tests {
     use dapper_dap_protocol::responses::ThreadsResponseBody;
     use dapper_session::NavigateResult;
     use dapper_session::NavigationType;
+    use dapper_session::Port;
 
     use super::*;
     use crate::backend::Backend;
     use crate::client::ClientId;
+    use crate::dapper_event::ControlPlaneStatus;
+    use crate::dapper_event::DapperEvent;
     use crate::transport::DuplexChannel;
 
     /// A helper that creates a ProxyServer wired to in-memory channels,
@@ -607,6 +612,7 @@ mod tests {
                 Some(sessions),
                 SessionId::from("test-session"),
                 None,
+                true,
             );
 
             let proxy_client = proxy_server.create_client(ClientId::new("test-control"));
@@ -653,6 +659,60 @@ mod tests {
             ..Default::default()
         }))
         .into()
+    }
+
+    /// A dapper `controlPlaneStatus` event as an inner dapper proxy would emit
+    /// once its control plane binds.
+    fn make_control_plane_status_event(success: bool) -> Message {
+        let status = if success {
+            ControlPlaneStatus::success(
+                SessionId::from("inner-session"),
+                Port::try_new(5005).expect("valid port"),
+            )
+        } else {
+            ControlPlaneStatus::failure(SessionId::from("inner-session"), "bind failed".to_string())
+        };
+        let kind: EventKind = DapperEvent::ControlPlaneStatus(status)
+            .try_into()
+            .expect("DapperEvent converts to an event kind");
+        Event::new(kind).into()
+    }
+
+    #[tokio::test]
+    async fn detects_backend_control_plane_status_as_dapper() {
+        let mut tp = TestProxy::new();
+        assert!(!tp.proxy_client.debug_session_tracker().backend_is_dapper());
+
+        tp.mock_backend
+            .send(make_control_plane_status_event(true))
+            .await
+            .unwrap();
+
+        // The event is still forwarded to the main client; observing it there
+        // means the detection path in the loop has run.
+        let forwarded = tp.main_client.recv().await.unwrap().unwrap();
+        assert!(matches!(forwarded, Message::Event(_)));
+
+        assert!(
+            tp.proxy_client.debug_session_tracker().backend_is_dapper(),
+            "a successful controlPlaneStatus event from the backend should mark it as a dapper"
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_mark_dapper_on_failed_control_plane() {
+        let mut tp = TestProxy::new();
+
+        tp.mock_backend
+            .send(make_control_plane_status_event(false))
+            .await
+            .unwrap();
+        let _ = tp.main_client.recv().await.unwrap().unwrap();
+
+        assert!(
+            !tp.proxy_client.debug_session_tracker().backend_is_dapper(),
+            "a failed control-plane bind means the backend is not a relay candidate"
+        );
     }
 
     async fn assert_secondary_execution_response_updates_state(

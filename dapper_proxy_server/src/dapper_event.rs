@@ -5,6 +5,7 @@
 
 //! Dapper events sent from the control plane to the proxy server.
 
+use anyhow::Context;
 use dapper_dap_protocol::events::EventKind;
 use dapper_dap_protocol::events::UnknownEvent;
 use dapper_session::Port;
@@ -72,6 +73,23 @@ impl TryFrom<DapperEvent> for EventKind {
     }
 }
 
+impl TryFrom<&EventKind> for DapperEvent {
+    type Error = anyhow::Error;
+
+    /// Recognize a dapper event carried in an incoming DAP event. Fails when the
+    /// event is not the custom `"dapper"` event, has no body, or its body does
+    /// not parse as a known `DapperEvent`. Used by a proxy to detect that its
+    /// backend is itself a dapper proxy.
+    fn try_from(kind: &EventKind) -> anyhow::Result<Self> {
+        let EventKind::Unknown(unknown) = kind else {
+            anyhow::bail!("not a custom (unknown) DAP event");
+        };
+        anyhow::ensure!(unknown.event == "dapper", "not a dapper event");
+        let body = unknown.body.as_ref().context("dapper event has no body")?;
+        Ok(serde_json::from_value(body.clone())?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +131,48 @@ mod tests {
 
         let event: DapperEvent = serde_json::from_value(json).unwrap();
         assert!(matches!(event, DapperEvent::Unknown));
+    }
+
+    #[test]
+    fn try_from_event_kind_recognizes_control_plane_status_success() {
+        let kind = EventKind::Unknown(UnknownEvent {
+            event: "dapper".to_string(),
+            body: Some(serde_json::json!({
+                "category": "controlPlaneStatus",
+                "sessionId": "s-1",
+                "success": true,
+                "port": 8080
+            })),
+            extra: Default::default(),
+        });
+
+        let parsed = DapperEvent::try_from(&kind).expect("should recognize dapper event");
+        match parsed {
+            DapperEvent::ControlPlaneStatus(status) => {
+                assert!(status.success);
+                assert_eq!(status.session_id.as_str(), "s-1");
+            }
+            other => panic!("expected ControlPlaneStatus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_from_event_kind_rejects_non_dapper_events() {
+        let kind = EventKind::Unknown(UnknownEvent {
+            event: "output".to_string(),
+            body: Some(serde_json::json!({ "category": "stdout" })),
+            extra: Default::default(),
+        });
+        assert!(DapperEvent::try_from(&kind).is_err());
+    }
+
+    #[test]
+    fn try_from_event_kind_rejects_dapper_event_without_body() {
+        let kind = EventKind::Unknown(UnknownEvent {
+            event: "dapper".to_string(),
+            body: None,
+            extra: Default::default(),
+        });
+        assert!(DapperEvent::try_from(&kind).is_err());
     }
 }

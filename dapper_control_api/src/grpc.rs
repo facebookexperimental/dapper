@@ -278,33 +278,20 @@ where
         to_tonic(async {
             let SetBreakpointsRequest {
                 source_path,
-                lines,
                 clear_existing,
                 breakpoints,
             } = request.into_inner();
-            // Prefer per-breakpoint specs from `breakpoints` field;
-            // fall back to bare `lines` for backward compatibility.
-            let breakpoint_specs: Vec<SourceBreakpoint> = if !breakpoints.is_empty() {
-                breakpoints
-                    .into_iter()
-                    .map(|bp| SourceBreakpoint {
-                        line: bp.line,
-                        column: bp.column,
-                        condition: bp.condition,
-                        hit_condition: bp.hit_condition,
-                        log_message: bp.log_message,
-                        mode: bp.mode,
-                    })
-                    .collect()
-            } else {
-                lines
-                    .into_iter()
-                    .map(|line| SourceBreakpoint {
-                        line,
-                        ..Default::default()
-                    })
-                    .collect()
-            };
+            let breakpoint_specs: Vec<SourceBreakpoint> = breakpoints
+                .into_iter()
+                .map(|bp| SourceBreakpoint {
+                    line: bp.line,
+                    column: bp.column,
+                    condition: bp.condition,
+                    hit_condition: bp.hit_condition,
+                    log_message: bp.log_message,
+                    mode: bp.mode,
+                })
+                .collect();
             let cp_result = self
                 .control_plane
                 .set_breakpoints(&source_path, clear_existing, &breakpoint_specs)
@@ -797,11 +784,9 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 mode: bp.mode.clone(),
             })
             .collect();
-        let lines: Vec<i64> = breakpoint_specs.iter().map(|bp| bp.line).collect();
         let resp = client
             .set_breakpoints(SetBreakpointsRequest {
                 source_path: source_path.to_owned(),
-                lines,
                 clear_existing,
                 breakpoints,
             })

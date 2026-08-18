@@ -120,7 +120,10 @@ message SourceBreakpoint {
 
 message SetBreakpointsRequest {
   string source_path = 1;
-  repeated int64 lines = 2;
+  // Tag 2 was legacy bare line numbers; superseded by `breakpoints` (tag 4),
+  // which also carries per-breakpoint condition/log_message.
+  reserved 2;
+  reserved "lines";
   bool clear_existing = 3;
   repeated SourceBreakpoint breakpoints = 4;
 }

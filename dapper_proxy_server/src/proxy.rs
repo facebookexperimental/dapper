@@ -184,7 +184,6 @@ impl ProxyServer {
         sessions: Option<SessionStore>,
         session_id: SessionId,
         parent_session_id: Option<SessionId>,
-        detect_double_proxy: bool,
     ) -> Self {
         let (to_backend_tx, to_backend_rx) = mpsc::unbounded_channel();
         let (to_listeners_tx, _) = broadcast::channel(8192);
@@ -192,8 +191,7 @@ impl ProxyServer {
         let (event_channel, event_channel_rx) = EventChannel::new_pair();
 
         let debug_session_tracker = DebugSessionTracker::new(session_id, config.clone(), sessions)
-            .with_parent_session_id(parent_session_id)
-            .with_detect_double_proxy(detect_double_proxy);
+            .with_parent_session_id(parent_session_id);
 
         Self {
             backend,
@@ -612,7 +610,6 @@ mod tests {
                 Some(sessions),
                 SessionId::from("test-session"),
                 None,
-                true,
             );
 
             let proxy_client = proxy_server.create_client(ClientId::new("test-control"));

@@ -27,7 +27,7 @@ libc = "0.2.186"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 strum = { version = "0.28.0", features = ["derive"] }
-termimad = "0.34.1"
+termimad = "0.35.2"
 tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 uuid = { version = "1.24.1", features = ["rng-getrandom", "serde", "v4", "v5", "v6", "v7", "v8"] }

@@ -138,7 +138,7 @@ impl OutputState {
         let total_count = self.total_count;
         self.total_count = 0;
         BufferedOutput {
-            head: self.head.drain(..).collect(),
+            head: std::mem::take(&mut self.head),
             tail: self.tail.drain(..).collect(),
             total_count,
             ..Default::default()

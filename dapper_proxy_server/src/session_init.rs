@@ -65,6 +65,18 @@ use crate::transport::DuplexChannel;
 /// to make it configurable.
 const DEFAULT_INIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// Idle timeout for the post-initialization receive loop. If the debug adapter
+/// sends no DAP message within this window, the session is treated as hung and
+/// fails with an error instead of blocking forever (the loop otherwise only
+/// exits on an `Exited`/`Terminated` event or the channel closing).
+///
+/// This bounds *silence*, not total session length: it is reset on every
+/// received message. It is deliberately far more generous than the init
+/// handshake timeout — a healthy long-running debuggee, or a session parked at
+/// a breakpoint while the client reasons about its next step, can legitimately
+/// stay quiet for a long time — so it only trips on a genuinely wedged adapter.
+const DEFAULT_RECEIVE_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
 /// Status of an initialization stage.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -251,6 +263,9 @@ pub struct SessionInitializer {
     /// Stores the launch/attach response if it arrives early (before we wait for it).
     pending_debug_response: Option<dap::Response>,
     timeout: Duration,
+    /// Idle timeout for the post-init receive loop; see
+    /// `DEFAULT_RECEIVE_IDLE_TIMEOUT`.
+    receive_idle_timeout: Duration,
     /// Time when initialization started, for progress reporting.
     start_time: Option<Instant>,
     /// Control plane port if dapper event was received.
@@ -279,6 +294,7 @@ impl SessionInitializer {
             debug_request_seq: None,
             pending_debug_response: None,
             timeout,
+            receive_idle_timeout: DEFAULT_RECEIVE_IDLE_TIMEOUT,
             start_time: None,
             control_plane_port: None,
             event_writer: EventWriter::stdout(),
@@ -289,6 +305,12 @@ impl SessionInitializer {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_receive_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.receive_idle_timeout = timeout;
         self
     }
 
@@ -689,7 +711,7 @@ impl SessionInitializer {
         });
         info!("DAP initialization complete, continuing to receive messages");
 
-        self.receive_messages_until_closed(&mut channel).await;
+        self.receive_messages_until_closed(&mut channel).await?;
 
         Ok(())
     }
@@ -1020,9 +1042,35 @@ impl SessionInitializer {
         .context("Timed out waiting for response")?
     }
 
-    async fn receive_messages_until_closed(&mut self, channel: &mut DuplexChannel) {
+    async fn receive_messages_until_closed(
+        &mut self,
+        channel: &mut DuplexChannel,
+    ) -> anyhow::Result<()> {
         loop {
-            match self.recv_message(channel).await {
+            let received = match tokio::time::timeout(
+                self.receive_idle_timeout,
+                self.recv_message(channel),
+            )
+            .await
+            {
+                Ok(received) => received,
+                Err(_) => {
+                    // No DAP message arrived within the idle window: the adapter
+                    // is wedged. Fail with a real error instead of hanging so a
+                    // genuine hang surfaces as a failure rather than looking
+                    // identical to a silent session that will never make progress.
+                    error!(
+                        "No DAP message received in {:?}; treating the session as hung",
+                        self.receive_idle_timeout
+                    );
+                    anyhow::bail!(
+                        "Timed out after {:?} waiting for a DAP message; the debug session appears hung",
+                        self.receive_idle_timeout
+                    );
+                }
+            };
+
+            match received {
                 Ok(Some(msg)) => {
                     // In headless mode, exit once the debuggee terminates.
                     // The `exited` and `terminated` events signal the debug
@@ -1048,6 +1096,7 @@ impl SessionInitializer {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -1332,6 +1381,124 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "Timeout took too long: {:?}",
             elapsed
+        );
+    }
+
+    /// Mock backend that completes the full DAP handshake, then goes silent —
+    /// never sending an `Exited`/`Terminated` event and keeping the channel
+    /// open. Used to exercise the post-init receive-loop idle timeout.
+    async fn mock_backend_hangs_after_ready(mut channel: DuplexChannel) -> anyhow::Result<()> {
+        let mut state = MockState::WaitingForInitialize;
+        let mut pending_debug_request: Option<dap::Request> = None;
+        let mut seq: Seq = 1.into();
+
+        while let Ok(Some(msg)) = channel.recv().await {
+            if let dap::Message::Request(req) = msg {
+                match (&state, &req.command) {
+                    (MockState::WaitingForInitialize, RequestCommand::Initialize(_)) => {
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::Initialize(Some(Capabilities {
+                                supports_configuration_done_request: Some(true),
+                                ..Default::default()
+                            })),
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+                        state = MockState::WaitingForDebugRequest;
+                    }
+                    (
+                        MockState::WaitingForDebugRequest,
+                        RequestCommand::Launch(_) | RequestCommand::Attach(_),
+                    ) => {
+                        pending_debug_request = Some(req);
+                        let initialized_event = dap::Event {
+                            seq,
+                            event: EventKind::Initialized(Default::default()),
+                        };
+                        seq = seq.next();
+                        channel.send(initialized_event.into()).await?;
+                        state = MockState::WaitingForConfigurationDone;
+                    }
+                    (
+                        MockState::WaitingForConfigurationDone,
+                        RequestCommand::ConfigurationDone(_),
+                    ) => {
+                        let config_response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::ConfigurationDone,
+                        };
+                        seq = seq.next();
+                        channel.send(config_response.into()).await?;
+
+                        if let Some(debug_req) = pending_debug_request.take() {
+                            let body = match &debug_req.command {
+                                RequestCommand::Launch(_) => ResponseBody::Launch,
+                                RequestCommand::Attach(_) => ResponseBody::Attach,
+                                _ => unreachable!(),
+                            };
+                            let debug_response = dap::Response {
+                                seq,
+                                request_seq: debug_req.seq,
+                                success: true,
+                                message: None,
+                                body,
+                            };
+                            channel.send(debug_response.into()).await?;
+                        }
+
+                        // Handshake done; now hang forever without ever sending
+                        // an `Exited`/`Terminated` event, keeping the channel
+                        // open so the receive loop must rely on its idle timeout.
+                        std::future::pending::<()>().await;
+                    }
+                    (current_state, cmd) => {
+                        anyhow::bail!(
+                            "Protocol violation: received '{}' in state {:?}",
+                            cmd.command_name(),
+                            current_state
+                        );
+                    }
+                }
+            }
+        }
+        anyhow::bail!("Channel closed before completion, state: {:?}", state)
+    }
+
+    #[tokio::test]
+    async fn test_receive_loop_idle_timeout_fails_hung_session() {
+        // After a successful handshake the backend goes silent and never sends
+        // an `Exited`/`Terminated` event. With a short idle timeout the post-init
+        // receive loop must fail with a real error instead of hanging forever.
+        let config = launch_config(vec![], false);
+
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend_hangs_after_ready(server));
+
+        let initializer = SessionInitializer::new(config)
+            .with_timeout(Duration::from_secs(2))
+            .with_receive_idle_timeout(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        let result = initializer.run(client).await;
+        let elapsed = start.elapsed();
+
+        backend_handle.abort();
+        let err = result.expect_err("expected the hung receive loop to fail with an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("hung") || msg.contains("Timed out"),
+            "expected a hang/timeout error, got: {msg}"
+        );
+        // Should have tripped on the 200ms idle timeout, not the 1h default.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "idle timeout took too long: {elapsed:?}"
         );
     }
 

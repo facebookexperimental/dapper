@@ -36,8 +36,12 @@ async fn main() -> Result<()> {
     dapper_tracing::init_logging(dapper_tracing::default_layers()?)?;
 
     let config = cli.resolve_config();
+    let reason = cli.normalized_reason();
 
-    let exit_code = cli.command.run(&session_id, config).await?;
+    let exit_code = cli
+        .command
+        .run(&session_id, config, reason.as_deref())
+        .await?;
 
     // stdin is blocking, so we need to exit explicitly
     // TODO: find a better way to handle blocking stdin

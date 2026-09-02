@@ -35,3 +35,4 @@ uuid = { version = "1.24.1", features = ["rng-getrandom", "serde", "v4", "v5", "
 [dev-dependencies]
 temp-env = { version = "0.3.6", features = ["async_closure"] }
 tempfile = "3.27.0"
+tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }

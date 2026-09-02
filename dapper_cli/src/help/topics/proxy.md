@@ -20,6 +20,13 @@ Spawn a debug adapter process and communicate via stdin/stdout:
 
 Arguments after the command name are passed through to the debug adapter.
 
+Pass-through is unconditional, so it swallows Dapper's own global flags too. Put them before the subcommand, or use the environment variable instead (`DAPPER_REASON`, `DAPPER_OUTPUT_JSON`), which is placement-proof:
+
+```bash
+{{program}} proxy process /path/to/lldb-dap --reason "..."   # adapter gets --reason
+{{program}} --reason "..." proxy process /path/to/lldb-dap   # dapper gets --reason
+```
+
 ### TCP
 
 Connect to a debug adapter already listening on a TCP socket:

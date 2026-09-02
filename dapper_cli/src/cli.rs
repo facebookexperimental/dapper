@@ -30,7 +30,9 @@ pub struct Cli {
     /// paths (`help`, `--help`, `-h`), which render and exit before logging
     /// starts. Give one short line of intent, e.g.
     /// `--reason "inspect deadlocked worker thread"`. A `--reason` after a
-    /// help topic is read as part of the topic name, so that form fails.
+    /// help topic is read as part of the topic name, so that form fails, and
+    /// `proxy process` forwards everything after the adapter command, so a
+    /// trailing `--reason` silently reaches the adapter instead.
     #[arg(long, global = true, env = "DAPPER_REASON")]
     pub reason: Option<String>,
 

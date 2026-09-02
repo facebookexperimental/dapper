@@ -426,6 +426,111 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+    use crate::cli::Cli;
+    use crate::cli::Commands;
+
+    /// `BackendMode::Process` takes the adapter command as a
+    /// `trailing_var_arg` with `allow_hyphen_values`, so everything after it
+    /// belongs to the adapter, including flags that are otherwise global.
+    #[test]
+    fn reason_after_adapter_command_goes_to_the_adapter() {
+        // An exported DAPPER_REASON would satisfy cli.reason and mask the passthrough.
+        temp_env::with_var_unset("DAPPER_REASON", || {
+            let cli = Cli::try_parse_from([
+                "dapper",
+                "proxy",
+                "process",
+                "python",
+                "-m",
+                "debugpy",
+                "--reason",
+                "swallowed by the adapter",
+            ])
+            .expect("the adapter command absorbs trailing flags");
+
+            assert_eq!(
+                cli.reason, None,
+                "a trailing --reason belongs to the adapter, not to dapper"
+            );
+
+            let Commands::Proxy(proxy) = cli.command else {
+                panic!("expected the proxy subcommand");
+            };
+            let BackendMode::Process { cmd } = proxy.backend else {
+                panic!("expected the process backend");
+            };
+            assert_eq!(
+                cmd,
+                [
+                    "python",
+                    "-m",
+                    "debugpy",
+                    "--reason",
+                    "swallowed by the adapter"
+                ],
+                "the flag must reach the adapter argv verbatim"
+            );
+        });
+    }
+
+    #[test]
+    fn env_reason_survives_the_adapter_passthrough() {
+        temp_env::with_var("DAPPER_REASON", Some("from the environment"), || {
+            let cli = Cli::try_parse_from([
+                "dapper",
+                "proxy",
+                "process",
+                "python",
+                "--reason",
+                "swallowed by the adapter",
+            ])
+            .expect("the adapter command absorbs trailing flags");
+
+            assert_eq!(cli.reason.as_deref(), Some("from the environment"));
+
+            let Commands::Proxy(proxy) = cli.command else {
+                panic!("expected the proxy subcommand");
+            };
+            let BackendMode::Process { cmd } = proxy.backend else {
+                panic!("expected the process backend");
+            };
+            assert_eq!(cmd, ["python", "--reason", "swallowed by the adapter"]);
+        });
+    }
+
+    #[test]
+    fn reason_before_the_subcommand_is_parsed_by_dapper() {
+        temp_env::with_var_unset("DAPPER_REASON", || {
+            let cli = Cli::try_parse_from([
+                "dapper",
+                "--reason",
+                "attach to the failing test - dapper help proxy",
+                "proxy",
+                "process",
+                "python",
+                "-m",
+                "debugpy",
+            ])
+            .expect("leading --reason parses for every subcommand");
+
+            assert_eq!(
+                cli.reason.as_deref(),
+                Some("attach to the failing test - dapper help proxy")
+            );
+
+            let Commands::Proxy(proxy) = cli.command else {
+                panic!("expected the proxy subcommand");
+            };
+            let BackendMode::Process { cmd } = proxy.backend else {
+                panic!("expected the process backend");
+            };
+            assert_eq!(
+                cmd,
+                ["python", "-m", "debugpy"],
+                "dapper's own flag must not leak into the adapter argv"
+            );
+        });
+    }
 
     #[test]
     fn test_parse_valid_socket_addr() {

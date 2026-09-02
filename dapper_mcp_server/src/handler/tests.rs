@@ -351,12 +351,29 @@ fn get_client_skips_fast_path_when_control_port_set() {
     drop(listener);
 }
 
+/// `(tool, schema path)` pairs that are intentionally unconstrained:
+/// `debug_dap_request`'s `arguments` are adapter-defined, so schemars emits no
+/// constraining keyword for them.
+const DEGENERATE_SCHEMA_EXEMPTIONS: &[(&str, &str)] =
+    &[("debug_dap_request", "root/properties/arguments")];
+
+/// Every registered tool, not a toolset's subset: `debug_dap_request` is
+/// `raw`-only.
+fn all_tool_routes() -> ToolRouter<McpHandler> {
+    let router = McpHandler::tool_router();
+    assert!(
+        !router.map.is_empty(),
+        "the tool router must expose routes; an empty map makes every router guard vacuous"
+    );
+    router
+}
+
 #[test]
 fn all_tool_schemas_have_properties() {
     // Tools that take no parameters are allowed to have no properties
     let no_params_tools: &[&str] = &["debug_sessions_command"];
-    let handler = full_toolset_handler();
-    for (name, route) in &handler.tool_router.map {
+    let router = all_tool_routes();
+    for (name, route) in &router.map {
         if no_params_tools.contains(&name.as_ref()) {
             continue;
         }
@@ -374,21 +391,39 @@ fn all_tool_schemas_have_properties() {
 
 #[test]
 fn no_degenerate_schemas() {
-    let handler = full_toolset_handler();
-    for (name, route) in &handler.tool_router.map {
+    let router = all_tool_routes();
+    let mut found = Vec::new();
+    for (name, route) in &router.map {
         let schema = Value::Object(route.attr.input_schema.as_ref().clone());
-        check_schema_tree(&schema, name, "root");
+        collect_degenerate_schemas(&schema, name, "root", &mut found);
     }
+    found.sort_by(|(tool_a, path_a, _), (tool_b, path_b, _)| {
+        (tool_a, path_a).cmp(&(tool_b, path_b))
+    });
+
+    let keys: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(tool, path, _)| (tool.as_str(), path.as_str()))
+        .collect();
+    let mut exempt = DEGENERATE_SCHEMA_EXEMPTIONS.to_vec();
+    exempt.sort();
+
+    assert_eq!(
+        keys, exempt,
+        "degenerate schemas must match DEGENERATE_SCHEMA_EXEMPTIONS: an extra one \
+         is unconstrained, a missing one is a stale exemption.\nschemas found: {found:#?}"
+    );
 }
 
-fn check_schema_tree(schema: &Value, tool_name: &str, path: &str) {
-    assert!(
-        !is_degenerate_schema(schema),
-        "tool '{}' has degenerate schema at {}: {}",
-        tool_name,
-        path,
-        schema
-    );
+fn collect_degenerate_schemas(
+    schema: &Value,
+    tool_name: &str,
+    path: &str,
+    found: &mut Vec<(String, String, Value)>,
+) {
+    if is_degenerate_schema(schema) {
+        found.push((tool_name.to_owned(), path.to_owned(), schema.clone()));
+    }
 
     let Some(obj) = schema.as_object() else {
         return;
@@ -402,10 +437,11 @@ fn check_schema_tree(schema: &Value, tool_name: &str, path: &str) {
     ] {
         if let Some(map) = obj.get(*key).and_then(|v| v.as_object()) {
             for (entry_name, entry_schema) in map {
-                check_schema_tree(
+                collect_degenerate_schemas(
                     entry_schema,
                     tool_name,
                     &format!("{}/{}/{}", path, key, entry_name),
+                    found,
                 );
             }
         }
@@ -425,14 +461,19 @@ fn check_schema_tree(schema: &Value, tool_name: &str, path: &str) {
             if sub.is_boolean() {
                 continue;
             }
-            check_schema_tree(sub, tool_name, &format!("{}/{}", path, key));
+            collect_degenerate_schemas(sub, tool_name, &format!("{}/{}", path, key), found);
         }
     }
 
     for key in &["oneOf", "anyOf", "allOf", "prefixItems"] {
         if let Some(items) = obj.get(*key).and_then(|v| v.as_array()) {
             for (i, item) in items.iter().enumerate() {
-                check_schema_tree(item, tool_name, &format!("{}/{}[{}]", path, key, i));
+                collect_degenerate_schemas(
+                    item,
+                    tool_name,
+                    &format!("{}/{}[{}]", path, key, i),
+                    found,
+                );
             }
         }
     }
@@ -444,8 +485,8 @@ fn no_type_arrays_in_schemas() {
     // 2020-12 array form for nullable types). It requires the equivalent "anyOf"
     // form instead. This test ensures no tool schema contains type arrays, which
     // would cause HTTP 500 errors from the Claude API.
-    let handler = full_toolset_handler();
-    for (name, route) in &handler.tool_router.map {
+    let router = all_tool_routes();
+    for (name, route) in &router.map {
         let schema = Value::Object(route.attr.input_schema.as_ref().clone());
         assert_no_type_arrays(&schema, name, "root");
     }
@@ -467,7 +508,6 @@ fn assert_no_type_arrays(schema: &Value, tool_name: &str, path: &str) {
         );
     }
 
-    // Recurse using the same subschema positions as check_schema_tree
     for key in &[
         "$defs",
         "properties",
@@ -1438,7 +1478,7 @@ fn thread_snapshot_clamping_constants() {
 fn tool_routes_and_debug_tool_variants_match() {
     use strum::VariantNames;
 
-    let router = McpHandler::tool_router();
+    let router = all_tool_routes();
     let always_available = McpHandler::always_available_tools();
     for name in router.map.keys() {
         assert!(

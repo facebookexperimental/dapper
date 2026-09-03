@@ -31,6 +31,8 @@ use dapper_session::config::TcpSpawnConfig;
 #[cfg(unix)]
 use dapper_session::config::UdsSpawnConfig;
 
+use crate::invocation::Reentry;
+
 fn parse_socket_addr(addr_str: &str) -> anyhow::Result<SocketAddr> {
     // Fast path: a literal socket address (covers bracketed IPv6 like `[::1]:8080`).
     if let Ok(addr) = addr_str.parse::<SocketAddr>() {
@@ -177,7 +179,12 @@ async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend> {
 }
 
 impl Proxy {
-    pub async fn run(self, session_id: &SessionId, config: DapperConfig) -> anyhow::Result<()> {
+    pub async fn run(
+        self,
+        session_id: &SessionId,
+        config: DapperConfig,
+        reentry: Reentry,
+    ) -> anyhow::Result<()> {
         let control_port = Port::try_new(self.control_port);
         tracing::info!(self.control_port, "Starting dapper proxy");
         let sessions = match SessionStore::default_location() {
@@ -244,6 +251,7 @@ impl Proxy {
                 &session_config,
                 session_id,
                 self.scope_id.clone(),
+                reentry,
             ) {
                 Some((tx, teardown)) => {
                     child_teardown_hook = Some(crate::child_supervisor::teardown_hook(teardown));
@@ -254,7 +262,12 @@ impl Proxy {
             #[cfg(not(unix))]
             let child_spawn_tx: Option<
                 tokio::sync::mpsc::Sender<dapper_proxy_server::ChildSpawnRequest>,
-            > = None;
+            > = {
+                // Binding is load-bearing: the supervisor is Unix-only, so without
+                // it `reentry` is an unused parameter on other targets.
+                let _ = reentry;
+                None
+            };
             let handle = tokio::spawn(async move {
                 let mut initializer =
                     SessionInitializer::new(init_config).with_event_writer(event_writer);

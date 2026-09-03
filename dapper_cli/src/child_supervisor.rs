@@ -6,8 +6,9 @@
 //! Child-session supervisor (Unix-only).
 //!
 //! When a headless `dapper proxy from-config` session has `childSessions` with
-//! `autoSpawn`, this module spawns each child as its own peer `dapper proxy
-//! from-config` process for the adapter's `startDebugging` reverse requests.
+//! `autoSpawn`, this module spawns each child as its own peer proxy process —
+//! `<exe> [reentry] proxy from-config` — for the adapter's `startDebugging`
+//! reverse requests.
 //! `SessionInitializer` sends a resolved child [`DebugSessionConfig`] over an
 //! mpsc [`ChildSpawnRequest`]; the supervisor writes a hardened per-user temp
 //! config, spawns the proxy, and only then acks (so the ack reflects a real spawn).
@@ -17,10 +18,12 @@
 //! children before the parent exits; `PR_SET_PDEATHSIG` backstops a crashed parent.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::future::Future;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -52,6 +55,8 @@ use tracing::debug;
 use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
+
+use crate::invocation::Reentry;
 
 /// Bound on the channel from `SessionInitializer`s to the supervisor. Spawning
 /// is fast (`Command::spawn`), so this only smooths brief bursts.
@@ -384,12 +389,13 @@ fn spawn_child_waiter(registry: ChildRegistry, mut child: Box<dyn SpawnedChild>)
 /// Wire up the child-session supervisor for a headless proxy, returning the
 /// channel a `SessionInitializer` uses to request child spawns. Returns `None`
 /// (child spawning disabled) when `childSessions` is absent, `autoSpawn` is off,
-/// the depth/child budget is zero, or the dapper binary path can't be
+/// the depth/child budget is zero, or this process's executable path can't be
 /// determined. In all those cases the reverse-request handler fails closed.
 pub(crate) fn setup_child_supervisor(
     config: &DebugSessionConfig,
     parent_session_id: &SessionId,
     scope_id: Option<ScopeId>,
+    reentry: Reentry,
 ) -> Option<(mpsc::Sender<ChildSpawnRequest>, ChildTeardown)> {
     let child_sessions = config.child_sessions.as_ref()?;
     if !child_sessions.auto_spawn
@@ -399,17 +405,18 @@ pub(crate) fn setup_child_supervisor(
         return None;
     }
 
-    let dapper_bin = match std::env::current_exe() {
+    let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(e) => {
-            warn!("cannot determine dapper binary path; child sessions disabled: {e}");
+            warn!("cannot determine this process's executable path; child sessions disabled: {e}");
             return None;
         }
     };
 
     let (tx, rx) = mpsc::channel(CHILD_SPAWN_CHANNEL_CAP);
     let spawner: Arc<dyn ChildSessionSpawner> = Arc::new(OsChildSpawner {
-        dapper_bin,
+        exe,
+        reentry,
         scope_id,
         parent_session_id: parent_session_id.clone(),
     });
@@ -427,10 +434,13 @@ pub(crate) fn setup_child_supervisor(
     Some((tx, teardown))
 }
 
-/// Spawns child sessions as real peer `dapper proxy from-config` OS processes.
+/// Spawns child sessions as real peer OS processes: `<exe> [reentry] proxy
+/// from-config`.
 struct OsChildSpawner {
-    /// Path to the `dapper` binary (this process's executable).
-    dapper_bin: PathBuf,
+    /// This process's executable: dapper itself, or the host CLI embedding it.
+    exe: PathBuf,
+    /// How to get from `exe` back to dapper's own CLI.
+    reentry: Reentry,
     /// Scope id to give children (the parent proxy's scope).
     scope_id: Option<ScopeId>,
     /// The parent proxy's session id, passed to children as `--parent-session-id`.
@@ -455,25 +465,39 @@ impl ChildSessionSpawner for OsChildSpawner {
 }
 
 impl OsChildSpawner {
+    /// Argv for a child proxy, everything after the executable. The reentry
+    /// prefix has to lead: embedded, `exe` is the host, and it rejects a child
+    /// that skips the subcommand reserved for dapper.
+    ///
+    /// Adding an option here means updating the copy of this argv in
+    /// `fdb-tool/src/commands/dapper.rs::fdb_forwards_a_child_proxy_argv_untouched`.
+    fn child_proxy_args(&self, events_fd: RawFd, config_path: &Path) -> Vec<OsString> {
+        let mut args: Vec<OsString> = self.reentry.args().iter().map(OsString::from).collect();
+        args.push("proxy".into());
+        if let Some(scope) = &self.scope_id {
+            args.push("--scope-id".into());
+            args.push(scope.as_str().into());
+        }
+        args.push("--parent-session-id".into());
+        args.push(self.parent_session_id.as_str().into());
+        // Dynamic control-plane port so children never collide with the parent.
+        args.push("--control-port".into());
+        args.push("0".into());
+        args.push("from-config".into());
+        args.push("--events-fd".into());
+        args.push(events_fd.to_string().into());
+        args.push(config_path.into());
+        args
+    }
+
     async fn spawn_proxy(&self, config_path: &Path) -> Result<Box<dyn SpawnedChild>> {
         // Events pipe: std marks both ends CLOEXEC (no leak into the child);
         // `pre_exec` clears it on the inherited write end.
         let (events_reader, events_writer) = std::io::pipe().context("creating events pipe")?;
         let write_fd = events_writer.as_raw_fd();
 
-        let mut cmd = Command::new(&self.dapper_bin);
-        cmd.arg("proxy");
-        if let Some(scope) = &self.scope_id {
-            cmd.arg("--scope-id").arg(scope.as_str());
-        }
-        cmd.arg("--parent-session-id")
-            .arg(self.parent_session_id.as_str());
-        // Dynamic control-plane port so children never collide with the parent.
-        cmd.arg("--control-port").arg("0");
-        cmd.arg("from-config");
-        // `--events-fd` and the config path are `from-config` subcommand args.
-        cmd.arg("--events-fd").arg(write_fd.to_string());
-        cmd.arg(config_path);
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(self.child_proxy_args(write_fd, config_path));
         // The child must never inherit the parent's stdio: the parent uses its
         // own stdout for `[DAPPER_SESSION]` event lines, and structured child
         // events flow over `--events-fd` instead.
@@ -745,6 +769,64 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+    use crate::invocation::CommandWord;
+
+    fn spawner_for(reentry: Reentry, scope_id: Option<ScopeId>) -> OsChildSpawner {
+        OsChildSpawner {
+            exe: PathBuf::from("/bin/host"),
+            reentry,
+            scope_id,
+            parent_session_id: SessionId::new("parent-1"),
+        }
+    }
+
+    /// Dropping the prefix spawns `<host> proxy ...`, which the host rejects
+    /// after the supervisor has already acked, so nothing reports it.
+    #[test]
+    fn child_argv_replays_the_reentry_prefix_when_embedded() {
+        let spawner = spawner_for(
+            Reentry::Embedded {
+                subcommand: CommandWord::try_new("dapper").expect("one word"),
+            },
+            Some(ScopeId::new("scope-1")),
+        );
+        assert_eq!(
+            spawner.child_proxy_args(7, Path::new("/tmp/child.json")),
+            [
+                "dapper",
+                "proxy",
+                "--scope-id",
+                "scope-1",
+                "--parent-session-id",
+                "parent-1",
+                "--control-port",
+                "0",
+                "from-config",
+                "--events-fd",
+                "7",
+                "/tmp/child.json",
+            ],
+        );
+    }
+
+    #[test]
+    fn child_argv_has_no_prefix_when_standalone() {
+        let spawner = spawner_for(Reentry::Standalone, None);
+        assert_eq!(
+            spawner.child_proxy_args(7, Path::new("/tmp/child.json")),
+            [
+                "proxy",
+                "--parent-session-id",
+                "parent-1",
+                "--control-port",
+                "0",
+                "from-config",
+                "--events-fd",
+                "7",
+                "/tmp/child.json",
+            ],
+        );
+    }
 
     /// A fake child whose `wait` resolves when the shared release channel fires.
     struct FakeChild {

@@ -60,7 +60,7 @@ pub mod test_util {
 /// this once on the raw argv vector before invoking `Cli::parse_from`.
 /// `dapper proxy --skill` becomes `dapper help proxy`, bare
 /// `dapper --skill` becomes `dapper help`. The first element (program
-/// name) is preserved so `program_name::from_args` and clap's usage
+/// name) is preserved so `invocation::from_args` and clap's usage
 /// strings see the right invocation name.
 ///
 /// All other flags in argv (e.g. `--scope-id=X`, `--json`,
@@ -172,7 +172,7 @@ mod argv_tests {
     fn embedder_program_name_preserved() {
         // `argv[0]` carries `"fdb dapper"` because `fdb` sets it that
         // way; the rewriter must preserve the multi-word program name
-        // so `program_name::from_args` and clap's usage strings see
+        // so `invocation::from_args` and clap's usage strings see
         // the right invocation.
         assert_eq!(
             rewrite_skill_to_help(s(&["fdb dapper", "mcp", "--skill"])),

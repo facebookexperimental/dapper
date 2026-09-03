@@ -19,7 +19,7 @@ use std::borrow::Cow;
 /// topic tree.
 pub struct Context<'a> {
     /// User-facing program name, resolved from argv[0] via
-    /// `crate::program_name::from_args`. Examples: `"dapper"`,
+    /// `crate::invocation::from_args`. Examples: `"dapper"`,
     /// `"fdb dapper"`, `"meta dapper"`.
     pub program_name: &'a str,
 

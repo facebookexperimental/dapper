@@ -9,6 +9,8 @@ use dapper_config::DapperConfig;
 use dapper_session::SessionId;
 use dapper_tracing::normalize_reason;
 
+use crate::invocation::Reentry;
+
 #[derive(Parser)]
 #[command(name = "dapper")]
 #[command(about = "Debug Adapter Protocol (DAP) proxy, (de-)multiplexer, client, and MCP server")]
@@ -95,13 +97,14 @@ impl Commands {
         session_id: &SessionId,
         config: DapperConfig,
         reason: Option<&str>,
+        reentry: Reentry,
     ) -> anyhow::Result<i32> {
         tracing::info!("Dapper session: {}", session_id);
         log_reason(reason);
 
         let result = match self {
             Commands::Debug(cmd) => cmd.run(config).await,
-            Commands::Proxy(cmd) => cmd.run(session_id, config).await,
+            Commands::Proxy(cmd) => cmd.run(session_id, config, reentry).await,
             Commands::Mcp(cmd) => cmd.run(config).await,
             Commands::Help { .. } => {
                 unreachable!("Help is dispatched in the binary entry point before Commands::run")
@@ -203,6 +206,7 @@ mod tests {
                         &SessionId::generate(),
                         DapperConfig::default(),
                         Some("check the reason reaches the logs"),
+                        Reentry::Standalone,
                     )
                     .await;
             },

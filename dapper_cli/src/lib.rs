@@ -5,14 +5,14 @@
 
 #![warn(clippy::all)]
 
-/// Child-session supervisor (Unix-only): spawns peer `dapper proxy from-config`
-/// processes for headless `startDebugging` reverse requests.
+/// Child-session supervisor (Unix-only): spawns peer
+/// `<exe> [reentry] proxy from-config` processes for `startDebugging`.
 #[cfg(unix)]
 mod child_supervisor;
 pub mod cli;
 pub mod commands;
 pub mod help;
-pub mod program_name;
+pub mod invocation;
 
 /// Default port for the control plane
 const DAPPER_CONTROL_PLANE_PORT: u16 = 0;

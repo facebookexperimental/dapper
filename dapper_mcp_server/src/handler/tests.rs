@@ -568,6 +568,19 @@ fn every_tool_advertises_an_optional_reason() {
     }
 }
 
+/// The only guidance clients that never read `dapper help` receive.
+#[test]
+fn server_instructions_mention_the_reason_argument() {
+    let instructions = full_toolset_handler()
+        .get_info()
+        .instructions
+        .expect("the server must advertise instructions");
+    assert!(
+        instructions.contains("optional `reason`"),
+        "instructions must tell clients about the reason argument; got: {instructions}"
+    );
+}
+
 #[tokio::test]
 async fn session_targeted_tool_accepts_a_reason() {
     let result = call_tool_e2e(

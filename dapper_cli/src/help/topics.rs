@@ -151,6 +151,31 @@ mod tests {
         check(BUILTINS);
     }
 
+    /// `reason` is optional everywhere, so losing its documentation fails
+    /// nothing else.
+    #[test]
+    fn topics_document_the_reason_convention() {
+        with_ctx("dapper", |ctx| {
+            // `Body::render` leaves `{{program}}` for `dispatch` to
+            // substitute, so match the raw token.
+            for (topic_name, needle) in [
+                ("agent", "--reason"),
+                ("agent", "except `{{program}} help`"),
+                ("proxy", "Pass-through is unconditional"),
+                ("mcp", "## Per-call reason"),
+            ] {
+                let topic = BUILTINS
+                    .iter()
+                    .find(|t| t.name == topic_name)
+                    .unwrap_or_else(|| panic!("topic `{topic_name}` is not registered"));
+                assert!(
+                    topic.body.render(ctx).contains(needle),
+                    "topic `{topic_name}` no longer documents `{needle}`"
+                );
+            }
+        });
+    }
+
     #[test]
     fn names_and_aliases_unique_at_top_level() {
         let mut seen: Vec<&str> = Vec::new();

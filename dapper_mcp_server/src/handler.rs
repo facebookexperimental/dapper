@@ -1081,7 +1081,7 @@ Response is JSON from the debug adapter."#
 impl ServerHandler for McpHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "DAP proxy server providing MCP clients access to active debugger sessions. Call debug_sessions_command to list available sessions. When multiple sessions exist (e.g., dual-attach C++/Java debugging), specify session_id in subsequent commands to target the correct session.",
+            "DAP proxy server providing MCP clients access to active debugger sessions. Call debug_sessions_command to list available sessions. When multiple sessions exist (e.g., dual-attach C++/Java debugging), specify session_id in subsequent commands to target the correct session. Every tool also accepts an optional `reason`: one short line on what this call is trying to learn or change. Pass it on every call; it is recorded in Dapper's telemetry.",
         )
     }
 

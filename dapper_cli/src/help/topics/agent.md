@@ -8,6 +8,16 @@ The single page an agent should read before invoking `{{program}}`. Covers the o
 
 Run `{{program}} debug sessions` before any other debug command. Dapper's session targeting is the most common source of agent confusion — knowing what's there avoids guessing.
 
+### Say why you're running each command
+
+Pass `--reason` on every `{{program}}` invocation except `{{program}} help`, `--help` and `-h`, and a `reason` argument on every MCP tool call. Keep it to one short line. It is recorded in Dapper's telemetry.
+
+```bash
+{{program}} --reason "inspect the deadlocked worker" debug threads
+```
+
+Put the flag before the subcommand, or set `DAPPER_REASON` instead.
+
 ### Pin a session when there are several
 
 When more than one session is active, pass `--control-port=PORT` (deterministic) or `--scope-id=SCOPE` (narrows the auto-discovery candidate set) before the subcommand. `--scope-id` alone is not sufficient when multiple sessions share the same scope (e.g. dual-attach C++/Java) — the CLI errors out and tells you to use `--control-port`. Don't retry blindly. The full identifier model lives in `{{program}} help sessions`.

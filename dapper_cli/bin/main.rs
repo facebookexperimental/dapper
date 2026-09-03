@@ -9,13 +9,14 @@ use dapper_cli::cli::Cli;
 use dapper_cli::cli::Commands;
 use dapper_cli::help;
 use dapper_cli::invocation::Reentry;
+use dapper_cli::invocation::args_after_argv0;
 use dapper_session::SessionId;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let reentry = Reentry::Standalone;
     let program = reentry.program_name(std::env::args_os().next().as_deref());
-    let args = help::rewrite_skill_to_help(&program, std::env::args().skip(1).collect());
+    let args = help::rewrite_skill_to_help(&program, args_after_argv0()?);
 
     let cli = Cli::parse_from(args);
 

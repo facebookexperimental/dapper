@@ -160,7 +160,11 @@ impl SessionInfo {
     ) -> Self {
         let pid = process::id();
         let started_at = Local::now().timestamp();
-        let command_line_args = env::args().collect();
+        // Don't swap in `env::args` — it panics on a non-UTF-8 `argv[0]`, and
+        // this runs on the live proxy path.
+        let command_line_args = env::args_os()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
         let current_working_directory = env::current_dir().ok();
 
         let session_type = debugger_args

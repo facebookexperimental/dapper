@@ -12,6 +12,7 @@
 //! where echoing back the name the user typed is the point.
 
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::Path;
 
 /// How a running dapper is reached, and what that entry point is called.
@@ -79,6 +80,23 @@ impl CommandWord {
     }
 }
 
+/// Dapper's own arguments, excluding `argv[0]`.
+///
+/// Don't swap in `std::env::args` — it panics on a non-UTF-8 `argv[0]`, which
+/// nothing here depends on.
+pub fn args_after_argv0() -> anyhow::Result<Vec<String>> {
+    args_after_argv0_from(std::env::args_os())
+}
+
+fn args_after_argv0_from(argv: impl Iterator<Item = OsString>) -> anyhow::Result<Vec<String>> {
+    argv.skip(1)
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|arg| anyhow::anyhow!("argument is not valid UTF-8: {arg:?}"))
+        })
+        .collect()
+}
+
 const DEFAULT_PROGRAM_NAME: &str = "dapper";
 
 fn executable_stem(path: &Path) -> Option<String> {
@@ -101,6 +119,53 @@ mod tests {
 
     fn standalone_name(arg0: &str) -> String {
         Reentry::Standalone.program_name(Some(OsStr::new(arg0)))
+    }
+
+    fn argv(items: &[&str]) -> impl Iterator<Item = OsString> + use<> {
+        items
+            .iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[cfg(unix)]
+    fn argv_bytes(items: &[&[u8]]) -> impl Iterator<Item = OsString> + use<> {
+        use std::os::unix::ffi::OsStrExt;
+
+        items
+            .iter()
+            .map(|b| OsStr::from_bytes(b).to_owned())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn arguments_pass_through_in_order_without_argv0() {
+        assert_eq!(
+            args_after_argv0_from(argv(&["/bin/dapper", "proxy", "--json"])).unwrap(),
+            ["proxy", "--json"],
+        );
+        assert!(
+            args_after_argv0_from(argv(&["/bin/dapper"]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_argv0_is_not_fatal() {
+        assert_eq!(
+            args_after_argv0_from(argv_bytes(&[b"\xff", b"help"])).unwrap(),
+            ["help"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_argument_is_an_error_not_a_panic() {
+        assert!(args_after_argv0_from(argv_bytes(&[b"/bin/dapper", b"\xff"])).is_err());
     }
 
     #[test]

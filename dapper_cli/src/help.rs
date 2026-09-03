@@ -56,12 +56,13 @@ pub mod test_util {
 /// Pre-clap argv rewriter that translates the legacy `--skill` flag into
 /// the canonical `help` subcommand.
 ///
-/// Both `dapper_cli/bin/main.rs` and `fb/dapper_fb_main/src/lib.rs` call
-/// this once on the raw argv vector before invoking `Cli::parse_from`.
-/// `dapper proxy --skill` becomes `dapper help proxy`, bare
-/// `dapper --skill` becomes `dapper help`. The first element (program
-/// name) is preserved so `invocation::from_args` and clap's usage
-/// strings see the right invocation name.
+/// Both `dapper_cli/bin/main.rs` and `fb/dapper_fb_main/src/lib.rs` call this
+/// once before invoking `Cli::parse_from`, passing dapper's own arguments
+/// without `argv[0]`. `program` is placed at `argv[0]` so clap's usage strings
+/// show the invocation name the help text renders.
+///
+/// `dapper proxy --skill` becomes `dapper help proxy`, bare `dapper --skill`
+/// becomes `dapper help`.
 ///
 /// All other flags in argv (e.g. `--scope-id=X`, `--json`,
 /// `--caller-to-log=foo`) are intentionally dropped: topic content is
@@ -81,12 +82,8 @@ pub mod test_util {
 /// (`dapper proxy process /path/to/dbg --skill`) is a known limitation
 /// — the rewriter has no clap schema to consult and will still fire.
 /// Callers passing literal flags to a child process should use `--`.
-///
-/// Assumes `args[0]` is the program path, never a flag — which is what
-/// every real-world `std::env::args()` invocation produces. Flag
-/// detection deliberately starts at `args[1]` so an `argv[0]` that
-/// happens to begin with `-` never gets misclassified.
-pub fn rewrite_skill_to_help(args: Vec<String>) -> Vec<String> {
+pub fn rewrite_skill_to_help(program: &str, mut args: Vec<String>) -> Vec<String> {
+    args.insert(0, program.to_owned());
     // `--` ends options for the whole argv, so any `--skill` past it
     // is a literal arg destined for a child process — see test
     // `skill_after_double_dash_is_a_literal_passthrough`.
@@ -95,8 +92,8 @@ pub fn rewrite_skill_to_help(args: Vec<String>) -> Vec<String> {
         return args;
     }
     let mut iter = args.into_iter();
-    let program = iter.next().unwrap_or_else(|| "dapper".to_owned());
-    let mut new_args = vec![program, "help".to_owned()];
+    iter.next();
+    let mut new_args = vec![program.to_owned(), "help".to_owned()];
     // Filter out any `help` token from the topic path so
     // `dapper help --skill` doesn't become `["dapper", "help", "help"]`
     // (which would dispatch as `Help { topic: ["help"] }` and fall
@@ -122,32 +119,35 @@ mod argv_tests {
 
     #[test]
     fn no_skill_flag_passes_args_through_unchanged() {
-        let input = s(&["dapper", "debug", "threads"]);
-        assert_eq!(rewrite_skill_to_help(input.clone()), input);
+        assert_eq!(
+            rewrite_skill_to_help("dapper", s(&["debug", "threads"])),
+            s(&["dapper", "debug", "threads"])
+        );
     }
 
     #[test]
-    fn empty_args_passes_through_unchanged() {
-        // The function is documented to assume `args[0]` is the
-        // program path, but should still gracefully no-op on an empty
-        // vec rather than panic — pin that.
-        assert_eq!(rewrite_skill_to_help(vec![]), Vec::<String>::new());
+    fn no_args_yields_just_the_program_name() {
+        assert_eq!(rewrite_skill_to_help("dapper", vec![]), s(&["dapper"]));
     }
 
     #[test]
     fn dash_dash_help_passes_through_to_clap() {
         // `--help` is clap's terse synopsis — it must reach clap
         // intact, never get rewritten into the new `help` subcommand.
-        let input = s(&["dapper", "--help"]);
-        assert_eq!(rewrite_skill_to_help(input.clone()), input);
-        let nested = s(&["dapper", "proxy", "--help"]);
-        assert_eq!(rewrite_skill_to_help(nested.clone()), nested);
+        assert_eq!(
+            rewrite_skill_to_help("dapper", s(&["--help"])),
+            s(&["dapper", "--help"])
+        );
+        assert_eq!(
+            rewrite_skill_to_help("dapper", s(&["proxy", "--help"])),
+            s(&["dapper", "proxy", "--help"])
+        );
     }
 
     #[test]
     fn bare_skill_becomes_help() {
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["--skill"])),
             s(&["dapper", "help"])
         );
     }
@@ -155,7 +155,7 @@ mod argv_tests {
     #[test]
     fn subcommand_skill_becomes_help_subcommand() {
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "proxy", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["proxy", "--skill"])),
             s(&["dapper", "help", "proxy"])
         );
     }
@@ -163,19 +163,15 @@ mod argv_tests {
     #[test]
     fn nested_subcommand_skill_becomes_help_path() {
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "debug", "threads", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["debug", "threads", "--skill"])),
             s(&["dapper", "help", "debug", "threads"])
         );
     }
 
     #[test]
-    fn embedder_program_name_preserved() {
-        // `argv[0]` carries `"fdb dapper"` because `fdb` sets it that
-        // way; the rewriter must preserve the multi-word program name
-        // so `invocation::from_args` and clap's usage strings see
-        // the right invocation.
+    fn multi_word_program_name_is_not_split() {
         assert_eq!(
-            rewrite_skill_to_help(s(&["fdb dapper", "mcp", "--skill"])),
+            rewrite_skill_to_help("fdb dapper", s(&["mcp", "--skill"])),
             s(&["fdb dapper", "help", "mcp"])
         );
     }
@@ -189,7 +185,7 @@ mod argv_tests {
         // contract. (`--scope-id=X` is fused so `take_while` stops on
         // it without leaking the value as a bogus positional.)
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "--scope-id=X", "proxy", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["--scope-id=X", "proxy", "--skill"])),
             s(&["dapper", "help"])
         );
     }
@@ -200,7 +196,7 @@ mod argv_tests {
         // not `["dapper", "help", "help"]` — the latter would dispatch
         // as `Help { topic: ["help"] }` and fall through to clap.
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "help", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["help", "--skill"])),
             s(&["dapper", "help"])
         );
     }
@@ -213,13 +209,10 @@ mod argv_tests {
         // behavior so a future "fix" surfaces as a test diff and
         // forces the trade-off back into review.
         assert_eq!(
-            rewrite_skill_to_help(s(&[
+            rewrite_skill_to_help(
                 "dapper",
-                "proxy",
-                "process",
-                "/path/to/dbg",
-                "--skill"
-            ])),
+                s(&["proxy", "process", "/path/to/dbg", "--skill"])
+            ),
             s(&["dapper", "help", "proxy", "process", "/path/to/dbg"])
         );
     }
@@ -229,15 +222,20 @@ mod argv_tests {
         // `dapper proxy process /path/to/dbg -- --skill` passes
         // `--skill` to the spawned debugger. The rewriter must NOT
         // intercept it.
-        let argv = s(&[
-            "dapper",
-            "proxy",
-            "process",
-            "/path/to/dbg",
-            "--",
-            "--skill",
-        ]);
-        assert_eq!(rewrite_skill_to_help(argv.clone()), argv);
+        assert_eq!(
+            rewrite_skill_to_help(
+                "dapper",
+                s(&["proxy", "process", "/path/to/dbg", "--", "--skill"])
+            ),
+            s(&[
+                "dapper",
+                "proxy",
+                "process",
+                "/path/to/dbg",
+                "--",
+                "--skill"
+            ])
+        );
     }
 
     #[test]
@@ -248,7 +246,7 @@ mod argv_tests {
         // Stopping at the first `-`-prefixed argv element after the
         // program name closes that hole.
         assert_eq!(
-            rewrite_skill_to_help(s(&["dapper", "proxy", "--client-port", "4711", "--skill"])),
+            rewrite_skill_to_help("dapper", s(&["proxy", "--client-port", "4711", "--skill"])),
             s(&["dapper", "help", "proxy"])
         );
     }

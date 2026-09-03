@@ -4,10 +4,16 @@
 // LICENSE file in the root directory of this source tree.
 
 //! How this process was invoked: how to re-enter it, and what to call it.
+//!
+//! Re-entry is declared by the caller, never inferred: it drives an `exec`, so
+//! it cannot rest on `argv[0]`, which any caller can set to anything. The
+//! display name follows the declaration when embedded, and `argv[0]` when not,
+//! where echoing back the name the user typed is the point.
 
+use std::ffi::OsStr;
 use std::path::Path;
 
-/// How a running dapper is reached.
+/// How a running dapper is reached, and what that entry point is called.
 ///
 /// Declared by whoever starts dapper, never inferred. No `Default`: every
 /// entry point states which case it is.
@@ -19,6 +25,10 @@ pub enum Reentry {
     /// subcommands, which a re-invocation has to replay: `fdb dapper proxy
     /// ...`, never `fdb proxy ...`.
     Embedded {
+        /// The host's user-facing name, e.g. `fdb`. Display only: a child is
+        /// spawned from `current_exe()`, so anything other than the name users
+        /// actually type renders help a reader cannot run.
+        host: CommandWord,
         /// The host subcommand that reaches dapper, e.g. `"dapper"` in
         /// `fdb dapper`.
         subcommand: CommandWord,
@@ -30,7 +40,20 @@ impl Reentry {
     pub fn args(&self) -> &[String] {
         match self {
             Self::Standalone => &[],
-            Self::Embedded { subcommand } => std::slice::from_ref(&subcommand.0),
+            Self::Embedded { subcommand, .. } => std::slice::from_ref(&subcommand.0),
+        }
+    }
+
+    /// What a user types to reach this dapper, for help text and clap's usage
+    /// line. Don't switch the standalone arm to `current_exe()`: it resolves
+    /// symlinks, so an alias on `PATH` would be told to run a name it may not
+    /// have.
+    pub fn program_name(&self, arg0: Option<&OsStr>) -> String {
+        match self {
+            Self::Standalone => arg0
+                .and_then(|arg0| executable_stem(Path::new(arg0)))
+                .unwrap_or_else(|| DEFAULT_PROGRAM_NAME.to_owned()),
+            Self::Embedded { host, subcommand } => format!("{} {}", host.0, subcommand.0),
         }
     }
 }
@@ -54,47 +77,38 @@ impl CommandWord {
     }
 }
 
-/// Resolve the user-facing program name from the process's argv.
-///
-/// - If `argv[0]` looks like a deliberate brand string — contains a
-///   space *and* no path separators — assume the embedder set it
-///   that way (e.g. `"fdb dapper"`, `"meta dapper"`) and return it
-///   verbatim. Path-separator presence rules out the
-///   spaces-in-installation-path case (`/home/user/My Tools/dapper`).
-/// - Otherwise, take the file stem of the path (so `/usr/local/bin/dapper`,
-///   `./dapper`, `target/debug/dapper`, and `dapper.exe` all become `dapper`).
-/// - Fall back to `"dapper"` if neither yields a value.
-pub fn from_args(args: &[String]) -> String {
-    let arg0 = args.first().map(String::as_str).unwrap_or("dapper");
-    if arg0.contains(' ') && !arg0.contains('/') && !arg0.contains('\\') {
-        return arg0.to_owned();
-    }
-    Path::new(arg0)
-        .file_stem()
+const DEFAULT_PROGRAM_NAME: &str = "dapper";
+
+fn executable_stem(path: &Path) -> Option<String> {
+    path.file_stem()
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("dapper")
-        .to_owned()
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn embedded_in_fdb() -> Reentry {
+        Reentry::Embedded {
+            host: CommandWord::try_new("fdb").expect("valid in tests"),
+            subcommand: CommandWord::try_new("dapper").expect("valid in tests"),
+        }
+    }
+
+    fn standalone_name(arg0: &str) -> String {
+        Reentry::Standalone.program_name(Some(OsStr::new(arg0)))
+    }
+
     #[test]
     fn standalone_needs_no_reentry_args() {
         assert!(Reentry::Standalone.args().is_empty());
     }
 
-    fn embedded(subcommand: &str) -> Reentry {
-        Reentry::Embedded {
-            subcommand: CommandWord::try_new(subcommand).expect("valid in tests"),
-        }
-    }
-
     #[test]
     fn embedded_replays_the_host_subcommand() {
-        assert_eq!(embedded("dapper").args(), ["dapper"]);
+        assert_eq!(embedded_in_fdb().args(), ["dapper"]);
     }
 
     #[test]
@@ -108,50 +122,51 @@ mod tests {
     }
 
     #[test]
-    fn standalone_dapper_path() {
-        assert_eq!(from_args(&["/usr/local/bin/dapper".into()]), "dapper");
+    fn embedded_program_name_comes_from_the_declaration() {
+        assert_eq!(embedded_in_fdb().program_name(None), "fdb dapper");
+        assert_eq!(
+            Reentry::Embedded {
+                host: CommandWord::try_new("meta").expect("valid in tests"),
+                subcommand: CommandWord::try_new("dapper").expect("valid in tests"),
+            }
+            .program_name(None),
+            "meta dapper",
+        );
     }
 
     #[test]
-    fn standalone_dapper_basename() {
-        assert_eq!(from_args(&["dapper".into()]), "dapper");
+    fn standalone_program_name_is_the_argv0_stem() {
+        for arg0 in [
+            "/usr/local/bin/dapper",
+            "dapper",
+            "target/debug/dapper",
+            "dapper.exe",
+            "/home/user/My Tools/dapper",
+        ] {
+            assert_eq!(standalone_name(arg0), "dapper", "for {arg0}");
+        }
+    }
+
+    /// `fb/tests/e2e/help_topics.rs` drives the standalone binary with a
+    /// branded `argv[0]`; splitting or trimming here would break it with a
+    /// failure that looks unrelated to naming.
+    #[test]
+    fn a_multi_word_argv0_is_not_split() {
+        assert_eq!(standalone_name("fdb dapper"), "fdb dapper");
     }
 
     #[test]
-    fn relative_target_dir() {
-        assert_eq!(from_args(&["target/debug/dapper".into()]), "dapper");
+    fn an_alias_keeps_its_own_name() {
+        assert_eq!(
+            standalone_name("/usr/local/bin/renamed-dapper"),
+            "renamed-dapper"
+        );
     }
 
     #[test]
-    fn windows_exe_suffix() {
-        assert_eq!(from_args(&["dapper.exe".into()]), "dapper");
-    }
-
-    #[test]
-    fn embedder_supplies_branded_name() {
-        assert_eq!(from_args(&["fdb dapper".into()]), "fdb dapper");
-        assert_eq!(from_args(&["meta dapper".into()]), "meta dapper");
-    }
-
-    #[test]
-    fn empty_args_defaults_to_dapper() {
-        assert_eq!(from_args(&[]), "dapper");
-    }
-
-    #[test]
-    fn empty_arg0_defaults_to_dapper() {
-        assert_eq!(from_args(&[String::new()]), "dapper");
-    }
-
-    #[test]
-    fn install_path_with_space_is_not_treated_as_brand() {
-        // Path-separator-bearing strings always go through file-stem
-        // extraction so an installation under `My Tools/` doesn't
-        // become the rendered program name. The brand-name detector
-        // also short-circuits on `\\` to keep Windows install paths
-        // out of the brand path; that lookup happens on Windows where
-        // `file_stem` recognizes `\\` as a separator (Linux's
-        // `file_stem` does not, so we only assert the unix form here).
-        assert_eq!(from_args(&["/home/user/My Tools/dapper".into()]), "dapper");
+    fn standalone_program_name_falls_back_when_argv0_is_unusable() {
+        assert_eq!(Reentry::Standalone.program_name(None), DEFAULT_PROGRAM_NAME);
+        assert_eq!(standalone_name(""), DEFAULT_PROGRAM_NAME);
+        assert_eq!(standalone_name("/"), DEFAULT_PROGRAM_NAME);
     }
 }

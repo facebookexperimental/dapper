@@ -8,15 +8,14 @@ use clap::Parser;
 use dapper_cli::cli::Cli;
 use dapper_cli::cli::Commands;
 use dapper_cli::help;
-use dapper_cli::invocation;
 use dapper_cli::invocation::Reentry;
 use dapper_session::SessionId;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let raw_args: Vec<String> = std::env::args().collect();
-    let program = invocation::from_args(&raw_args);
-    let args = help::rewrite_skill_to_help(raw_args);
+    let reentry = Reentry::Standalone;
+    let program = reentry.program_name(std::env::args_os().next().as_deref());
+    let args = help::rewrite_skill_to_help(&program, std::env::args().skip(1).collect());
 
     let cli = Cli::parse_from(args);
 
@@ -41,7 +40,7 @@ async fn main() -> Result<()> {
 
     let exit_code = cli
         .command
-        .run(&session_id, config, reason.as_deref(), Reentry::Standalone)
+        .run(&session_id, config, reason.as_deref(), reentry)
         .await?;
 
     // stdin is blocking, so we need to exit explicitly

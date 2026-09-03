@@ -786,6 +786,7 @@ mod tests {
     fn child_argv_replays_the_reentry_prefix_when_embedded() {
         let spawner = spawner_for(
             Reentry::Embedded {
+                host: CommandWord::try_new("fdb").expect("valid in tests"),
                 subcommand: CommandWord::try_new("dapper").expect("one word"),
             },
             Some(ScopeId::new("scope-1")),

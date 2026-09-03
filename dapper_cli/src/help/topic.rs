@@ -18,9 +18,8 @@ use std::borrow::Cow;
 /// predicate. The dispatcher constructs it once before walking the
 /// topic tree.
 pub struct Context<'a> {
-    /// User-facing program name, resolved from argv[0] via
-    /// `crate::invocation::from_args`. Examples: `"dapper"`,
-    /// `"fdb dapper"`, `"meta dapper"`.
+    /// User-facing program name, from `crate::invocation::Reentry::program_name`.
+    /// Examples: `"dapper"`, `"fdb dapper"`, `"meta dapper"`.
     pub program_name: &'a str,
 
     /// The clap command tree as a *schema* — used by the recursive

@@ -5,8 +5,9 @@
 
 //! How this process was invoked: how to re-enter it, and what to call it.
 //!
-//! Re-entry is declared by the caller, never inferred: it drives an `exec`, so
-//! it cannot rest on `argv[0]`, which any caller can set to anything. The
+//! Re-entry is declared by the caller, never inferred: it drives an `exec` and
+//! gates embedder-only help, so it cannot rest on `argv[0]`, which any caller
+//! can set to anything. The
 //! display name follows the declaration when embedded, and `argv[0]` when not,
 //! where echoing back the name the user typed is the point.
 
@@ -47,7 +48,8 @@ impl Reentry {
     /// What a user types to reach this dapper, for help text and clap's usage
     /// line. Don't switch the standalone arm to `current_exe()`: it resolves
     /// symlinks, so an alias on `PATH` would be told to run a name it may not
-    /// have.
+    /// have. Trusting `argv[0]` here is safe precisely because nothing
+    /// else does — routing and topic visibility both read the declaration.
     pub fn program_name(&self, arg0: Option<&OsStr>) -> String {
         match self {
             Self::Standalone => arg0
@@ -147,9 +149,6 @@ mod tests {
         }
     }
 
-    /// `fb/tests/e2e/help_topics.rs` drives the standalone binary with a
-    /// branded `argv[0]`; splitting or trimming here would break it with a
-    /// failure that looks unrelated to naming.
     #[test]
     fn a_multi_word_argv0_is_not_split() {
         assert_eq!(standalone_name("fdb dapper"), "fdb dapper");

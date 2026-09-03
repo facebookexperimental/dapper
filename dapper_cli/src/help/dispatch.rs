@@ -25,6 +25,7 @@ use crate::help::render;
 use crate::help::topic::Context;
 use crate::help::topic::Topic;
 use crate::help::topics;
+use crate::invocation::Reentry;
 
 /// Errors surfaced by [`handle`]. Carry the data needed to render a
 /// stderr diagnostic plus the exit code the caller should use, so the
@@ -64,7 +65,8 @@ impl HelpError {
 ///
 /// `program_name` is the resolved invocation name (`dapper`,
 /// `fdb dapper`, ...) and `overlay` is the embedder-supplied topic
-/// slice — `&[]` for the OSS binary.
+/// slice — `&[]` for the OSS binary. `program_name` must be what `reentry`
+/// renders.
 ///
 /// On `Err(HelpError)` the binary entry point is expected to call
 /// `err.print(); std::process::exit(err.exit_code())`. Returning the
@@ -73,6 +75,7 @@ impl HelpError {
 /// holding any live state.
 pub fn handle(
     topic: &[String],
+    reentry: &Reentry,
     program_name: &str,
     overlay: &'static [Topic],
 ) -> Result<(), HelpError> {
@@ -80,6 +83,7 @@ pub fn handle(
     let ctx = Context {
         program_name,
         clap_cmd: &clap_cmd,
+        reentry,
     };
 
     if topic.is_empty() {
@@ -278,7 +282,7 @@ mod tests {
 
     #[test]
     fn walk_finds_top_level_builtin() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let (node, path) = walk(&tokens(&["agent"]), ctx, &[]).expect("agent topic");
             assert_eq!(node.name, "agent");
             assert_eq!(path, vec!["agent"]);
@@ -287,7 +291,7 @@ mod tests {
 
     #[test]
     fn walk_resolves_top_level_alias() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             // `breakpoints` has aliases `breakpoint`, `bp`.
             let (node, _) = walk(&tokens(&["bp"]), ctx, &[]).expect("bp alias");
             assert_eq!(node.name, "breakpoints");
@@ -299,7 +303,7 @@ mod tests {
         // `workflow` was a separate topic before being merged into
         // `agent`; the alias keeps `dapper help workflow` working so
         // any pre-existing references don't dead-end.
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let (node, _) = walk(&tokens(&["workflow"]), ctx, &[]).expect("workflow alias");
             assert_eq!(node.name, "agent");
         });
@@ -307,7 +311,7 @@ mod tests {
 
     #[test]
     fn walk_returns_none_for_unknown_top_level() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             assert!(walk(&tokens(&["definitely-not-a-topic"]), ctx, &[]).is_none());
         });
     }
@@ -329,7 +333,7 @@ mod tests {
                 children: &[],
             }],
         }];
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let (node, path) = walk(&tokens(&["ns", "leaf"]), ctx, FAKE_OVERLAY).expect("leaf");
             assert_eq!(node.name, "leaf");
             assert_eq!(path, vec!["ns", "leaf"]);
@@ -350,7 +354,7 @@ mod tests {
             visible: never,
             children: &[],
         }];
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             assert!(walk(&tokens(&["hidden"]), ctx, HIDDEN).is_none());
         });
     }
@@ -368,7 +372,7 @@ mod tests {
             visible: always,
             children: &[],
         }];
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let (node, _) = walk(&tokens(&["agent"]), ctx, SHADOWED).expect("agent");
             // Compare the *rendered body* against the overlay's
             // sentinel marker. `std::ptr::eq` would be tempting but
@@ -390,6 +394,7 @@ mod tests {
         let ctx = Context {
             program_name: "dapper",
             clap_cmd: &cmd,
+            reentry: &Reentry::Standalone,
         };
         let visible: Vec<&Topic> = topics::BUILTINS
             .iter()
@@ -431,7 +436,7 @@ mod tests {
     fn no_unsubstituted_program_token_in_any_builtin_body() {
         // After substitute(), no `{{program}}` should remain in any
         // OSS topic body — catches missing tokens or future renames.
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             for t in topics::BUILTINS {
                 let rendered = render::substitute(&t.body.render(ctx), "dapper");
                 assert!(

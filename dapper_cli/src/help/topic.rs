@@ -14,13 +14,19 @@
 
 use std::borrow::Cow;
 
+use crate::invocation::Reentry;
+
 /// Per-invocation context threaded through every render and visibility
 /// predicate. The dispatcher constructs it once before walking the
 /// topic tree.
 pub struct Context<'a> {
-    /// User-facing program name, from `crate::invocation::Reentry::program_name`.
+    /// User-facing program name, from `Reentry::program_name`.
     /// Examples: `"dapper"`, `"fdb dapper"`, `"meta dapper"`.
     pub program_name: &'a str,
+
+    /// How this dapper is reached. Overlays gate embedder-specific topics on
+    /// this, not on [`Self::program_name`], which any caller can set.
+    pub reentry: &'a Reentry,
 
     /// The clap command tree as a *schema* — used by the recursive
     /// command-fallback path in `dispatch::handle` and by the overview
@@ -63,8 +69,7 @@ pub struct Topic {
 
     /// Visibility predicate. Gates both lookup and listing. Use
     /// [`always`] for topics that are always reachable; use a custom
-    /// predicate for invocation-gated topics like the fdb-only
-    /// `headless` topic.
+    /// predicate for embedder-gated topics like the `headless` topic.
     pub visible: fn(&Context<'_>) -> bool,
 
     /// Nested subtopics. When non-empty, the dispatcher appends a
@@ -123,6 +128,7 @@ pub fn always(_: &Context<'_>) -> bool {
 mod tests {
     use super::*;
     use crate::help::test_util::with_ctx;
+    use crate::invocation::CommandWord;
 
     #[test]
     fn matches_canonical_name() {
@@ -157,7 +163,7 @@ mod tests {
     #[test]
     fn body_static_renders_borrowed() {
         let body = Body::Static("hello {{program}}");
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let rendered = body.render(ctx);
             assert!(matches!(rendered, Cow::Borrowed(_)));
             assert_eq!(rendered.as_ref(), "hello {{program}}");
@@ -170,16 +176,30 @@ mod tests {
             Cow::Owned(format!("invoked as {}", ctx.program_name))
         }
         let body = Body::Dynamic(dyn_body);
-        with_ctx("fdb dapper", |ctx| {
-            let rendered = body.render(ctx);
-            assert!(matches!(rendered, Cow::Owned(_)));
-            assert_eq!(rendered.as_ref(), "invoked as fdb dapper");
-        });
+        with_ctx(
+            &Reentry::Embedded {
+                host: CommandWord::try_new("fdb").expect("valid in tests"),
+                subcommand: CommandWord::try_new("dapper").expect("valid in tests"),
+            },
+            "fdb dapper",
+            |ctx| {
+                let rendered = body.render(ctx);
+                assert!(matches!(rendered, Cow::Owned(_)));
+                assert_eq!(rendered.as_ref(), "invoked as fdb dapper");
+            },
+        );
     }
 
     #[test]
     fn always_visible_returns_true_for_any_program() {
-        with_ctx("dapper", |ctx| assert!(always(ctx)));
-        with_ctx("fdb dapper", |ctx| assert!(always(ctx)));
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| assert!(always(ctx)));
+        with_ctx(
+            &Reentry::Embedded {
+                host: CommandWord::try_new("fdb").expect("valid in tests"),
+                subcommand: CommandWord::try_new("dapper").expect("valid in tests"),
+            },
+            "fdb dapper",
+            |ctx| assert!(always(ctx)),
+        );
     }
 }

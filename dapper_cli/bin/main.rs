@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
     // rather than from inside the dispatcher so tokio's runtime gets
     // to shut down cleanly.
     if let Commands::Help { topic } = &cli.command {
-        if let Err(e) = help::handle(topic, &program, &[]) {
+        if let Err(e) = help::handle(topic, &reentry, &program, &[]) {
             e.print();
             std::process::exit(e.exit_code());
         }

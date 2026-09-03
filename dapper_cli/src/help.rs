@@ -41,13 +41,17 @@ pub use topics::BUILTINS;
 /// code in release builds.
 pub mod test_util {
     use super::topic::Context;
+    use crate::invocation::Reentry;
 
-    pub fn with_ctx(program: &str, f: impl FnOnce(&Context<'_>)) {
+    /// `reentry` and `program_name` may deliberately disagree: that pairing is
+    /// what proves gating reads the declaration rather than the name.
+    pub fn with_ctx(reentry: &Reentry, program_name: &str, f: impl FnOnce(&Context<'_>)) {
         use clap::CommandFactory;
         let cmd = crate::cli::Cli::command();
         let ctx = Context {
-            program_name: program,
+            program_name,
             clap_cmd: &cmd,
+            reentry,
         };
         f(&ctx);
     }

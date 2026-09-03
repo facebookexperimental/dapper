@@ -131,6 +131,7 @@ fn display_tool_name(tool: &DebugTool) -> String {
 mod tests {
     use super::*;
     use crate::help::test_util::with_ctx;
+    use crate::invocation::Reentry;
 
     #[test]
     fn every_topic_has_name_summary_and_body() {
@@ -155,7 +156,7 @@ mod tests {
     /// nothing else.
     #[test]
     fn topics_document_the_reason_convention() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             // `Body::render` leaves `{{program}}` for `dispatch` to
             // substitute, so match the raw token.
             for (topic_name, needle) in [
@@ -192,7 +193,7 @@ mod tests {
 
     #[test]
     fn mcp_dynamic_body_lists_every_builtin_toolset() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let mcp = BUILTINS
                 .iter()
                 .find(|t| t.name == "mcp")
@@ -217,7 +218,7 @@ mod tests {
 
     #[test]
     fn mcp_dynamic_body_marks_default_toolset() {
-        with_ctx("dapper", |ctx| {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
             let mcp = BUILTINS
                 .iter()
                 .find(|t| t.name == "mcp")

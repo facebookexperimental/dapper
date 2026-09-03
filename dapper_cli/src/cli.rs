@@ -272,7 +272,7 @@ mod tests {
             };
             assert_eq!(topic, ["agent", "--reason", "why"]);
             assert!(matches!(
-                crate::help::handle(&topic, "dapper", &[]),
+                crate::help::handle(&topic, &Reentry::Standalone, "dapper", &[]),
                 Err(crate::help::HelpError::UnknownTopic { .. })
             ));
 

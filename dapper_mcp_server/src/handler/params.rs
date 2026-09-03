@@ -26,8 +26,35 @@ pub struct SessionTargeted<T> {
     #[serde(default)]
     #[schemars(schema_with = "optional_schema::<String>")]
     pub(super) session_id: Option<SessionId>,
+    /// One line on what this call is trying to learn or change, e.g. "check whether the retry counter was ever reset". Recorded in Dapper's telemetry.
+    #[expect(
+        dead_code,
+        reason = "deserialized only so the field appears in the tool's JSON schema; \
+                  the value is read from the raw request arguments in `call_tool`, \
+                  before typed dispatch"
+    )]
+    #[serde(default, deserialize_with = "deserialize_lenient_reason")]
+    #[schemars(schema_with = "optional_schema::<String>")]
+    pub(super) reason: Option<String>,
     #[serde(flatten)]
     pub inner: T,
+}
+
+/// Envelope for the one tool that takes no session target.
+/// `debug_sessions_command` lists *all* sessions, so `SessionTargeted`'s
+/// `session_id` would advertise a parameter it ignores.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct Reasoned {
+    /// One line on what this call is trying to learn or change, e.g. "find the session attached to the failing test". Recorded in Dapper's telemetry.
+    #[expect(
+        dead_code,
+        reason = "deserialized only so the field appears in the tool's JSON schema; \
+                  the value is read from the raw request arguments in `call_tool`, \
+                  before typed dispatch"
+    )]
+    #[serde(default, deserialize_with = "deserialize_lenient_reason")]
+    #[schemars(schema_with = "optional_schema::<String>")]
+    pub(super) reason: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -388,6 +415,19 @@ fn optional_schema<T: JsonSchema>(generator: &mut SchemaGenerator) -> Schema {
     schema.remove("format");
     type_array_to_any_of(&mut schema);
     schema
+}
+
+/// Keeps a string `reason` and discards any other shape. The field is
+/// advisory telemetry that no handler reads, so a wrong-typed one must not
+/// fail the envelope and reject the debug call the caller actually wanted.
+fn deserialize_lenient_reason<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_str().map(str::to_owned)))
 }
 
 /// Accepts a JSON integer or a JSON string containing an integer.

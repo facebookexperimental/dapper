@@ -32,6 +32,7 @@ use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::SessionsResult;
+use dapper_tracing::normalize_reason;
 use rmcp::ErrorData;
 use rmcp::ServerHandler;
 use rmcp::handler::server::tool::ToolCallContext;
@@ -67,6 +68,7 @@ use params::NavigateRequest;
 use params::RawDapRequestParams;
 use params::ReadByteCount;
 use params::ReadMemoryRequest;
+use params::Reasoned;
 use params::SessionTargeted;
 use params::SetBreakpointsRequest;
 use params::SetExceptionBreakpointsRequest;
@@ -128,6 +130,14 @@ fn err_text(output_format: OutputFormat, text: impl Into<String>) -> CallToolRes
         OutputFormat::Plaintext => text,
     };
     CallToolResult::error(vec![Content::text(body)])
+}
+
+/// Reads the raw map, not the parsed params, so one site covers every tool
+/// whichever envelope it uses.
+fn extract_reason(
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    normalize_reason(arguments?.get("reason")?.as_str()?)
 }
 
 /// Render typed DAP request arguments for the raw-request transport, which
@@ -453,6 +463,7 @@ impl McpHandler {
                     navigation_type,
                     single_thread,
                 },
+            ..
         }) = request;
         self.run_rendered(
             session_id.as_ref(),
@@ -477,6 +488,7 @@ impl McpHandler {
                     start_frame,
                     levels,
                 },
+            ..
         }) = request;
         self.run_rendered(
             session_id.as_ref(),
@@ -496,6 +508,7 @@ impl McpHandler {
         let Parameters(SessionTargeted {
             session_id,
             inner: FrameIdRequest { frame_id },
+            ..
         }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting scopes", async |c| {
             c.scopes(frame_id).await
@@ -515,6 +528,7 @@ impl McpHandler {
             inner: VariablesReferenceRequest {
                 variables_reference,
             },
+            ..
         }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting variables", async |c| {
             c.variables(variables_reference).await
@@ -537,6 +551,7 @@ impl McpHandler {
                     name,
                     value,
                 },
+            ..
         }) = request;
         self.run_rendered(session_id.as_ref(), "Error setting variable", async |c| {
             c.set_variable(variables_reference, &name, &value).await
@@ -570,6 +585,7 @@ Example:
                     breakpoints,
                     clear_existing,
                 },
+            ..
         }) = request;
         let breakpoint_specs: Vec<SourceBreakpoint> = breakpoints
             .into_iter()
@@ -609,6 +625,7 @@ Example:
                     filters,
                     clear_existing,
                 },
+            ..
         }) = request;
 
         // Strict empty-input validation (per design): empty + !clear is a
@@ -649,6 +666,7 @@ Example:
                     expression,
                     frame_id,
                 },
+            ..
         }) = request;
         self.run_rendered(
             session_id.as_ref(),
@@ -690,7 +708,7 @@ Example:
     )]
     async fn debug_sessions_command(
         &self,
-        _request: Parameters<EmptyParams>,
+        _request: Parameters<Reasoned>,
     ) -> Result<CallToolResult, ErrorData> {
         let sessions: Vec<SessionInfo> = self
             .sessions
@@ -814,6 +832,7 @@ Response is JSON from the debug adapter."#
                     wait_for_event,
                     timeout_seconds,
                 },
+            ..
         }) = request;
         let client = match self.get_client_or_error(session_id.as_ref()) {
             Ok(c) => c,
@@ -858,6 +877,7 @@ Response is JSON from the debug adapter."#
                     count,
                     offset,
                 },
+            ..
         }) = request;
         let client = match self.get_client_or_error(session_id.as_ref()) {
             Ok(c) => c,
@@ -916,6 +936,7 @@ Response is JSON from the debug adapter."#
                     data,
                     offset,
                 },
+            ..
         }) = request;
         let client = match self.get_client_or_error(session_id.as_ref()) {
             Ok(c) => c,
@@ -979,6 +1000,7 @@ Response is JSON from the debug adapter."#
         let Parameters(SessionTargeted {
             session_id,
             inner: req,
+            ..
         }) = request;
         let client = match self.get_client_or_error(session_id.as_ref()) {
             Ok(c) => c,
@@ -1069,6 +1091,8 @@ impl ServerHandler for McpHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let tool_name = request.name.clone();
+        // Owned, because `ToolCallContext::new` consumes `request` below.
+        let tool_reason = extract_reason(request.arguments.as_ref());
         let mcp_client_name = context
             .peer
             .peer_info()
@@ -1087,11 +1111,14 @@ impl ServerHandler for McpHandler {
             .map(|c| c.session.session_id.as_str())
             .unwrap_or("");
 
+        // No `%`/`?` on `tool_reason`: a sigil formats the `Option` itself and
+        // logs "None" where the bare value omits the field.
         match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
                 tracing::warn!(
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
+                    tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
                     "tool_call_error"
                 );
@@ -1100,6 +1127,7 @@ impl ServerHandler for McpHandler {
                 tracing::error!(
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
+                    tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
                     error = %e,
                     "tool_call_failed"
@@ -1109,6 +1137,7 @@ impl ServerHandler for McpHandler {
                 tracing::info!(
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
+                    tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
                     "tool_call"
                 );

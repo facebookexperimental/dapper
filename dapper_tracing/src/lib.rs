@@ -51,8 +51,9 @@ pub fn default_log_file_path() -> PathBuf {
 }
 
 /// Cap on a caller-supplied reason, marker included. `dapper proxy` stamps one
-/// onto every Scuba sample for the life of the process, so an unbounded string
-/// is amplified across a whole debugging session.
+/// onto every Scuba sample for the life of the process, and an MCP client can
+/// send one per tool call, so an unbounded string is amplified across a whole
+/// session.
 pub(crate) const MAX_REASON_LEN: usize = 200;
 
 const TRUNCATION_MARKER: &str = "...";

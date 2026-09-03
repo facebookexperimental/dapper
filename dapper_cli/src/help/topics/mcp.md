@@ -66,6 +66,16 @@ Unlike the CLI, an MCP server is a long-lived connection. New sessions can come 
 
 When `session_id` is omitted, the MCP server falls back to the *last* session it interacted with on this connection (if still active), and only then to the oldest active session — so a one-debuggee agent never has to think about it.
 
+## Per-call reason
+
+Every tool also accepts an optional `reason` describing that individual call, separate from the server's startup `--reason`:
+
+```json
+{"reason": "check whether the retry counter was ever reset", "variables_reference": 1002}
+```
+
+Keep it to one short line of intent.
+
 ## Toolset escalation, not over-grant
 
 For most agentic debugging, the default `standard` toolset is right. Escalate to `full` only when you need `evaluate` or `set-variable`. Use `raw` only when an adapter exposes a DAP command not surfaced by the typed tools — `raw` puts the entire DAP API at your disposal but loses the schema-checking safety net.

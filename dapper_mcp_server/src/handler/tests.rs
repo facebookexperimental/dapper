@@ -3,7 +3,11 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::fmt::Debug;
+use std::fmt::Write as _;
 use std::net::TcpListener;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use dapper_config::OutputFormat;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
@@ -12,6 +16,8 @@ use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
 use serde_json::to_value;
+use tracing::field::Field;
+use tracing_subscriber::layer::Context;
 
 use super::format::parse_address;
 use super::params::BreakpointSpec;
@@ -370,13 +376,8 @@ fn all_tool_routes() -> ToolRouter<McpHandler> {
 
 #[test]
 fn all_tool_schemas_have_properties() {
-    // Tools that take no parameters are allowed to have no properties
-    let no_params_tools: &[&str] = &["debug_sessions_command"];
     let router = all_tool_routes();
     for (name, route) in &router.map {
-        if no_params_tools.contains(&name.as_ref()) {
-            continue;
-        }
         let schema = &route.attr.input_schema;
         assert!(
             schema
@@ -540,6 +541,242 @@ fn assert_no_type_arrays(schema: &Value, tool_name: &str, path: &str) {
             }
         }
     }
+}
+
+// -- reason: advertised on every tool, required by none --
+
+#[test]
+fn every_tool_advertises_an_optional_reason() {
+    let router = all_tool_routes();
+    for (name, route) in &router.map {
+        let schema = &route.attr.input_schema;
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap_or_else(|| panic!("tool '{name}' has no properties object"));
+        assert!(
+            properties.contains_key("reason"),
+            "tool '{name}' does not advertise a reason parameter"
+        );
+
+        let required = schema.get("required").and_then(|r| r.as_array());
+        assert!(
+            !required.is_some_and(|r| r.contains(&json!("reason"))),
+            "tool '{name}' makes reason required; it must stay optional so \
+             existing MCP clients keep working"
+        );
+    }
+}
+
+#[tokio::test]
+async fn session_targeted_tool_accepts_a_reason() {
+    let result = call_tool_e2e(
+        "debug_threads_command",
+        json!({"reason": "enumerate threads to find the stuck one"}),
+    )
+    .await;
+    assert_params_accepted(&result, "reason on a session-targeted tool");
+}
+
+#[tokio::test]
+async fn session_targeted_tool_still_accepts_no_reason() {
+    let result = call_tool_e2e("debug_threads_command", json!({})).await;
+    assert_params_accepted(&result, "omitted reason must stay valid");
+
+    let result = call_tool_e2e_raw(full_toolset_handler(), "debug_threads_command", None).await;
+    assert_params_accepted(&result, "omitted arguments object must stay valid");
+}
+
+/// Surfaces as an `is_error` result, not a protocol error, so
+/// `assert_params_accepted` would not catch a regression here.
+#[tokio::test]
+async fn a_wrong_typed_reason_does_not_reject_the_call() {
+    for reason in [json!(7), json!(["a"])] {
+        let result = call_tool_e2e("debug_threads_command", json!({"reason": reason}))
+            .await
+            .expect("the call must reach the handler");
+        assert!(
+            !text_of(&result).contains("failed to deserialize"),
+            "a non-string reason must be dropped, not rejected; got {}",
+            text_of(&result)
+        );
+    }
+}
+
+#[tokio::test]
+async fn sessions_tool_accepts_a_reason() {
+    let result = call_tool_e2e(
+        "debug_sessions_command",
+        json!({"reason": "discover what is running"}),
+    )
+    .await;
+    assert_params_accepted(&result, "reason on the sessions tool");
+}
+
+/// A missing `arguments` object is a different deserialization path from an
+/// empty one.
+#[tokio::test]
+async fn sessions_tool_accepts_omitted_arguments() {
+    let result = call_tool_e2e_raw(full_toolset_handler(), "debug_sessions_command", None).await;
+    assert_params_accepted(&result, "omitted arguments object");
+    let result = result.expect("sessions must succeed against an empty isolated store");
+    assert_eq!(
+        text_of(&result),
+        "No active sessions found.",
+        "omitting arguments must behave like sending an empty object"
+    );
+}
+
+// -- reason: extraction for telemetry --
+
+/// Collects rendered event fields for assertion.
+#[derive(Clone, Default)]
+struct CapturedEvents(Arc<Mutex<Vec<String>>>);
+
+impl CapturedEvents {
+    fn events(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .expect("capture mutex is never poisoned in tests")
+            .clone()
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+        struct Visitor<'a>(&'a mut String);
+        impl tracing::field::Visit for Visitor<'_> {
+            fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+                let _ = write!(self.0, "{}={:?} ", field.name(), value);
+            }
+        }
+
+        let mut rendered = String::new();
+        event.record(&mut Visitor(&mut rendered));
+        self.0
+            .lock()
+            .expect("capture mutex is never poisoned in tests")
+            .push(rendered);
+    }
+}
+
+/// `set_default` is thread-local, so callers must pin the current-thread
+/// runtime to keep the spawned server task on this thread.
+async fn events_from_call(handler: McpHandler, tool_name: &str, arguments: Value) -> Vec<String> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let captured = CapturedEvents::default();
+    let guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
+    let _ = call_tool_e2e_with(handler, tool_name, arguments).await;
+    drop(guard);
+    captured.events()
+}
+
+/// Match the message field exactly. A bare `contains(name)` would let
+/// `tool_call` also match `tool_call_error` and `tool_call_failed`.
+fn find_event<'a>(events: &'a [String], name: &str) -> &'a str {
+    let needle = format!("message={name} ");
+    events
+        .iter()
+        .find(|event| event.contains(&needle))
+        .unwrap_or_else(|| panic!("no {name} event; captured: {events:?}"))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tool_call_event_carries_the_reason() {
+    let events = events_from_call(
+        full_toolset_handler(),
+        "debug_sessions_command",
+        json!({"reason": "discover what is running"}),
+    )
+    .await;
+
+    let event = find_event(&events, "tool_call");
+    assert!(
+        event.contains(r#"tool_reason="discover what is running""#),
+        "the success arm must log the reason; got {event}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tool_call_error_event_carries_the_reason() {
+    let events = events_from_call(
+        full_toolset_handler(),
+        "debug_threads_command",
+        json!({"reason": "inspect the stuck thread"}),
+    )
+    .await;
+
+    let event = find_event(&events, "tool_call_error");
+    assert!(
+        event.contains(r#"tool_reason="inspect the stuck thread""#),
+        "the application-error arm must log the reason; got {event}"
+    );
+}
+
+/// An unknown tool never reaches a handler body.
+#[tokio::test(flavor = "current_thread")]
+async fn tool_call_failed_event_carries_the_reason() {
+    let events = events_from_call(
+        full_toolset_handler(),
+        "debug_no_such_tool",
+        json!({"reason": "typo the tool name on purpose"}),
+    )
+    .await;
+
+    let event = find_event(&events, "tool_call_failed");
+    assert!(
+        event.contains(r#"tool_reason="typo the tool name on purpose""#),
+        "the protocol-error arm must log the reason; got {event}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tool_call_event_omits_an_absent_reason() {
+    let events =
+        events_from_call(full_toolset_handler(), "debug_sessions_command", json!({})).await;
+
+    let event = find_event(&events, "tool_call");
+    assert!(
+        !event.contains("tool_reason"),
+        "an absent reason must not emit the field at all; got {event}"
+    );
+}
+
+#[test]
+fn extract_reason_reads_a_present_reason() {
+    let args = json!({"reason": "inspect the deadlock", "thread_id": 1});
+    assert_eq!(
+        extract_reason(args.as_object()),
+        Some("inspect the deadlock".to_owned())
+    );
+}
+
+#[test]
+fn extract_reason_treats_blank_and_missing_alike() {
+    for args in [json!({}), json!({"reason": ""}), json!({"reason": "   "})] {
+        assert_eq!(
+            extract_reason(args.as_object()),
+            None,
+            "a blank reason must produce no telemetry field, got {args}"
+        );
+    }
+    assert_eq!(extract_reason(None), None, "absent arguments object");
+    assert_eq!(
+        extract_reason(json!({"reason": 7}).as_object()),
+        None,
+        "a non-string reason must not be coerced"
+    );
+}
+
+#[test]
+fn extract_reason_trims_surrounding_whitespace() {
+    let args = json!({"reason": "  step past the retry loop \n"});
+    assert_eq!(
+        extract_reason(args.as_object()),
+        Some("step past the retry loop".to_owned())
+    );
 }
 
 #[test]
@@ -800,6 +1037,20 @@ async fn call_tool_e2e_with(
     tool_name: impl Into<String>,
     arguments: Value,
 ) -> Result<CallToolResult, rmcp::service::ServiceError> {
+    let arguments = arguments
+        .as_object()
+        .expect("test input must be a JSON object")
+        .clone();
+    call_tool_e2e_raw(handler, tool_name, Some(arguments)).await
+}
+
+/// [`call_tool_e2e_with`] that can omit `arguments` entirely, which is a
+/// different deserialization path from an empty object.
+async fn call_tool_e2e_raw(
+    handler: McpHandler,
+    tool_name: impl Into<String>,
+    arguments: Option<serde_json::Map<String, Value>>,
+) -> Result<CallToolResult, rmcp::service::ServiceError> {
     let tool_name: String = tool_name.into();
     use rmcp::ClientHandler;
     use rmcp::ServiceExt;
@@ -822,16 +1073,12 @@ async fn call_tool_e2e_with(
 
     let client = DummyClientHandler.serve(client_transport).await.unwrap();
 
-    let result = client
-        .call_tool(
-            CallToolRequestParams::new(tool_name).with_arguments(
-                arguments
-                    .as_object()
-                    .expect("test input must be a JSON object")
-                    .clone(),
-            ),
-        )
-        .await;
+    let params = CallToolRequestParams::new(tool_name);
+    let params = match arguments {
+        Some(arguments) => params.with_arguments(arguments),
+        None => params,
+    };
+    let result = client.call_tool(params).await;
 
     client.cancel().await.ok();
     server_handle.abort();

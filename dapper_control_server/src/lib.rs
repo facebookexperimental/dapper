@@ -8,7 +8,6 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use dapper_control_api::ControlPlaneResult;
@@ -73,9 +72,10 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
             teardown().await;
         }
         let request = dap::Request::new(self.proxy_client.debug_session_tracker().stop_request());
+        let timeout = self.proxy_client.config().stop.timeout();
         let _ = self
             .proxy_client
-            .send_message_with_timeout(request.into(), Duration::from_secs(5))
+            .send_message_with_timeout(request.into(), timeout)
             .await;
 
         self.proxy_server_abort.abort();

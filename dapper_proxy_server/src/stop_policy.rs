@@ -246,6 +246,7 @@ mod tests {
             Some(&capabilities(true, true, true)),
             &StopConfig {
                 treat_extension_host_as_launch: false,
+                ..Default::default()
             },
         ));
 

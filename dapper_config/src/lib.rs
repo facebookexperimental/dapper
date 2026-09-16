@@ -6,6 +6,7 @@
 #![warn(clippy::all)]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -126,19 +127,19 @@ impl Default for NavigateConfig {
 impl NavigateConfig {
     /// Get the timeout duration for continue operations.
     /// Returns None if timeout is disabled (continue_timeout_seconds is 0 or None).
-    pub fn continue_timeout(&self) -> Option<std::time::Duration> {
+    pub fn continue_timeout(&self) -> Option<Duration> {
         match self.continue_timeout_seconds {
             Some(0) | None => None,
-            Some(secs) => Some(std::time::Duration::from_secs(secs)),
+            Some(secs) => Some(Duration::from_secs(secs)),
         }
     }
 
     /// Get the timeout duration for pause operations.
     /// Returns None if timeout is disabled (pause_timeout_seconds is 0 or None).
-    pub fn pause_timeout(&self) -> Option<std::time::Duration> {
+    pub fn pause_timeout(&self) -> Option<Duration> {
         match self.pause_timeout_seconds {
             Some(0) | None => None,
-            Some(secs) => Some(std::time::Duration::from_secs(secs)),
+            Some(secs) => Some(Duration::from_secs(secs)),
         }
     }
 }
@@ -189,13 +190,25 @@ pub struct StopConfig {
     /// terminates the extension host even when it was started with `attach`,
     /// as VS Code does. When false, they follow their own request type.
     pub treat_extension_host_as_launch: bool,
+    /// How long to wait for the stop request to reach the debug adapter before
+    /// the proxy is torn down regardless.
+    pub timeout_seconds: u64,
 }
 
 impl Default for StopConfig {
     fn default() -> Self {
         Self {
             treat_extension_host_as_launch: true,
+            timeout_seconds: 15,
         }
+    }
+}
+
+impl StopConfig {
+    /// The bound on sending the stop request. Unlike [`NavigateConfig`], zero
+    /// does not mean "wait indefinitely" here: it gives the send no time at all.
+    pub fn timeout(&self) -> Duration {
+        Duration::from_secs(self.timeout_seconds)
     }
 }
 
@@ -304,6 +317,19 @@ expand_locals = false
         assert_eq!(config.navigate.continue_timeout_seconds, Some(60));
         assert!(config.context.enable);
         assert!(config.context.show_session);
+        assert_eq!(config.stop.timeout_seconds, 15);
+    }
+
+    #[test]
+    fn test_stop_config_with_timeout() {
+        let toml_content = r#"
+[stop]
+timeout_seconds = 30
+        "#;
+        let config: DapperConfig = toml::from_str(toml_content).unwrap();
+
+        assert_eq!(config.stop.timeout_seconds, 30);
+        assert_eq!(config.stop.timeout(), Duration::from_secs(30));
     }
 
     #[test]
@@ -317,7 +343,7 @@ continue_timeout_seconds = 30
         assert_eq!(config.navigate.continue_timeout_seconds, Some(30));
         assert_eq!(
             config.navigate.continue_timeout(),
-            Some(std::time::Duration::from_secs(30))
+            Some(Duration::from_secs(30))
         );
     }
 
@@ -344,12 +370,12 @@ continue_timeout_seconds = 0
         assert_eq!(config.navigate.continue_timeout_seconds, Some(60));
         assert_eq!(
             config.navigate.continue_timeout(),
-            Some(std::time::Duration::from_secs(60))
+            Some(Duration::from_secs(60))
         );
         assert_eq!(config.navigate.pause_timeout_seconds, Some(5));
         assert_eq!(
             config.navigate.pause_timeout(),
-            Some(std::time::Duration::from_secs(5))
+            Some(Duration::from_secs(5))
         );
     }
 
@@ -364,7 +390,7 @@ pause_timeout_seconds = 10
         assert_eq!(config.navigate.pause_timeout_seconds, Some(10));
         assert_eq!(
             config.navigate.pause_timeout(),
-            Some(std::time::Duration::from_secs(10))
+            Some(Duration::from_secs(10))
         );
     }
 

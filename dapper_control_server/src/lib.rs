@@ -19,8 +19,6 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::protocol as dap;
-use dapper_dap_protocol::requests::DisconnectArguments;
-use dapper_dap_protocol::requests::RequestCommand;
 use dapper_proxy_server::ControlPlaneStatus;
 use dapper_proxy_server::DapperEvent;
 use dapper_proxy_server::ProxyClient;
@@ -74,11 +72,7 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
         if let Some(teardown) = &self.child_teardown {
             teardown().await;
         }
-        let request = dap::Request::new(RequestCommand::Disconnect(Some(DisconnectArguments {
-            terminate_debuggee: Some(false),
-            suspend_debuggee: Some(false),
-            ..Default::default()
-        })));
+        let request = dap::Request::new(self.proxy_client.debug_session_tracker().stop_request());
         let _ = self
             .proxy_client
             .send_message_with_timeout(request.into(), Duration::from_secs(5))

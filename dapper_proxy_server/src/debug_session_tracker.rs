@@ -40,6 +40,7 @@ pub use execution_state::ExecutionState;
 use tracker_inner::DebugSessionTrackerInner;
 
 use crate::dapper_event::DapperEvent;
+use crate::stop_policy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientType {
@@ -259,6 +260,24 @@ impl DebugSessionTracker {
 
     pub fn adapter_capabilities(&self) -> Option<Capabilities> {
         self.with_inner(|inner| inner.adapter_capabilities.clone())
+    }
+
+    /// The DAP request that stops this session. See [`stop_policy`].
+    pub fn stop_request(&self) -> RequestCommand {
+        self.with_inner(|inner| {
+            let session_type = inner
+                .debugger_args
+                .as_ref()
+                .and_then(|args| args.get("type"))
+                .and_then(|session_type| session_type.as_str());
+
+            stop_policy::stop_request(
+                inner.request_type,
+                session_type,
+                inner.adapter_capabilities.as_ref(),
+                &self.config.stop,
+            )
+        })
     }
 
     /// Record that the backend was detected to be a dapper proxy.
@@ -1525,6 +1544,45 @@ mod tests {
     fn capabilities_none_when_initialize_never_received() {
         let tracker = test_tracker();
         assert!(tracker.adapter_capabilities().is_none());
+    }
+
+    #[test]
+    fn stop_request_feeds_the_policy_from_tracked_session_state() {
+        use dapper_dap_protocol::requests::AttachRequestArguments;
+        use dapper_dap_protocol::requests::DisconnectArguments;
+
+        let tracker = test_tracker();
+        let initialize = Response {
+            seq: 1.into(),
+            request_seq: 1.into(),
+            success: true,
+            message: None,
+            body: ResponseBody::Initialize(Some(Capabilities {
+                support_terminate_debuggee: Some(true),
+                ..Default::default()
+            })),
+        };
+        tracker.track_message_to_client(&Message::Response(initialize));
+
+        let attach = Request {
+            seq: Seq(2),
+            command: RequestCommand::Attach(AttachRequestArguments {
+                extra: [("type".to_string(), serde_json::json!("pwa-extensionHost"))]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }),
+        };
+        tracker.track_message_from_client(&Message::Request(attach), ClientType::Main);
+
+        assert_eq!(
+            tracker.stop_request(),
+            RequestCommand::Disconnect(Some(DisconnectArguments {
+                terminate_debuggee: Some(true),
+                ..Default::default()
+            })),
+            "stopping an extension host session should terminate the host"
+        );
     }
 
     #[test]

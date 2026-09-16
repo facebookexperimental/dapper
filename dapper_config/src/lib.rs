@@ -42,6 +42,9 @@ pub struct DapperConfig {
     /// Configuration for context in tool responses
     #[serde(default)]
     pub context: ContextConfig,
+    /// Configuration for the stop command
+    #[serde(default)]
+    pub stop: StopConfig,
 }
 
 /// Configuration for the threads command
@@ -174,6 +177,24 @@ impl Default for ContextConfig {
             show_execution_state: true,
             show_sessions: true,
             max_output_lines: 20,
+        }
+    }
+}
+
+/// Configuration for the stop command
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StopConfig {
+    /// Whether stopping an `extensionHost` or `pwa-extensionHost` session
+    /// terminates the extension host even when it was started with `attach`,
+    /// as VS Code does. When false, they follow their own request type.
+    pub treat_extension_host_as_launch: bool,
+}
+
+impl Default for StopConfig {
+    fn default() -> Self {
+        Self {
+            treat_extension_host_as_launch: true,
         }
     }
 }

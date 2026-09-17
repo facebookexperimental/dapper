@@ -31,6 +31,7 @@ use crate::client::ProxyClient;
 use crate::client::ProxyRequest;
 use crate::debug_session_tracker::ClientType;
 use crate::debug_session_tracker::DebugSessionTracker;
+use crate::session_stamp;
 use crate::transport::DuplexChannel;
 use crate::transport::ReadChannel;
 use crate::transport::WriteChannel;
@@ -175,6 +176,8 @@ pub struct ProxyServer {
     debug_session_tracker: DebugSessionTracker,
     /// Dapper configuration
     config: DapperConfig,
+    /// Session id stamped onto launch/attach payloads; `None` when disabled.
+    session_stamp: Option<SessionId>,
 }
 
 impl ProxyServer {
@@ -190,6 +193,7 @@ impl ProxyServer {
 
         let (event_channel, event_channel_rx) = EventChannel::new_pair();
 
+        let session_stamp = config.protocol.stamp_session_id.then(|| session_id.clone());
         let debug_session_tracker = DebugSessionTracker::new(session_id, config.clone(), sessions)
             .with_parent_session_id(parent_session_id);
 
@@ -202,6 +206,7 @@ impl ProxyServer {
             event_channel_rx,
             debug_session_tracker,
             config,
+            session_stamp,
         }
     }
 
@@ -240,6 +245,7 @@ impl ProxyServer {
             remapper.clone(),
             self.debug_session_tracker.clone(),
             backend_seq.clone(),
+            self.session_stamp.clone(),
         );
 
         let backend_to_main_client_and_listeners_task = Self::backend_to_main_client_and_listeners(
@@ -249,6 +255,7 @@ impl ProxyServer {
             self.to_listeners_tx.clone(),
             remapper,
             self.debug_session_tracker.clone(),
+            self.session_stamp,
         );
 
         let client_requests_task = Self::handle_client_requests(
@@ -371,6 +378,7 @@ impl ProxyServer {
         to_listeners_tx: broadcast::Sender<Arc<Message>>,
         remapper: MessageRemapper,
         debug_session_tracker: DebugSessionTracker,
+        session_stamp: Option<SessionId>,
     ) -> anyhow::Result<()> {
         let mut event_seq_counter: i64 = 1;
 
@@ -408,6 +416,10 @@ impl ProxyServer {
                 }
                 _ => {}
             }
+
+            // After the listener broadcast above, so listeners keep observing
+            // what the adapter actually sent and only the main client sees the id.
+            session_stamp::stamp(&mut message, session_stamp.as_ref());
 
             // Remap sequence numbers and send to main client.
             // Responses are only sent if they match a request from the main client.
@@ -462,6 +474,7 @@ impl ProxyServer {
         remapper: MessageRemapper,
         debug_session_tracker: DebugSessionTracker,
         backend_seq: Arc<AtomicI64>,
+        session_stamp: Option<SessionId>,
     ) -> anyhow::Result<()> {
         while let Some(message) = main_client.recv().await? {
             // Track messages from the client
@@ -488,7 +501,8 @@ impl ProxyServer {
                     // the mapping when the backend's response arrives.
                     remapper.map(client_seq, BackendSeq(seq));
                     debug_session_tracker.track_execution_request_to_backend(&request);
-                    let msg: Message = request.into();
+                    let mut msg: Message = request.into();
+                    session_stamp::stamp(&mut msg, session_stamp.as_ref());
                     tracing::trace!(target: "dap", source = %DapSource::MainClient, message = ?msg);
                     let mut writer = backend_write.lock().await;
                     writer.send(msg).await?;
@@ -561,6 +575,7 @@ mod tests {
     use dapper_dap_protocol::protocol::Response;
     use dapper_dap_protocol::requests::ContinueArguments;
     use dapper_dap_protocol::requests::InitializeRequestArguments;
+    use dapper_dap_protocol::requests::LaunchRequestArguments;
     use dapper_dap_protocol::requests::RequestCommand;
     use dapper_dap_protocol::requests::ReverseContinueArguments;
     use dapper_dap_protocol::responses::ContinueResponseBody;
@@ -782,6 +797,59 @@ mod tests {
             ResponseBody::ReverseContinue,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn launch_is_stamped_with_the_session_id_in_both_directions() {
+        let mut tp = TestProxy::new();
+
+        let launch = Request::new(RequestCommand::Launch(LaunchRequestArguments::default()));
+        tp.main_client.send(launch.into()).await.unwrap();
+
+        let backend_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
+            Message::Request(request) => {
+                let RequestCommand::Launch(args) = &request.command else {
+                    panic!("expected a launch request, got {:?}", request.command);
+                };
+                assert_eq!(
+                    args.extra.get(session_stamp::SESSION_ID_FIELD),
+                    Some(&serde_json::json!("test-session")),
+                    "the adapter should see the session the request came from"
+                );
+                request.seq
+            }
+            other => panic!("expected Request, got {:?}", other.message_type()),
+        };
+
+        tp.mock_backend
+            .send(
+                Response {
+                    seq: Seq(0),
+                    request_seq: backend_seq,
+                    success: true,
+                    message: None,
+                    body: ResponseBody::Launch,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+
+        match tp.main_client.recv().await.unwrap().unwrap() {
+            Message::Response(response) => {
+                let ResponseBody::Unknown(body) = &response.body else {
+                    panic!("expected a stamped body, got {:?}", response.body);
+                };
+                assert_eq!(
+                    body.body
+                        .as_ref()
+                        .and_then(|body| body.get(session_stamp::SESSION_ID_FIELD)),
+                    Some(&serde_json::json!("test-session")),
+                    "the client should see the session that answered it"
+                );
+            }
+            other => panic!("expected Response, got {:?}", other.message_type()),
+        }
     }
 
     #[tokio::test]

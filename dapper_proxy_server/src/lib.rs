@@ -11,6 +11,7 @@ pub(crate) mod dapper_event;
 pub(crate) mod debug_session_tracker;
 pub(crate) mod proxy;
 pub(crate) mod session_init;
+pub(crate) mod session_stamp;
 pub(crate) mod stop_policy;
 pub(crate) mod transport;
 

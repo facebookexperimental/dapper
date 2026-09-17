@@ -46,6 +46,9 @@ pub struct DapperConfig {
     /// Configuration for the stop command
     #[serde(default)]
     pub stop: StopConfig,
+    /// Configuration for dapper's own additions to DAP traffic
+    #[serde(default)]
+    pub protocol: ProtocolConfig,
 }
 
 /// Configuration for the threads command
@@ -212,6 +215,24 @@ impl StopConfig {
     }
 }
 
+/// Configuration for dapper's own additions to DAP traffic
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProtocolConfig {
+    /// Whether the launch and attach payloads exchanged with the main DAP
+    /// client carry dapper's session id in a `__dapper_session_id` field, on
+    /// the request and on its response.
+    pub stamp_session_id: bool,
+}
+
+impl Default for ProtocolConfig {
+    fn default() -> Self {
+        Self {
+            stamp_session_id: true,
+        }
+    }
+}
+
 impl ContextConfig {
     pub fn all_enabled() -> Self {
         Self {
@@ -295,6 +316,9 @@ max_frames = 100
 
 [scopes]
 expand_locals = false
+
+[protocol]
+stamp_session_id = false
         "#;
         let config: DapperConfig = toml::from_str(toml_content).unwrap();
 
@@ -303,6 +327,7 @@ expand_locals = false
         assert!(!config.stack_trace.expand_scopes);
         assert_eq!(config.stack_trace.max_frames, 100);
         assert!(!config.scopes.expand_locals);
+        assert!(!config.protocol.stamp_session_id);
     }
 
     #[test]
@@ -318,6 +343,7 @@ expand_locals = false
         assert!(config.context.enable);
         assert!(config.context.show_session);
         assert_eq!(config.stop.timeout_seconds, 15);
+        assert!(config.protocol.stamp_session_id);
     }
 
     #[test]

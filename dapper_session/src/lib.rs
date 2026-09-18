@@ -123,6 +123,13 @@ pub enum RequestType {
     Attach,
 }
 
+/// The `type` field of a launch/attach request's arguments (`cppvsdbg`,
+/// `hhvm`, ...), naming the debugger the session drives. Shared so the
+/// persisted `SessionInfo` and the proxy's tracing both report the same value.
+pub fn session_type_from_args(debugger_args: &serde_json::Value) -> Option<&str> {
+    debugger_args.get("type").and_then(|v| v.as_str())
+}
+
 /// Session information for a dapper proxy instance
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SessionInfo {
@@ -169,8 +176,7 @@ impl SessionInfo {
 
         let session_type = debugger_args
             .as_ref()
-            .and_then(|args| args.get("type"))
-            .and_then(|v| v.as_str())
+            .and_then(session_type_from_args)
             .map(|s| s.to_string());
 
         let program_path = debugger_args
@@ -541,6 +547,29 @@ mod tests {
         assert!(session_info.pid > 0);
         assert!(session_info.started_at > 0);
         assert!(!session_info.command_line_args.is_empty());
+    }
+
+    #[test]
+    fn session_type_comes_from_the_request_arguments() {
+        assert_eq!(
+            session_type_from_args(&serde_json::json!({"type": "cppvsdbg"})),
+            Some("cppvsdbg")
+        );
+        assert_eq!(session_type_from_args(&serde_json::json!({})), None);
+        // VS Code always sends a string, but a malformed adapter must not panic.
+        assert_eq!(
+            session_type_from_args(&serde_json::json!({"type": 7})),
+            None
+        );
+
+        let session_info = SessionInfo::generate(
+            "test-session-id".into(),
+            Port::try_new(12345),
+            None,
+            Some(RequestType::Launch),
+            Some(serde_json::json!({"type": "hhvm"})),
+        );
+        assert_eq!(session_info.session_type.as_deref(), Some("hhvm"));
     }
 
     #[test]

@@ -36,6 +36,7 @@ use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
+use dapper_session::session_type_from_args;
 pub use execution_state::ExecutionState;
 use tracker_inner::DebugSessionTrackerInner;
 
@@ -347,6 +348,7 @@ impl DebugSessionTracker {
 
             tracing::debug!(
                 request_type = ?request_type,
+                session_type = inner.debugger_args.as_ref().and_then(session_type_from_args),
                 "Captured session info from {:?} request",
                 request_type
             );

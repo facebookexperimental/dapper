@@ -1067,13 +1067,13 @@ async fn call_tool_e2e_raw(
     let tool_name: String = tool_name.into();
     use rmcp::ClientHandler;
     use rmcp::ServiceExt;
-    use rmcp::model::ClientInfo;
+    use rmcp::model::ClientConfig;
 
     #[derive(Debug, Clone, Default)]
     struct DummyClientHandler;
     impl ClientHandler for DummyClientHandler {
-        fn get_info(&self) -> ClientInfo {
-            ClientInfo::default()
+        fn get_info(&self) -> ClientConfig {
+            ClientConfig::default()
         }
     }
 

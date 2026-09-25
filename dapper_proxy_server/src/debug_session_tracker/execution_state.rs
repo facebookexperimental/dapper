@@ -377,7 +377,12 @@ impl ExecutionState {
                     this.stopped_during_restart = false;
                 });
             }
-            _ => {}
+            _ => {
+                Self::with_execution_state(inner, |this| {
+                    this.pending_execution_requests
+                        .remove(&response.request_seq);
+                });
+            }
         }
     }
 
@@ -1513,6 +1518,38 @@ mod tests {
         };
         track_to(&inner, &Message::Response(response));
 
+        assert!(es(&inner).is_all_stopped());
+    }
+
+    #[test]
+    fn test_failed_reverse_continue_with_error_body_drops_pending_request() {
+        let inner = make_test_inner();
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, true));
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 10.into(),
+                command: RequestCommand::ReverseContinue(ReverseContinueArguments {
+                    thread_id: 1.into(),
+                    ..Default::default()
+                }),
+            }),
+        );
+        let response: Response = serde_json::from_value(serde_json::json!({
+            "request_seq": 10,
+            "success": false,
+            "command": "reverseContinue",
+            "message": "Reverse debugging not supported",
+            "body": { "error": { "id": 1, "format": "Reverse debugging not supported" } },
+        }))
+        .expect("should parse an error response");
+        assert!(
+            matches!(response.body, ResponseBody::Unknown(_)),
+            "an error body doesn't fit the unit `reverseContinue` variant"
+        );
+        track_to(&inner, &Message::Response(response));
+
+        assert!(es(&inner).pending_execution_requests.is_empty());
         assert!(es(&inner).is_all_stopped());
     }
 

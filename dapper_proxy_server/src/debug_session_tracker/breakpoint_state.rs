@@ -10,6 +10,8 @@ use dapper_dap_protocol::data_types::BreakpointId;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::enums::BreakpointEventReason;
+use dapper_dap_protocol::protocol::Response;
+use dapper_dap_protocol::responses::ResponseBody;
 use dapper_session::BreakpointInfo;
 
 /// Represents the difference between old and new breakpoints
@@ -48,10 +50,23 @@ impl BreakpointState {
             .insert(seq, PendingBreakpointRequest { source_path, specs });
     }
 
+    /// Complete the pending request a `setBreakpoints` response answers. Only a
+    /// successful response replaces the source's breakpoints.
+    pub fn complete_response(&mut self, response: &Response) {
+        match &response.body {
+            ResponseBody::SetBreakpoints(body) if response.success => {
+                self.update_breakpoints_from_response(response.request_seq, &body.breakpoints);
+            }
+            _ => {
+                self.pending_requests.remove(&response.request_seq);
+            }
+        }
+    }
+
     /// Update breakpoints for a source file based on a setBreakpoints response,
     /// using the stored request specs for positional fallback when the response
     /// omits the `line` field.
-    pub fn update_breakpoints_from_response(
+    fn update_breakpoints_from_response(
         &mut self,
         request_seq: Seq,
         response_breakpoints: &[Breakpoint],
@@ -452,6 +467,39 @@ mod tests {
 
         let breakpoints = state.get_breakpoints("/any.rs");
         assert!(breakpoints.is_empty());
+    }
+
+    #[test]
+    fn test_failed_response_drops_its_pending_request() {
+        let mut state = BreakpointState::new();
+        state.update_breakpoints(
+            "/test.rs",
+            vec![BreakpointInfo {
+                line: 10,
+                verified: true,
+                ..Default::default()
+            }],
+        );
+        state.track_request(Seq(1), "/test.rs".into(), vec![]);
+        let response: Response = serde_json::from_value(serde_json::json!({
+            "seq": 2,
+            "request_seq": 1,
+            "success": false,
+            "command": "setBreakpoints",
+            "message": "rejected",
+            "body": {"error": {"id": 1, "format": "rejected"}},
+        }))
+        .unwrap();
+        assert!(matches!(response.body, ResponseBody::Unknown(_)));
+
+        state.complete_response(&response);
+
+        assert!(state.pending_requests.is_empty());
+        assert_eq!(
+            state.get_breakpoints("/test.rs").len(),
+            1,
+            "a rejected request should leave the tracked breakpoints alone"
+        );
     }
 
     #[test]

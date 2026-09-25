@@ -162,28 +162,16 @@ impl DebugSessionTracker {
 
     pub(crate) fn track_message_metadata_to_client(&self, message: &Message) {
         if let Message::Response(response) = message {
-            if response.success {
-                if let ResponseBody::SetBreakpoints(bp_body) = &response.body {
-                    self.with_inner(|inner| {
-                        inner.breakpoint_state.update_breakpoints_from_response(
-                            response.request_seq,
-                            &bp_body.breakpoints,
-                        );
-                    });
-                }
-                if let ResponseBody::Initialize(caps) = &response.body {
-                    self.with_inner(|inner| {
-                        inner.adapter_capabilities = caps.clone();
-                    });
-                }
+            if response.command_name() == "setBreakpoints" {
+                self.with_inner(|inner| inner.breakpoint_state.complete_response(response));
             }
-            // Process exception breakpoint responses regardless of success
-            // so the pending request entry is always cleaned up. The
-            // installed set is only replaced on success. (This differs
-            // from the source-line breakpoint pattern above, which is
-            // success-gated; the asymmetry is intentional — the new
-            // approach prevents stale pending entries from accumulating
-            // on adapter-rejected requests.)
+            if response.success
+                && let ResponseBody::Initialize(caps) = &response.body
+            {
+                self.with_inner(|inner| {
+                    inner.adapter_capabilities = caps.clone();
+                });
+            }
             if let ResponseBody::SetExceptionBreakpoints(_) = &response.body {
                 let success = response.success;
                 let request_seq = response.request_seq;

@@ -100,11 +100,9 @@ impl MessageRemapper {
 }
 
 /// Translate a `cancel` request's `requestId` from the client's seq frame to
-/// the backend's frame. Other request kinds and cancels without a `requestId`
-/// (or with only a `progressId`) pass through unchanged. On a lookup miss,
-/// the `requestId` is forwarded unchanged (logged at debug level — the
-/// common cause is a benign cancel/response race; rationale in the function
-/// body).
+/// the backend's. On a lookup miss (usually the response already arrived) the
+/// `requestId` is dropped: the client's number could name an unrelated adapter
+/// request, while a cancel without one cancels no request.
 ///
 /// IMPORTANT: only call from the main-client → backend path. Secondary
 /// clients (control plane / agents) already produce `requestId` values in
@@ -118,25 +116,14 @@ fn translate_cancel(request: &mut dap::Request, remapper: &MessageRemapper) {
         return;
     };
     let referenced = ClientSeq(Seq::from(referenced_client_seq));
-    match remapper.lookup_backend(referenced) {
-        Some(backend) => {
-            args.request_id = Some(i64::from(backend.0));
-        }
-        None => {
-            // Either the referenced request already received its response
-            // (and `unmap` consumed the mapping — a benign cancel/response
-            // race), or the client referenced a seq it never sent. Forward
-            // unchanged — mutating the client's intent silently is worse
-            // than letting the backend apply its own "no such request"
-            // semantics, and preserving the value keeps the cancel
-            // observable in logs on both sides. The race case is normal
-            // DAP behavior, so this is logged at debug level rather than
-            // warn to avoid production noise.
-            tracing::debug!(
-                client_request_id = referenced_client_seq,
-                "cancel references unknown client request_id (response may have already arrived); forwarding unchanged"
-            );
-        }
+    args.request_id = remapper
+        .lookup_backend(referenced)
+        .map(|backend| i64::from(backend.0));
+    if args.request_id.is_none() {
+        tracing::debug!(
+            client_request_id = referenced_client_seq,
+            "cancel references unknown client request_id (response may have already arrived); dropping it"
+        );
     }
 }
 
@@ -497,14 +484,8 @@ impl ProxyServer {
                     let seq = Seq(backend_seq.fetch_add(1, SeqCst));
                     request.seq = seq;
 
-                    // Translate `cancel.requestId` BEFORE recording this
-                    // request's own mapping. `client_seq` was captured from
-                    // the original `message.seq()` above, so a malformed
-                    // self-referencing cancel (`request_id == its own seq`)
-                    // would, with the reverse order, find the just-inserted
-                    // self-mapping and silently rewrite to its own backend
-                    // seq. Translating first leaves such requests in the
-                    // forward-unchanged branch.
+                    // Translate before mapping this request: a malformed cancel
+                    // naming its own seq would otherwise find its own mapping.
                     translate_cancel(&mut request, &remapper);
 
                     // Map after translation so the response reader can find
@@ -1129,13 +1110,8 @@ mod tests {
         }
     }
 
-    /// Canonical race: the original request has already received its response
-    /// (so `unmap` consumed the mapping) by the time the client's cancel
-    /// arrives. The lookup misses; the cancel must be forwarded with
-    /// `request_id` unchanged so the backend can apply its own "no such
-    /// request" semantics. This is normal DAP behaviour, not an error.
     #[tokio::test]
-    async fn test_main_client_cancel_after_response_forwards_unchanged() {
+    async fn test_main_client_cancel_after_response_drops_request_id() {
         let mut tp = TestProxy::new();
 
         // 1. Standard request → response round-trip. After this, the (5 → backend_seq)
@@ -1156,7 +1132,7 @@ mod tests {
         assert!(matches!(response, Message::Response(_)));
 
         // 2. Now send a cancel referencing the same client seq=5. The mapping
-        //    is gone; the cancel's `request_id` must be forwarded unchanged.
+        //    is gone, so the cancel's `request_id` must be dropped.
         tp.main_client
             .send(make_cancel_request(6, Some(5)).into())
             .await
@@ -1170,26 +1146,18 @@ mod tests {
         match &forwarded_cancel_req.command {
             RequestCommand::Cancel(Some(args)) => {
                 assert_eq!(
-                    args.request_id,
-                    Some(5),
-                    "cancel after response must forward request_id unchanged"
+                    args.request_id, None,
+                    "cancel after response must not forward the client's request_id"
                 );
             }
             other => panic!("Expected Cancel command, got {:?}", other),
         }
     }
 
-    /// Regression test for the `translate_cancel`-before-`map` ordering in
-    /// `main_client_to_backend`. `client_seq` is captured from the incoming
-    /// message's seq before the proxy overwrites `request.seq` with a fresh
-    /// backend seq. So if `remapper.map(client_seq, BackendSeq(seq))` ran
-    /// BEFORE `translate_cancel`, a malformed self-referencing cancel
-    /// (`request_id == its own seq`) would find the just-inserted
-    /// self-mapping and silently rewrite `request_id` to the cancel's own
-    /// backend seq. Translating first leaves such requests in the
-    /// forward-unchanged branch, preserving `request_id`.
+    /// Pins the translate-before-map order in `main_client_to_backend`: mapping
+    /// first would rewrite `request_id` to the cancel's own backend seq.
     #[tokio::test]
-    async fn test_main_client_self_referencing_cancel_is_not_rewritten() {
+    async fn test_main_client_self_referencing_cancel_drops_request_id() {
         let mut tp = TestProxy::new();
 
         // A cancel whose requestId equals its own client seq.
@@ -1206,15 +1174,12 @@ mod tests {
         };
         // The outer seq is remapped (standard request flow).
         assert_ne!(forwarded_req.seq, Seq(self_referencing_seq));
-        // The inner request_id is preserved unchanged because no prior
-        // request with that client seq was mapped — the lookup misses and
-        // the forward-unchanged branch fires.
+        // No earlier request used that client seq, so the lookup misses.
         match &forwarded_req.command {
             RequestCommand::Cancel(Some(args)) => {
                 assert_eq!(
-                    args.request_id,
-                    Some(self_referencing_seq),
-                    "self-referencing cancel must forward request_id unchanged"
+                    args.request_id, None,
+                    "self-referencing cancel must not name any request"
                 );
             }
             other => panic!("Expected Cancel command, got {:?}", other),
@@ -1607,17 +1572,27 @@ mod tests {
     }
 
     #[test]
-    fn test_translate_cancel_unknown_request_id_preserved() {
+    fn test_translate_cancel_unknown_request_id_dropped() {
         let remapper = MessageRemapper::new();
 
-        let mut req = make_cancel_request(7, Some(42));
+        let mut req = Request::new(RequestCommand::Cancel(Some(
+            dapper_dap_protocol::requests::CancelArguments {
+                request_id: Some(42),
+                progress_id: Some("p1".to_string()),
+                ..Default::default()
+            },
+        )));
+        req.seq = Seq(7);
         translate_cancel(&mut req, &remapper);
 
-        // The unknown requestId is forwarded unchanged so the backend can
-        // apply its own "no such request" semantics.
         match &req.command {
             RequestCommand::Cancel(Some(args)) => {
-                assert_eq!(args.request_id, Some(42));
+                assert_eq!(args.request_id, None);
+                assert_eq!(
+                    args.progress_id.as_deref(),
+                    Some("p1"),
+                    "the progress half of the cancel still applies"
+                );
             }
             other => panic!("Expected Cancel command, got {:?}", other),
         }

@@ -212,7 +212,7 @@ impl DebugSessionTracker {
             });
         }
         // A backend that emits a successful `controlPlaneStatus` is itself a
-        // dapper proxy. Logged unconditionally.
+        // dapper proxy. Logged on first detection only.
         if let Ok(DapperEvent::ControlPlaneStatus(status)) = DapperEvent::try_from(&event.event)
             && status.success
             && self.mark_backend_is_dapper()
@@ -1529,7 +1529,7 @@ mod tests {
     fn capabilities_none_when_initialize_body_is_none() {
         // Adapter responded to initialize without a body; tracker stores None,
         // so adapter_capabilities() returns None. Mirrors the `Initialize(caps)`
-        // arm in `DebugSessionTracker::track_message_to_client`, which clones
+        // arm in `DebugSessionTracker::track_message_metadata_to_client`, which clones
         // the Option<Capabilities> verbatim.
         assert_eq!(capture_step_back_after_initialize(None), None);
     }
@@ -1581,7 +1581,7 @@ mod tests {
 
     #[test]
     fn does_not_capture_capabilities_when_initialize_failed() {
-        // The tracker's `track_message_to_client` only stores capabilities for
+        // The tracker's `track_message_metadata_to_client` only stores capabilities for
         // successful Initialize responses. Lock that in so a future change to
         // the success-gating doesn't silently let a half-initialized session
         // pass the reverse-debugging gate downstream.
@@ -1747,7 +1747,7 @@ mod tests {
     fn test_secondary_client_request_not_tracked_in_pending() {
         // Secondary clients (control-plane MCP/CLI) shouldn't add pending
         // entries via `track_message_from_client` because their responses
-        // don't reach `track_message_to_client`. They use the explicit
+        // don't reach `track_message_metadata_to_client`. They use the explicit
         // `update_exception_filters` setter instead.
         let tracker = test_tracker();
         let request = make_set_exception_breakpoints_request(Seq(7), vec!["uncaught"]);

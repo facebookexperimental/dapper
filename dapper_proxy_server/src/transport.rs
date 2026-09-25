@@ -17,8 +17,7 @@ use tokio::net::UnixStream;
 
 /// Buffer size for DAP message I/O operations.
 /// 64KB is chosen to accommodate typical DAP message sizes while reducing
-/// syscall overhead. Most DAP messages are <10KB, so this allows batching
-/// multiple messages per syscall when using write_buffered + flush.
+/// syscall overhead.
 const DAP_BUFFER_SIZE: usize = 64 * 1024;
 
 // Channels are concrete over the DAP `Message` type — the only wire format
@@ -33,34 +32,10 @@ impl WriteChannel {
         Self { writer }
     }
 
-    /// Write a message into the internal buffer and flush it to the
-    /// underlying writer immediately.
-    ///
-    /// On Windows `tokio::io::stdin()` / `stdout()` dispatch every write
-    /// to the blocking-thread pool, so each `flush()` costs a pool
-    /// round-trip (~100-500 µs of scheduling overhead). Prefer
-    /// [`write_buffered`] + an explicit [`flush`] when forwarding
-    /// multiple independent messages in a loop.
+    /// Write a message and flush it to the underlying writer.
     pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
         let content = message.format()?;
         self.writer.write_all(&content).await?;
-        Ok(self.writer.flush().await?)
-    }
-
-    /// Write a message into the internal buffer *without* flushing.
-    ///
-    /// The caller **must** call [`flush`] at some later point to ensure
-    /// the data actually reaches the peer. This is useful when the
-    /// caller knows it will send several messages in quick succession
-    /// and wants to batch them into a single `flush()` / syscall.
-    pub async fn write_buffered(&mut self, message: Message) -> anyhow::Result<()> {
-        let content = message.format()?;
-        self.writer.write_all(&content).await?;
-        Ok(())
-    }
-
-    /// Flush the internal buffer to the underlying writer.
-    pub async fn flush(&mut self) -> anyhow::Result<()> {
         Ok(self.writer.flush().await?)
     }
 }
@@ -206,28 +181,5 @@ mod tests {
         server.send(response.into()).await.unwrap();
         let received = client.recv().await.unwrap().unwrap();
         assert!(matches!(received, Message::Response(_)));
-    }
-
-    #[tokio::test]
-    async fn test_write_buffered_then_flush() {
-        let (mut server, mut client) = DuplexChannel::in_memory(1024);
-
-        let request1 = Request {
-            seq: 1.into(),
-            command: RequestCommand::Threads,
-        };
-        let request2 = Request {
-            seq: 2.into(),
-            command: RequestCommand::Threads,
-        };
-
-        client.write.write_buffered(request1.into()).await.unwrap();
-        client.write.write_buffered(request2.into()).await.unwrap();
-        client.write.flush().await.unwrap();
-
-        let received1 = server.recv().await.unwrap().unwrap();
-        assert!(matches!(received1, Message::Request(_)));
-        let received2 = server.recv().await.unwrap().unwrap();
-        assert!(matches!(received2, Message::Request(_)));
     }
 }

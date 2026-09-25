@@ -135,14 +135,16 @@ fn translate_cancel(request: &mut dap::Request, remapper: &MessageRemapper) {
 /// only one task is writing at a time, so the lock is uncontended and cheap.
 type SharedBackendWriter = Arc<tokio::sync::Mutex<WriteChannel>>;
 
-/// Where a message flowing toward the main client originated.
+/// Where a message passing through the proxy originated.
 ///
 /// `EventChannel` messages are synthesized by this proxy (control-plane status,
 /// breakpoint notifications) and injected into the stream. They are derived
 /// from tracker state rather than reported by the adapter, so they must not
 /// feed back into it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(strum::Display, Clone, Copy, PartialEq, Eq, Debug)]
 enum MessageSource {
+    MainClient,
+    ControlPlane,
     Backend,
     EventChannel,
 }
@@ -331,13 +333,13 @@ impl ProxyServer {
                             let msg: Message = message.into();
                             debug_session_tracker
                                 .track_message_from_client(&msg, ClientType::Secondary);
-                            tracing::trace!(target: "dap", source = %DapSource::ControlPlane, message = ?msg);
+                            tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
                             let mut writer = backend_write.lock().await;
                             writer.send(msg).await?;
                         }
                         Message::Response(response) => {
                             let msg: Message = response.into();
-                            tracing::trace!(target: "dap", source = %DapSource::ControlPlane, message = ?msg);
+                            tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
 
                             let mut writer = backend_write.lock().await;
                             writer.send(msg).await?;
@@ -392,7 +394,7 @@ impl ProxyServer {
                 Some(msg) = event_channel_rx.recv() => (msg, MessageSource::EventChannel),
             };
 
-            tracing::trace!(target: "dap", source = %DapSource::Backend, message = ?message);
+            tracing::trace!(target: "dap", source = %source, message = ?message);
 
             Self::track_then_publish_message(&debug_session_tracker, &message, source, || {
                 // Avoid cloning nested DAP payloads when no listener is subscribed.
@@ -494,13 +496,13 @@ impl ProxyServer {
                     debug_session_tracker.track_execution_request_to_backend(&request);
                     let mut msg: Message = request.into();
                     session_stamp::stamp(&mut msg, session_stamp.as_ref());
-                    tracing::trace!(target: "dap", source = %DapSource::MainClient, message = ?msg);
+                    tracing::trace!(target: "dap", source = %MessageSource::MainClient, message = ?msg);
                     let mut writer = backend_write.lock().await;
                     writer.send(msg).await?;
                 }
                 Message::Response(response) => {
                     let msg: Message = response.into();
-                    tracing::trace!(target: "dap", source = %DapSource::MainClient, message = ?msg);
+                    tracing::trace!(target: "dap", source = %MessageSource::MainClient, message = ?msg);
                     let mut writer = backend_write.lock().await;
                     writer.send(msg).await?;
                 }
@@ -551,13 +553,6 @@ async fn recv_owned(
 ) -> (ReadChannel, Result<Option<Message>, ProtocolError>) {
     let result = read.recv().await;
     (read, result)
-}
-
-#[derive(strum::Display)]
-enum DapSource {
-    ControlPlane,
-    Backend,
-    MainClient,
 }
 
 #[cfg(test)]

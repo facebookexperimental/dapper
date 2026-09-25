@@ -478,15 +478,15 @@ impl ProxyClient {
             &mut messages,
             timeout,
         )
-        .await
+        .await?
         {
-            Ok(event) => match event.event {
+            Some(event) => match event.event {
                 EventKind::Stopped(stopped) => NavigateResult::Stopped(stopped),
                 EventKind::Exited(exited) => NavigateResult::Exited(exited),
                 EventKind::Terminated(_) => NavigateResult::Terminated,
                 _ => NavigateResult::CommandExecuted,
             },
-            Err(_) => NavigateResult::TimedOut { timeout_seconds },
+            None => NavigateResult::TimedOut { timeout_seconds },
         };
 
         Ok(dapper_session::NavigationResult {
@@ -766,10 +766,10 @@ impl ProxyClient {
                 &mut messages,
                 Some(timeout),
             )
-            .await
+            .await?
             {
-                Ok(event) => Some(WaitedEvent::Received(event.event)),
-                Err(_) => Some(WaitedEvent::TimedOut {
+                Some(event) => Some(WaitedEvent::Received(event.event)),
+                None => Some(WaitedEvent::TimedOut {
                     timeout_seconds: timeout.as_secs(),
                 }),
             };
@@ -853,8 +853,6 @@ impl ProxyClient {
 }
 
 pub(crate) mod helpers {
-    use anyhow::bail;
-
     use super::*;
 
     pub(crate) fn levels_to_request(effective_levels: i64) -> i64 {
@@ -898,12 +896,13 @@ pub(crate) mod helpers {
 
     /// Wait for specific DAP events with an optional timeout
     ///
-    /// If timeout is None, waits indefinitely. If timeout is Some(duration), waits up to that duration.
+    /// If timeout is None, waits indefinitely. If timeout is Some(duration), waits up to that
+    /// duration and returns `Ok(None)` once it elapses.
     pub async fn wait_for_events_timeout(
         matches: impl Fn(&EventKind) -> bool,
         messages: &mut broadcast::Receiver<Arc<dap::Message>>,
         timeout: Option<std::time::Duration>,
-    ) -> anyhow::Result<dap::Event> {
+    ) -> anyhow::Result<Option<dap::Event>> {
         let wait_future = async {
             loop {
                 match messages.recv().await {
@@ -925,14 +924,12 @@ pub(crate) mod helpers {
 
         match timeout {
             Some(duration) => match tokio::time::timeout(duration, wait_future).await {
-                Ok(result) => result,
-                Err(_) => {
-                    bail!("Timeout waiting for events (waited {:?})", duration);
-                }
+                Ok(result) => result.map(Some),
+                Err(_) => Ok(None),
             },
             None => {
                 // No timeout - wait indefinitely
-                wait_future.await
+                wait_future.await.map(Some)
             }
         }
     }
@@ -1442,7 +1439,8 @@ mod tests {
             Some(std::time::Duration::from_secs(1)),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the stopped event should arrive before the timeout");
 
         assert!(matches!(event.event, EventKind::Stopped(_)));
     }
@@ -1463,8 +1461,8 @@ mod tests {
         .await;
 
         assert!(
-            result.is_err(),
-            "Should timeout when no matching event arrives"
+            matches!(result, Ok(None)),
+            "Should time out when no matching event arrives, got {result:?}"
         );
     }
 
@@ -1593,6 +1591,24 @@ mod tests {
                 }));
             }
         });
+    }
+
+    #[tokio::test]
+    async fn waiting_for_an_event_on_a_closed_stream_is_an_error() {
+        // The mock drops its broadcast sender right after answering.
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+        client
+            .navigate(NavigationType::Continue, ThreadId(1), None)
+            .await
+            .expect_err("navigate should fail instead of reporting a timeout");
+
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+        client
+            .send_raw_dap_request("continue", None, true, 0)
+            .await
+            .expect_err("a raw request should fail instead of reporting a timeout");
     }
 
     #[tokio::test]

@@ -258,8 +258,7 @@ impl DebugSessionTracker {
             let session_type = inner
                 .debugger_args
                 .as_ref()
-                .and_then(|args| args.get("type"))
-                .and_then(|session_type| session_type.as_str());
+                .and_then(session_type_from_args);
 
             stop_policy::stop_request(
                 inner.request_type,

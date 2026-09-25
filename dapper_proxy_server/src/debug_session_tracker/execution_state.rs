@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::PoisonError;
 
+use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::enums::StoppedReason;
@@ -81,7 +82,6 @@ pub enum ExecutionStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionState {
     pub current: ExecutionStatus,
-    pub supports_single_thread_execution: bool,
     pub pending_execution_requests: HashMap<Seq, PendingExecutionRequest>,
     pending_restart_seq: Option<Seq>,
     stopped_during_restart: bool,
@@ -92,7 +92,6 @@ impl Default for ExecutionState {
     fn default() -> Self {
         Self {
             current: ExecutionStatus::Unknown,
-            supports_single_thread_execution: false,
             pending_execution_requests: HashMap::new(),
             pending_restart_seq: None,
             stopped_during_restart: false,
@@ -285,23 +284,6 @@ impl ExecutionState {
 
     pub(super) fn track_response(inner: &Mutex<DebugSessionTrackerInner>, response: &Response) {
         match &response.body {
-            ResponseBody::Initialize(caps) => {
-                Self::with_execution_state(inner, |this| {
-                    if response.success {
-                        this.supports_single_thread_execution = caps
-                            .as_ref()
-                            .and_then(|c| c.supports_single_thread_execution_requests)
-                            .unwrap_or(false);
-
-                        tracing::debug!(
-                            supports_single_thread_execution =
-                                this.supports_single_thread_execution,
-                            has_capabilities = caps.is_some(),
-                            "Captured adapter capabilities from initialize response"
-                        );
-                    }
-                });
-            }
             ResponseBody::Continue(body) => {
                 Self::with_execution_state(inner, |this| {
                     let pending = this
@@ -327,7 +309,7 @@ impl ExecutionState {
                 });
             }
             ResponseBody::ReverseContinue => {
-                Self::with_execution_state(inner, |this| {
+                Self::with_execution_state_and_capabilities(inner, |this, capabilities| {
                     let pending = this
                         .pending_execution_requests
                         .remove(&response.request_seq);
@@ -335,8 +317,11 @@ impl ExecutionState {
                         && let Some(pending) = pending
                         && !pending.superseded
                     {
-                        let all_threads_continued = !this.supports_single_thread_execution
-                            || !pending.single_thread.unwrap_or(false);
+                        let supports_single_thread = capabilities.is_some_and(|caps| {
+                            caps.supports_single_thread_execution_requests == Some(true)
+                        });
+                        let all_threads_continued =
+                            !supports_single_thread || !pending.single_thread.unwrap_or(false);
 
                         if all_threads_continued {
                             this.set_all_running();
@@ -348,7 +333,7 @@ impl ExecutionState {
                             command = "reverseContinue",
                             thread_id = pending.thread_id.as_i64(),
                             single_thread = ?pending.single_thread,
-                            supports_single_thread = this.supports_single_thread_execution,
+                            supports_single_thread,
                             all_threads_continued = all_threads_continued,
                             state = ?this.current,
                             "Execution state changed from reverseContinue response"
@@ -508,12 +493,23 @@ impl ExecutionState {
         inner: &Mutex<DebugSessionTrackerInner>,
         f: impl FnOnce(&mut ExecutionState),
     ) {
+        Self::with_execution_state_and_capabilities(inner, |this, _| f(this));
+    }
+
+    fn with_execution_state_and_capabilities(
+        inner: &Mutex<DebugSessionTrackerInner>,
+        f: impl FnOnce(&mut ExecutionState, Option<&Capabilities>),
+    ) {
         // Recover from poisoning: skipping a transition would leave the
         // tracked execution state permanently stale, while recovery risks
         // at most one unfinished update.
         let mut guard = inner.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&mut guard.execution_state);
-        tracing::trace!(state = ?guard.execution_state, "Execution state changed");
+        let tracker = &mut *guard;
+        f(
+            &mut tracker.execution_state,
+            tracker.adapter_capabilities.as_ref(),
+        );
+        tracing::trace!(state = ?tracker.execution_state, "Execution state changed");
     }
 }
 
@@ -566,6 +562,13 @@ mod tests {
             Message::Event(event) => ExecutionState::track_event(inner, event),
             other => panic!("expected response or event, got {:?}", other.message_type()),
         }
+    }
+
+    fn advertise_single_thread_execution(inner: &Mutex<DebugSessionTrackerInner>) {
+        inner.lock().unwrap().adapter_capabilities = Some(Capabilities {
+            supports_single_thread_execution_requests: Some(true),
+            ..Default::default()
+        });
     }
 
     fn stop_info(inner: &Mutex<DebugSessionTrackerInner>) -> Option<StopInfo> {
@@ -1228,60 +1231,6 @@ mod tests {
     }
 
     #[test]
-    fn test_captures_single_thread_execution_capability() {
-        let inner = make_test_inner();
-        assert!(!es(&inner).supports_single_thread_execution);
-
-        let init_response = Response {
-            seq: 1.into(),
-            request_seq: 1.into(),
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(Some(Capabilities {
-                supports_single_thread_execution_requests: Some(true),
-                ..Default::default()
-            })),
-        };
-        track_to(&inner, &Message::Response(init_response));
-
-        assert!(es(&inner).supports_single_thread_execution);
-    }
-
-    #[test]
-    fn test_capability_defaults_to_false_when_missing() {
-        let inner = make_test_inner();
-
-        let init_response = Response {
-            seq: 1.into(),
-            request_seq: 1.into(),
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(Some(Capabilities {
-                ..Default::default()
-            })),
-        };
-        track_to(&inner, &Message::Response(init_response));
-
-        assert!(!es(&inner).supports_single_thread_execution);
-    }
-
-    #[test]
-    fn test_capability_defaults_to_false_when_no_body() {
-        let inner = make_test_inner();
-
-        let init_response = Response {
-            seq: 1.into(),
-            request_seq: 1.into(),
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(None),
-        };
-        track_to(&inner, &Message::Response(init_response));
-
-        assert!(!es(&inner).supports_single_thread_execution);
-    }
-
-    #[test]
     fn test_reverse_continue_request_tracked() {
         let inner = make_test_inner();
 
@@ -1343,18 +1292,7 @@ mod tests {
     #[test]
     fn test_reverse_continue_with_single_thread_support_but_single_thread_false() {
         let inner = make_test_inner();
-
-        let init_response = Response {
-            seq: 1.into(),
-            request_seq: 1.into(),
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(Some(Capabilities {
-                supports_single_thread_execution_requests: Some(true),
-                ..Default::default()
-            })),
-        };
-        track_to(&inner, &Message::Response(init_response));
+        advertise_single_thread_execution(&inner);
 
         let stopped_event = Event {
             seq: 100.into(),
@@ -1392,18 +1330,7 @@ mod tests {
     #[test]
     fn test_reverse_continue_with_single_thread_support_and_single_thread_true() {
         let inner = make_test_inner();
-
-        let init_response = Response {
-            seq: 1.into(),
-            request_seq: 1.into(),
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(Some(Capabilities {
-                supports_single_thread_execution_requests: Some(true),
-                ..Default::default()
-            })),
-        };
-        track_to(&inner, &Message::Response(init_response));
+        advertise_single_thread_execution(&inner);
 
         let stopped_event = Event {
             seq: 100.into(),

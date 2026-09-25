@@ -582,6 +582,7 @@ mod tests {
     use dapper_dap_protocol::protocol::Response;
     use dapper_dap_protocol::requests::ContinueArguments;
     use dapper_dap_protocol::requests::RequestCommand;
+    use dapper_dap_protocol::requests::ReverseContinueArguments;
     use dapper_dap_protocol::requests::SetBreakpointsArguments;
     use dapper_dap_protocol::responses::ContinueResponseBody;
     use dapper_dap_protocol::responses::ResponseBody;
@@ -1638,6 +1639,59 @@ mod tests {
             caps.supports_single_thread_execution_requests,
             Some(true),
             "the initialize baseline must survive the capabilities merge"
+        );
+    }
+
+    #[test]
+    fn capabilities_event_enables_single_thread_reverse_continue() {
+        let tracker = test_tracker();
+        tracker.track_message_to_client(&Message::Response(Response {
+            seq: 1.into(),
+            request_seq: 1.into(),
+            success: true,
+            message: None,
+            body: ResponseBody::Initialize(Some(Capabilities::default())),
+        }));
+        tracker.track_message_to_client(&Message::Event(Event {
+            seq: 2.into(),
+            event: EventKind::Capabilities(CapabilitiesEventBody {
+                capabilities: Capabilities {
+                    supports_single_thread_execution_requests: Some(true),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        }));
+        tracker.track_message_to_client(&Message::Event(Event {
+            seq: 3.into(),
+            event: EventKind::Stopped(StoppedEventBody {
+                reason: StoppedReason::Breakpoint,
+                thread_id: Some(ThreadId(1)),
+                all_threads_stopped: Some(true),
+                ..Default::default()
+            }),
+        }));
+        tracker.track_execution_request_to_backend(&Request {
+            seq: Seq(10),
+            command: RequestCommand::ReverseContinue(ReverseContinueArguments {
+                thread_id: ThreadId(1),
+                single_thread: Some(true),
+                ..Default::default()
+            }),
+        });
+        tracker.track_message_to_client(&Message::Response(Response {
+            seq: 4.into(),
+            request_seq: Seq(10),
+            success: true,
+            message: None,
+            body: ResponseBody::ReverseContinue,
+        }));
+
+        let state = tracker.get_execution_state();
+        assert!(!state.is_thread_stopped(ThreadId(1)));
+        assert!(
+            state.is_thread_stopped(ThreadId(2)),
+            "a single-thread reverseContinue must leave the other threads stopped"
         );
     }
 

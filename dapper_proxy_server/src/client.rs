@@ -43,6 +43,7 @@ use dapper_session::NavigationType;
 use dapper_session::RawDapResult;
 use dapper_session::SetExceptionBreakpointsResult;
 use dapper_session::WaitedEvent;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -103,15 +104,19 @@ pub struct ProxyClient {
     event_channel: EventChannel,
     debug_session_tracker: DebugSessionTracker,
     config: DapperConfig,
+    /// Held from reading the tracked breakpoints to writing back the merged
+    /// set, which concurrent control-plane RPCs would otherwise interleave.
+    breakpoint_update_lock: Arc<Mutex<()>>,
 }
 
 impl ProxyClient {
-    pub fn new(
+    pub(crate) fn new(
         id: ClientId,
         to_server: mpsc::UnboundedSender<ProxyRequest>,
         event_channel: EventChannel,
         debug_session_tracker: DebugSessionTracker,
         config: DapperConfig,
+        breakpoint_update_lock: Arc<Mutex<()>>,
     ) -> Self {
         Self {
             id,
@@ -119,6 +124,7 @@ impl ProxyClient {
             event_channel,
             debug_session_tracker,
             config,
+            breakpoint_update_lock,
         }
     }
 
@@ -500,6 +506,7 @@ impl ProxyClient {
         clear_existing: bool,
         breakpoint_specs: &[SourceBreakpoint],
     ) -> anyhow::Result<dapper_session::SetBreakpointsResult> {
+        let _update = self.breakpoint_update_lock.lock().await;
         // Get existing breakpoints to track what's being removed
         let existing_breakpoints = self.debug_session_tracker.get_breakpoints(source_path);
         let existing_lines: Vec<i64> = existing_breakpoints.iter().map(|bp| bp.line).collect();
@@ -638,6 +645,7 @@ impl ProxyClient {
         filters: &[String],
         clear_existing: bool,
     ) -> anyhow::Result<SetExceptionBreakpointsResult> {
+        let _update = self.breakpoint_update_lock.lock().await;
         // Permissive empty-input early return — the no-op path must succeed
         // even if capabilities are unknown or the adapter advertises no
         // filters. Strict rejection of `empty + !clear` lives in the MCP
@@ -1111,6 +1119,7 @@ mod tests {
             event_channel,
             tracker,
             DapperConfig::default(),
+            Arc::default(),
         );
         (client, rx)
     }
@@ -1219,6 +1228,35 @@ mod tests {
     #[tokio::test]
     async fn set_breakpoints_preserves_explicit_column_identity_after_resolution() {
         assert_requested_breakpoint_survives_resolution(Some(3), 4).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_set_breakpoints_on_one_file_keep_both_lines() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_set_breakpoints_mock_with_resolved_columns(rx, vec![None, None]);
+        let first = [SourceBreakpoint {
+            line: 10,
+            ..Default::default()
+        }];
+        let second = [SourceBreakpoint {
+            line: 20,
+            ..Default::default()
+        }];
+
+        let (first_result, second_result) = tokio::join!(
+            client.set_breakpoints("/test.rs", false, &first),
+            client.set_breakpoints("/test.rs", false, &second),
+        );
+        first_result.expect("the first append should succeed");
+        second_result.expect("the second append should succeed");
+
+        let lines: Vec<i64> = client
+            .debug_session_tracker()
+            .get_breakpoints("/test.rs")
+            .iter()
+            .map(|bp| bp.line)
+            .collect();
+        assert_eq!(lines, [10, 20]);
     }
 
     fn entry(filter: &str, condition: Option<&str>) -> ExceptionFilterEntry {

@@ -180,6 +180,8 @@ pub struct ProxyServer {
     config: DapperConfig,
     /// Session id stamped onto launch/attach payloads; `None` when disabled.
     session_stamp: Option<SessionId>,
+    /// Shared by every client so their breakpoint updates don't interleave.
+    breakpoint_update_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ProxyServer {
@@ -209,6 +211,7 @@ impl ProxyServer {
             debug_session_tracker,
             config,
             session_stamp,
+            breakpoint_update_lock: Arc::default(),
         }
     }
 
@@ -220,6 +223,7 @@ impl ProxyServer {
             event_channel,
             self.debug_session_tracker.clone(),
             self.config.clone(),
+            self.breakpoint_update_lock.clone(),
         )
     }
 

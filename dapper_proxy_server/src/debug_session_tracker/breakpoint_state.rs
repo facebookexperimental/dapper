@@ -140,6 +140,43 @@ impl BreakpointState {
         }
     }
 
+    fn event_line(bp_id: BreakpointId, line: Option<i64>) -> Option<i64> {
+        match line {
+            Some(line) if line >= 0 => Some(line),
+            Some(line) => {
+                tracing::debug!(bp_id = ?bp_id, line, "Ignoring negative line in breakpoint event");
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn apply_changed_fields(existing: &mut BreakpointInfo, bp_id: BreakpointId, bp: &Breakpoint) {
+        existing.verified = bp.verified;
+        if let Some(line) = Self::event_line(bp_id, bp.line) {
+            existing.line = line;
+        }
+        if let Some(column) = Self::event_column(bp_id, bp.column) {
+            existing.column = Some(column);
+        }
+    }
+
+    fn find_by_id(
+        &mut self,
+        bp_id: BreakpointId,
+    ) -> Option<(&str, &mut Vec<BreakpointInfo>, usize)> {
+        self.breakpoints.iter_mut().find_map(|(file_path, bps)| {
+            let pos = bps.iter().position(|b| b.id == Some(bp_id))?;
+            Some((file_path.as_str(), bps, pos))
+        })
+    }
+
+    fn prune_empty_sources(&mut self) {
+        self.breakpoints.retain(|_, bps| !bps.is_empty());
+        self.path_aliases
+            .retain(|_, resolved| self.breakpoints.contains_key(resolved));
+    }
+
     /// Apply a breakpoint event from the debug adapter to update tracked state.
     /// The DAP spec says the `id` field identifies the target breakpoint, and
     /// other attributes provide new values.
@@ -151,71 +188,31 @@ impl BreakpointState {
 
         match reason {
             BreakpointEventReason::Changed => {
-                let event_source_path = bp.source.as_ref().and_then(|s| s.path.as_deref());
-
-                let found = self.breakpoints.iter().find_map(|(file_path, bps)| {
-                    bps.iter()
-                        .position(|b| b.id == Some(bp_id))
-                        .map(|pos| (file_path.clone(), pos))
-                });
-
-                let Some((file_path, pos)) = found else {
+                let Some((file_path, breakpoints, pos)) = self.find_by_id(bp_id) else {
                     tracing::debug!(
                         bp_id = ?bp_id,
                         "Breakpoint changed event for unknown breakpoint id"
                     );
                     return;
                 };
+                Self::apply_changed_fields(&mut breakpoints[pos], bp_id, bp);
 
-                let breakpoints = self.breakpoints.get_mut(&file_path).unwrap();
-                if let Some(new_path) = event_source_path
-                    && new_path != file_path.as_str()
+                if let Some(new_path) = bp.source.as_ref().and_then(|s| s.path.as_deref())
+                    && new_path != file_path
                 {
-                    let mut moved = breakpoints.remove(pos);
-                    moved.verified = bp.verified;
-                    if let Some(line) = bp.line {
-                        if line >= 0 {
-                            moved.line = line;
-                        } else {
-                            tracing::debug!(bp_id = ?bp_id, line = line, "Ignoring negative line in breakpoint changed event");
-                        }
-                    }
-                    if let Some(column) = Self::event_column(bp_id, bp.column) {
-                        moved.column = Some(column);
-                    }
+                    let moved = breakpoints.remove(pos);
                     self.breakpoints
                         .entry(new_path.to_string())
                         .or_default()
                         .push(moved);
-                    self.breakpoints.retain(|_, bps| !bps.is_empty());
-                    self.path_aliases
-                        .retain(|_, resolved| self.breakpoints.contains_key(resolved));
-                    return;
-                }
-
-                let existing = &mut breakpoints[pos];
-                existing.verified = bp.verified;
-                if let Some(line) = bp.line {
-                    if line >= 0 {
-                        existing.line = line;
-                    } else {
-                        tracing::debug!(bp_id = ?bp_id, line = line, "Ignoring negative line in breakpoint changed event");
-                    }
-                }
-                if let Some(column) = Self::event_column(bp_id, bp.column) {
-                    existing.column = Some(column);
+                    self.prune_empty_sources();
                 }
             }
             BreakpointEventReason::Removed => {
-                for breakpoints in self.breakpoints.values_mut() {
-                    if let Some(pos) = breakpoints.iter().position(|b| b.id == Some(bp_id)) {
-                        breakpoints.remove(pos);
-                        break;
-                    }
+                if let Some((_, breakpoints, pos)) = self.find_by_id(bp_id) {
+                    breakpoints.remove(pos);
                 }
-                self.breakpoints.retain(|_, bps| !bps.is_empty());
-                self.path_aliases
-                    .retain(|_, resolved| self.breakpoints.contains_key(resolved));
+                self.prune_empty_sources();
             }
             BreakpointEventReason::New => {
                 let source_path = bp.source.as_ref().and_then(|s| s.path.as_deref());
@@ -241,11 +238,7 @@ impl BreakpointState {
                     );
                     return;
                 }
-                if self
-                    .breakpoints
-                    .values()
-                    .any(|bps| bps.iter().any(|b| b.id == Some(bp_id)))
-                {
+                if self.find_by_id(bp_id).is_some() {
                     tracing::debug!(
                         bp_id = ?bp_id,
                         "Ignoring new breakpoint event for already-tracked id"

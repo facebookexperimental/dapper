@@ -80,8 +80,8 @@ impl EventChannel {
 
 pub struct ProxyRequest {
     pub(crate) client_id: ClientId,
-    pub(crate) command: Command,
-    pub(crate) result: oneshot::Sender<CommandResult>,
+    pub(crate) message: dap::Message,
+    pub(crate) result: oneshot::Sender<ListenerPayload>,
 }
 
 /// A unique identifier for a client connection. This identifier is used for
@@ -128,27 +128,6 @@ impl ProxyClient {
         }
     }
 
-    pub async fn send(&self, command: Command) -> anyhow::Result<CommandResult> {
-        let (result_sender, result_receiver) = oneshot::channel();
-        let command_handle = ProxyRequest {
-            client_id: self.id.clone(),
-            command,
-            result: result_sender,
-        };
-        self.to_server
-            .send(command_handle)
-            .context("Failed to send message from client to the server")?;
-
-        let result = result_receiver
-            .await
-            .context("Failed to receive a result in client receiver's oneshot")?;
-        Ok(result)
-    }
-
-    pub fn client_id(&self) -> &ClientId {
-        &self.id
-    }
-
     pub fn debug_session_tracker(&self) -> &DebugSessionTracker {
         &self.debug_session_tracker
     }
@@ -164,20 +143,19 @@ impl ProxyClient {
 }
 
 impl ProxyClient {
-    pub async fn status(&self) -> anyhow::Result<()> {
-        let result = self.send(Command::Status).await?;
-        match result {
-            CommandResult::Status => Ok(()),
-            _ => anyhow::bail!("Unexpected result type"),
-        }
-    }
-
     pub async fn send_message(&self, message: dap::Message) -> anyhow::Result<ListenerPayload> {
-        let result = self.send(Command::Debugger(message)).await?;
-        match result {
-            CommandResult::Debugger(payload) => Ok(payload),
-            _ => anyhow::bail!("Unexpected result type"),
-        }
+        let (result, result_receiver) = oneshot::channel();
+        self.to_server
+            .send(ProxyRequest {
+                client_id: self.id.clone(),
+                message,
+                result,
+            })
+            .context("Failed to send message from client to the server")?;
+
+        result_receiver
+            .await
+            .context("Failed to receive a result in client receiver's oneshot")
     }
 
     pub async fn send_message_with_timeout(
@@ -1015,23 +993,6 @@ pub(crate) fn merge_exception_filters(
     }
 }
 
-#[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing `Debugger` would require broader command plumbing updates"
-)]
-pub enum Command {
-    /// Control-plane liveness ping.
-    Status,
-    Debugger(dap::Message),
-}
-
-#[derive(Debug)]
-pub enum CommandResult {
-    Status,
-    Debugger(ListenerPayload),
-}
-
 #[derive(Debug)]
 pub struct ListenerPayload {
     /// Sequence number of the message submitted to the backend.
@@ -1135,9 +1096,9 @@ mod tests {
         resolved_column: Option<i64>,
     ) -> Vec<SourceBreakpoint> {
         let ProxyRequest {
-            command, result, ..
+            message, result, ..
         } = request;
-        let Command::Debugger(dap::Message::Request(dap_request)) = command else {
+        let dap::Message::Request(dap_request) = message else {
             panic!("expected a debugger request");
         };
         let request_seq = dap_request.seq;
@@ -1175,10 +1136,10 @@ mod tests {
             ))
             .expect("response receiver should remain open");
         result
-            .send(CommandResult::Debugger(ListenerPayload {
+            .send(ListenerPayload {
                 seq: request_seq,
                 messages,
-            }))
+            })
             .expect("client should wait for the response");
         specs
     }
@@ -1547,7 +1508,7 @@ mod tests {
                 let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
                 let messages = msg_tx.subscribe();
 
-                let Command::Debugger(dap::Message::Request(dap_req)) = &req.command else {
+                let dap::Message::Request(dap_req) = &req.message else {
                     panic!("expected a debugger request");
                 };
                 let response = dap::Response {
@@ -1559,10 +1520,10 @@ mod tests {
                 };
                 msg_tx.send(Arc::new(response.into())).unwrap();
 
-                let _ = req.result.send(CommandResult::Debugger(ListenerPayload {
+                let _ = req.result.send(ListenerPayload {
                     seq: dap_req.seq,
                     messages,
-                }));
+                });
             }
         });
 
@@ -1582,7 +1543,7 @@ mod tests {
                 let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
                 let messages = msg_tx.subscribe();
 
-                let Command::Debugger(dap::Message::Request(dap_req)) = &req.command else {
+                let dap::Message::Request(dap_req) = &req.message else {
                     panic!("expected a debugger request");
                 };
                 let response = dap::Response {
@@ -1594,10 +1555,10 @@ mod tests {
                 };
                 msg_tx.send(Arc::new(response.into())).unwrap();
 
-                let _ = req.result.send(CommandResult::Debugger(ListenerPayload {
+                let _ = req.result.send(ListenerPayload {
                     seq: dap_req.seq,
                     messages,
-                }));
+                });
             }
         });
     }
@@ -1722,7 +1683,7 @@ mod tests {
                 let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
                 let messages = msg_tx.subscribe();
 
-                let Command::Debugger(dap::Message::Request(dap_req)) = &req.command else {
+                let dap::Message::Request(dap_req) = &req.message else {
                     panic!("expected a debugger request");
                 };
                 let response = dap::Response {
@@ -1734,10 +1695,10 @@ mod tests {
                 };
                 msg_tx.send(Arc::new(response.into())).unwrap();
 
-                let _ = req.result.send(CommandResult::Debugger(ListenerPayload {
+                let _ = req.result.send(ListenerPayload {
                     seq: dap_req.seq,
                     messages,
-                }));
+                });
             }
         });
 

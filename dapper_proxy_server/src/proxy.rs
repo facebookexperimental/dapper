@@ -25,8 +25,6 @@ use tokio::task::JoinSet;
 
 use crate::backend::Backend;
 use crate::client::ClientId;
-use crate::client::Command;
-use crate::client::CommandResult;
 use crate::client::EventChannel;
 use crate::client::ListenerPayload;
 use crate::client::ProxyClient;
@@ -301,64 +299,54 @@ impl ProxyServer {
         backend_seq: Arc<AtomicI64>,
         debug_session_tracker: DebugSessionTracker,
     ) -> anyhow::Result<()> {
-        while let Some(request) = to_backend_rx.recv().await {
-            let client_id = &request.client_id;
-            tracing::debug!("Processing request from client: {client_id:?}");
+        while let Some(ProxyRequest {
+            client_id,
+            message,
+            result,
+        }) = to_backend_rx.recv().await
+        {
+            tracing::debug!("Forwarding message to backend from client {client_id:?}: {message:?}");
 
-            let result = match request.command {
-                Command::Status => CommandResult::Status,
-                Command::Debugger(message) => {
-                    tracing::debug!(
-                        "Forwarding message to backend from client {client_id:?}: {message:?}"
-                    );
+            let mut seq = Seq::default();
+            let listener = to_listeners_tx.subscribe();
+            match message {
+                Message::Request(mut message) => {
+                    seq = Seq(backend_seq.fetch_add(1, SeqCst));
+                    message.seq = seq;
 
-                    let mut seq = Seq::default();
-                    let listener = to_listeners_tx.subscribe();
-                    match message {
-                        Message::Request(mut message) => {
-                            seq = Seq(backend_seq.fetch_add(1, SeqCst));
-                            message.seq = seq;
-
-                            // Secondary clients see backend seqs directly via
-                            // `ListenerPayload { seq, .. }` from previous
-                            // requests they made and are required to build any
-                            // seq references (e.g. `cancel.requestId`) using
-                            // those backend-frame values. There is no type-
-                            // level enforcement: do NOT forward `requestId`
-                            // values from any external source (e.g. an MCP
-                            // tool input piping a user-specified seq) through
-                            // this path without translation. See the doc on
-                            // `translate_cancel` for the matching invariant.
-                            debug_session_tracker.track_execution_request_to_backend(&message);
-                            let msg: Message = message.into();
-                            debug_session_tracker
-                                .track_message_from_client(&msg, ClientType::Secondary);
-                            tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
-                            let mut writer = backend_write.lock().await;
-                            writer.send(msg).await?;
-                        }
-                        Message::Response(response) => {
-                            let msg: Message = response.into();
-                            tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
-
-                            let mut writer = backend_write.lock().await;
-                            writer.send(msg).await?;
-                        }
-                        Message::Event(_) | Message::Custom(_) => {
-                            tracing::warn!(
-                                "Unexpected message type from client {client_id:?}, ignoring"
-                            );
-                        }
-                    }
-                    let result_payload = ListenerPayload {
-                        seq,
-                        messages: listener,
-                    };
-
-                    CommandResult::Debugger(result_payload)
+                    // Secondary clients see backend seqs directly via
+                    // `ListenerPayload { seq, .. }` from previous
+                    // requests they made and are required to build any
+                    // seq references (e.g. `cancel.requestId`) using
+                    // those backend-frame values. There is no type-
+                    // level enforcement: do NOT forward `requestId`
+                    // values from any external source (e.g. an MCP
+                    // tool input piping a user-specified seq) through
+                    // this path without translation. See the doc on
+                    // `translate_cancel` for the matching invariant.
+                    debug_session_tracker.track_execution_request_to_backend(&message);
+                    let msg: Message = message.into();
+                    debug_session_tracker.track_message_from_client(&msg, ClientType::Secondary);
+                    tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
+                    let mut writer = backend_write.lock().await;
+                    writer.send(msg).await?;
                 }
+                Message::Response(response) => {
+                    let msg: Message = response.into();
+                    tracing::trace!(target: "dap", source = %MessageSource::ControlPlane, message = ?msg);
+
+                    let mut writer = backend_write.lock().await;
+                    writer.send(msg).await?;
+                }
+                Message::Event(_) | Message::Custom(_) => {
+                    tracing::warn!("Unexpected message type from client {client_id:?}, ignoring");
+                }
+            }
+            let payload = ListenerPayload {
+                seq,
+                messages: listener,
             };
-            if let Err(r) = request.result.send(result) {
+            if let Err(r) = result.send(payload) {
                 tracing::error!("Client disconnected before receiving result: {r:?}");
             }
         }
@@ -465,8 +453,8 @@ impl ProxyServer {
     }
 
     /// Reads messages from the main VS Code client and writes them directly
-    /// to the backend debug adapter. This bypasses `to_backend_tx` because
-    /// the main client only sends DAP messages, never control commands.
+    /// to the backend debug adapter. Unlike secondary clients, it needs no
+    /// listener: its responses are routed back through the seq remapper.
     async fn main_client_to_backend(
         mut main_client: ReadChannel,
         backend_write: SharedBackendWriter,

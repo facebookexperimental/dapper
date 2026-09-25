@@ -18,8 +18,12 @@ use dapper_dap_protocol::protocol::Event;
 use dapper_dap_protocol::protocol::Request;
 use dapper_dap_protocol::protocol::Response;
 use dapper_dap_protocol::requests::ContinueArguments;
+use dapper_dap_protocol::requests::NextArguments;
 use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::requests::ReverseContinueArguments;
+use dapper_dap_protocol::requests::StepBackArguments;
+use dapper_dap_protocol::requests::StepInArguments;
+use dapper_dap_protocol::requests::StepOutArguments;
 use dapper_dap_protocol::responses::ResponseBody;
 
 use super::tracker_inner::DebugSessionTrackerInner;
@@ -31,26 +35,6 @@ pub struct PendingExecutionRequest {
     /// A stop or exit covering this thread arrived first. DAP doesn't order a resume response
     /// before the events it causes, so such a late response must not report the thread running.
     superseded: bool,
-}
-
-impl From<&ContinueArguments> for PendingExecutionRequest {
-    fn from(args: &ContinueArguments) -> Self {
-        Self {
-            thread_id: args.thread_id,
-            single_thread: args.single_thread,
-            superseded: false,
-        }
-    }
-}
-
-impl From<&ReverseContinueArguments> for PendingExecutionRequest {
-    fn from(args: &ReverseContinueArguments) -> Self {
-        Self {
-            thread_id: args.thread_id,
-            single_thread: args.single_thread,
-            superseded: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,16 +250,45 @@ impl ExecutionState {
                     this.stopped_during_restart = false;
                 });
             }
-            RequestCommand::Continue(args) => {
+            RequestCommand::Continue(ContinueArguments {
+                thread_id,
+                single_thread,
+                ..
+            })
+            | RequestCommand::ReverseContinue(ReverseContinueArguments {
+                thread_id,
+                single_thread,
+                ..
+            })
+            | RequestCommand::Next(NextArguments {
+                thread_id,
+                single_thread,
+                ..
+            })
+            | RequestCommand::StepIn(StepInArguments {
+                thread_id,
+                single_thread,
+                ..
+            })
+            | RequestCommand::StepOut(StepOutArguments {
+                thread_id,
+                single_thread,
+                ..
+            })
+            | RequestCommand::StepBack(StepBackArguments {
+                thread_id,
+                single_thread,
+                ..
+            }) => {
                 Self::with_execution_state(inner, |this| {
-                    this.pending_execution_requests
-                        .insert(request.seq, PendingExecutionRequest::from(args));
-                });
-            }
-            RequestCommand::ReverseContinue(args) => {
-                Self::with_execution_state(inner, |this| {
-                    this.pending_execution_requests
-                        .insert(request.seq, PendingExecutionRequest::from(args));
+                    this.pending_execution_requests.insert(
+                        request.seq,
+                        PendingExecutionRequest {
+                            thread_id: *thread_id,
+                            single_thread: *single_thread,
+                            superseded: false,
+                        },
+                    );
                 });
             }
             _ => {}
@@ -308,7 +321,11 @@ impl ExecutionState {
                     }
                 });
             }
-            ResponseBody::ReverseContinue => {
+            ResponseBody::ReverseContinue
+            | ResponseBody::Next
+            | ResponseBody::StepIn
+            | ResponseBody::StepOut
+            | ResponseBody::StepBack => {
                 Self::with_execution_state_and_capabilities(inner, |this, capabilities| {
                     let pending = this
                         .pending_execution_requests
@@ -330,13 +347,13 @@ impl ExecutionState {
                         }
 
                         tracing::debug!(
-                            command = "reverseContinue",
+                            command = %response.command_name(),
                             thread_id = pending.thread_id.as_i64(),
                             single_thread = ?pending.single_thread,
                             supports_single_thread,
                             all_threads_continued = all_threads_continued,
                             state = ?this.current,
-                            "Execution state changed from reverseContinue response"
+                            "Execution state changed from response"
                         );
                     }
                 });
@@ -1228,6 +1245,100 @@ mod tests {
         let state = es(&inner);
         assert!(!state.is_thread_stopped(1.into()));
         assert!(state.is_thread_stopped(2.into()));
+    }
+
+    #[test]
+    fn test_step_responses_transition_to_running() {
+        let thread_id = ThreadId(1);
+        for (command, body) in [
+            (
+                RequestCommand::Next(NextArguments {
+                    thread_id,
+                    ..Default::default()
+                }),
+                ResponseBody::Next,
+            ),
+            (
+                RequestCommand::StepIn(StepInArguments {
+                    thread_id,
+                    ..Default::default()
+                }),
+                ResponseBody::StepIn,
+            ),
+            (
+                RequestCommand::StepOut(StepOutArguments {
+                    thread_id,
+                    ..Default::default()
+                }),
+                ResponseBody::StepOut,
+            ),
+            (
+                RequestCommand::StepBack(StepBackArguments {
+                    thread_id,
+                    ..Default::default()
+                }),
+                ResponseBody::StepBack,
+            ),
+        ] {
+            let command_name = body.command_name().to_string();
+            let inner = make_test_inner();
+            track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, true));
+            track_from(
+                &inner,
+                &Message::Request(Request {
+                    seq: Seq(10),
+                    command,
+                }),
+            );
+            track_to(
+                &inner,
+                &Message::Response(Response {
+                    seq: 200.into(),
+                    request_seq: Seq(10),
+                    success: true,
+                    message: None,
+                    body,
+                }),
+            );
+
+            assert!(
+                es(&inner).is_all_running(),
+                "a {command_name} response should mark the debuggee running"
+            );
+        }
+    }
+
+    #[test]
+    fn test_step_stop_before_next_response_is_not_overwritten() {
+        let inner = make_test_inner();
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, true));
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: Seq(10),
+                command: RequestCommand::Next(NextArguments {
+                    thread_id: ThreadId(1),
+                    ..Default::default()
+                }),
+            }),
+        );
+        track_to(&inner, &stopped(StoppedReason::Step, 1, true));
+        track_to(
+            &inner,
+            &Message::Response(Response {
+                seq: 200.into(),
+                request_seq: Seq(10),
+                success: true,
+                message: None,
+                body: ResponseBody::Next,
+            }),
+        );
+
+        assert!(es(&inner).is_all_stopped());
+        assert_eq!(
+            stop_info(&inner).map(|info| info.reason),
+            Some(StoppedReason::Step)
+        );
     }
 
     #[test]

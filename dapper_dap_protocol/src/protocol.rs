@@ -244,8 +244,7 @@ impl Message {
             let bytes_read = (&mut *input_buffer)
                 .take(MAX_DAP_HEADER_LINE_SIZE as u64)
                 .read_line(&mut line_buffer)
-                .await
-                .map_err(ProtocolError::IoError)?;
+                .await?;
 
             if bytes_read == 0 {
                 if header_count > 0 {
@@ -321,14 +320,10 @@ impl Message {
         }
 
         let mut content = vec![0; content_length];
-        input_buffer
-            .read_exact(&mut content)
-            .await
-            .map_err(ProtocolError::IoError)?;
+        input_buffer.read_exact(&mut content).await?;
 
-        let content =
-            std::str::from_utf8(content.as_slice()).map_err(ProtocolError::DecodingError)?;
-        let message: Self = serde_json::from_str(content).map_err(ProtocolError::SerdeError)?;
+        let content = std::str::from_utf8(content.as_slice())?;
+        let message: Self = serde_json::from_str(content)?;
 
         Ok(Some(message))
     }
@@ -342,7 +337,7 @@ impl Message {
     /// for these fields — they should either be omitted or be a valid object.
     /// This method strips those null entries.
     pub fn to_value(&self) -> ProtocolResult<Value> {
-        let mut val = serde_json::to_value(self).map_err(ProtocolError::SerdeError)?;
+        let mut val = serde_json::to_value(self)?;
         if let Value::Object(ref mut map) = val {
             for key in &["arguments", "body"] {
                 if map.get(*key).is_some_and(Value::is_null) {
@@ -355,12 +350,11 @@ impl Message {
 
     pub fn format(&self) -> ProtocolResult<Vec<u8>> {
         let val = self.to_value()?;
-        let json_bytes = serde_json::to_vec(&val).map_err(ProtocolError::SerdeError)?;
+        let json_bytes = serde_json::to_vec(&val)?;
 
         // "Content-Length: \r\n\r\n" (20 bytes) + up to 10 digits for the length value
         let mut buf = Vec::with_capacity(32 + json_bytes.len());
-        write!(buf, "Content-Length: {}\r\n\r\n", json_bytes.len())
-            .map_err(ProtocolError::IoError)?;
+        write!(buf, "Content-Length: {}\r\n\r\n", json_bytes.len())?;
         buf.extend_from_slice(&json_bytes);
         Ok(buf)
     }

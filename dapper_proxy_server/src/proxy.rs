@@ -4,6 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::collections::HashMap;
+use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -14,6 +15,7 @@ use dapper_config::DapperConfig;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::protocol as dap;
 use dapper_dap_protocol::protocol::Message;
+use dapper_dap_protocol::protocol::ProtocolError;
 use dapper_dap_protocol::requests::RequestCommand;
 use dapper_session::SessionId;
 use dapper_session::SessionStore;
@@ -372,7 +374,7 @@ impl ProxyServer {
     }
 
     async fn backend_to_main_client_and_listeners(
-        mut backend_read: ReadChannel,
+        backend_read: ReadChannel,
         mut event_channel_rx: mpsc::UnboundedReceiver<Message>,
         mut main_client: WriteChannel,
         to_listeners_tx: broadcast::Sender<Arc<Message>>,
@@ -381,11 +383,15 @@ impl ProxyServer {
         session_stamp: Option<SessionId>,
     ) -> anyhow::Result<()> {
         let mut event_seq_counter: i64 = 1;
+        // `Message::read` is not cancel-safe: restarting it whenever an injected
+        // event wins the `select!` would drop a half-read adapter message.
+        let mut backend_recv = pin!(recv_owned(backend_read));
 
         loop {
             let (mut message, source) = tokio::select! {
                 // Messages from backend process (debugger)
-                result = backend_read.recv() => {
+                (read, result) = &mut backend_recv => {
+                    backend_recv.set(recv_owned(read));
                     match result? {
                         Some(msg) => (msg, MessageSource::Backend),
                         None => break, // Backend closed
@@ -555,6 +561,13 @@ impl ProxyServer {
     }
 }
 
+async fn recv_owned(
+    mut read: ReadChannel,
+) -> (ReadChannel, Result<Option<Message>, ProtocolError>) {
+    let result = read.recv().await;
+    (read, result)
+}
+
 #[derive(strum::Display)]
 enum DapSource {
     ControlPlane,
@@ -584,6 +597,7 @@ mod tests {
     use dapper_session::NavigateResult;
     use dapper_session::NavigationType;
     use dapper_session::Port;
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
     use crate::backend::Backend;
@@ -609,27 +623,7 @@ mod tests {
     impl TestProxy {
         fn new() -> Self {
             let (backend_server_side, mock_backend) = DuplexChannel::in_memory(4096);
-            let (main_client_server_side, main_client) = DuplexChannel::in_memory(4096);
-
-            let backend = Backend {
-                duplex: backend_server_side,
-                handle: None,
-            };
-            let config = DapperConfig::default();
-            let sessions = dapper_session::SessionStore::at(
-                dapper_session::get_user_temp_dir().join("proxy_test_sessions"),
-            );
-            let proxy_server = ProxyServer::new(
-                backend,
-                config,
-                Some(sessions),
-                SessionId::from("test-session"),
-                None,
-            );
-
-            let proxy_client = proxy_server.create_client(ClientId::new("test-control"));
-
-            let handle = tokio::spawn(proxy_server.run(main_client_server_side));
+            let (main_client, proxy_client, handle) = spawn_proxy(backend_server_side);
 
             Self {
                 main_client,
@@ -638,6 +632,38 @@ mod tests {
                 handle,
             }
         }
+    }
+
+    fn spawn_proxy(
+        backend: DuplexChannel,
+    ) -> (
+        DuplexChannel,
+        ProxyClient,
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+    ) {
+        let (main_client_server_side, main_client) = DuplexChannel::in_memory(4096);
+
+        let backend = Backend {
+            duplex: backend,
+            handle: None,
+        };
+        let config = DapperConfig::default();
+        let sessions = dapper_session::SessionStore::at(
+            dapper_session::get_user_temp_dir().join("proxy_test_sessions"),
+        );
+        let proxy_server = ProxyServer::new(
+            backend,
+            config,
+            Some(sessions),
+            SessionId::from("test-session"),
+            None,
+        );
+
+        let proxy_client = proxy_server.create_client(ClientId::new("test-control"));
+
+        let handle = tokio::spawn(proxy_server.run(main_client_server_side));
+
+        (main_client, proxy_client, handle)
     }
 
     fn make_threads_request(seq: i64) -> Message {
@@ -1341,6 +1367,51 @@ mod tests {
                 );
             }
             other => panic!("Expected Event, got {:?}", other.message_type()),
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_event_does_not_drop_a_partially_read_adapter_message() {
+        let first = make_stopped_event().format().unwrap();
+        let second = Message::from(Event::new(EventKind::Terminated(None)))
+            .format()
+            .unwrap();
+        let (head, tail) = first.split_at(first.len() - 2);
+
+        // With room for exactly `head`, the second write parks until the proxy
+        // has pulled `head` into its in-flight read.
+        let (proxy_side, mut adapter) = tokio::io::duplex(head.len());
+        let (proxy_read, proxy_write) = tokio::io::split(proxy_side);
+        let (mut main_client, proxy_client, _handle) = spawn_proxy(DuplexChannel::from_streams(
+            Box::new(proxy_write),
+            Box::new(proxy_read),
+        ));
+        adapter.write_all(head).await.unwrap();
+        adapter.write_all(&tail[..1]).await.unwrap();
+
+        proxy_client
+            .event_channel()
+            .send_event(EventKind::Initialized(None))
+            .unwrap();
+        let injected = main_client.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&injected, Message::Event(e) if matches!(e.event, EventKind::Initialized(_))),
+            "the injected event should win the race, got {injected:?}"
+        );
+
+        adapter.write_all(&tail[1..]).await.unwrap();
+        adapter.write_all(&second).await.unwrap();
+        for expected in ["stopped", "terminated"] {
+            let message =
+                tokio::time::timeout(std::time::Duration::from_secs(5), main_client.recv())
+                    .await
+                    .expect("the adapter's messages should reach the main client")
+                    .unwrap()
+                    .expect("the proxy should still be running");
+            let Message::Event(event) = message else {
+                panic!("expected an event, got {:?}", message.message_type());
+            };
+            assert_eq!(event.event_name(), expected);
         }
     }
 

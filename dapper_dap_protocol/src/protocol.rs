@@ -248,7 +248,7 @@ impl Message {
                 .map_err(ProtocolError::IoError)?;
 
             if bytes_read == 0 {
-                if content_length.is_some() {
+                if header_count > 0 {
                     return Err(ProtocolError::IoError(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "unexpected EOF while reading headers",
@@ -259,9 +259,8 @@ impl Message {
 
             // If we hit the per-line cap without seeing `\n`, the line is
             // oversized. A *short* line without `\n` means the stream ended
-            // mid-line; we let it fall through to the normal header-parse
-            // path (which will either accept a parsable line or surface an
-            // unexpected-EOF on the next read).
+            // mid-line; it is parsed like any other header line, and the next
+            // read reports the EOF as unexpected.
             //
             // Note: DAP headers are ASCII in practice, but if the cap ever
             // splits a multi-byte UTF-8 sequence, `read_line` will surface

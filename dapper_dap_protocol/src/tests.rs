@@ -1696,6 +1696,19 @@ async fn test_wire_eof_returns_none() {
 }
 
 #[tokio::test]
+async fn test_wire_eof_after_partial_headers_is_unexpected() {
+    for data in ["X-Custom: v\r\n", "X-Custom: v"] {
+        let mut cursor = tokio::io::BufReader::new(data.as_bytes());
+        match Message::read(&mut cursor).await {
+            Err(ProtocolError::IoError(err)) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "{data:?}");
+            }
+            other => panic!("Expected IoError for {data:?}, got: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_wire_unicode_content_length() {
     let unicode_expr = "\u{1F600}\u{1F4A9}\u{00E9}";
     let original = Message::Request(Request::new(RequestCommand::Evaluate(EvaluateArguments {

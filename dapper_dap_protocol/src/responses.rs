@@ -393,9 +393,8 @@ pub struct UnknownResponseBody {
     pub extra: IndexMap<String, Value>,
 }
 
-/// Failure of a derived `TryFrom<ResponseBody>`: the adapter answered with a
-/// body for a different command. Aliased here so callers can name it without
-/// taking a `derive_more` dependency; `input` carries the original body.
+/// Failure of a derived `TryFrom<ResponseBody>`: the body belongs to another command, or is this
+/// command's but failed to parse and landed in `Unknown`. `input` carries the original body.
 pub type ResponseBodyMismatch = derive_more::TryIntoError<ResponseBody>;
 
 impl ResponseBody {

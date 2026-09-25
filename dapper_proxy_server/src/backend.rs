@@ -6,7 +6,6 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::bail;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::BufReader;
@@ -46,15 +45,11 @@ impl Backend {
         })
     }
 
-    pub async fn from_process(args: &[impl AsRef<str>], new_session: bool) -> anyhow::Result<Self> {
-        if args.is_empty() {
-            bail!("No arguments provided");
-        }
-        let program = args[0].as_ref().to_owned();
-        let args = args[1..]
-            .iter()
-            .map(|s| s.as_ref().to_owned())
-            .collect::<Vec<_>>();
+    pub async fn from_process(
+        program: &str,
+        args: &[String],
+        new_session: bool,
+    ) -> anyhow::Result<Self> {
         tracing::debug!("Backend: starting {} {:?}", program, args);
 
         let mut cmd = Command::new(program);

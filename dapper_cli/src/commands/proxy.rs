@@ -161,10 +161,8 @@ pub struct Proxy {
 async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend> {
     match spawn_config {
         SpawnConfig::Stdio(cfg) => {
-            let mut cmd = vec![cfg.cmd.clone()];
-            cmd.extend(cfg.args.clone());
-            tracing::info!("Starting debug adapter process: {:?}", cmd);
-            Backend::from_process(&cmd, cfg.new_session).await
+            tracing::info!("Starting debug adapter process: {} {:?}", cfg.cmd, cfg.args);
+            Backend::from_process(&cfg.cmd, &cfg.args, cfg.new_session).await
         }
         SpawnConfig::Tcp(cfg) => {
             tracing::info!("Connecting to debug adapter at {}", cfg.addr);

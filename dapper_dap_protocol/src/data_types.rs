@@ -484,25 +484,6 @@ pub struct Module {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DapMessage {
-    #[serde(default)]
-    pub id: i64,
-    #[serde(default)]
-    pub format: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variables: Option<IndexMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub send_telemetry: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub show_user: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url_label: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Checksum {
     #[serde(default)]
     pub algorithm: ChecksumAlgorithm,

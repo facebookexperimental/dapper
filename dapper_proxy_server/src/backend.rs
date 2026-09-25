@@ -10,6 +10,8 @@ use anyhow::bail;
 use dapper_dap_protocol::protocol::Message;
 use dapper_dap_protocol::protocol::ProtocolError;
 use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncRead;
+use tokio::io::BufReader;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
@@ -109,15 +111,11 @@ impl Backend {
 
         let duplex = DuplexChannel::from_streams(Box::new(stdin), Box::new(stdout));
 
-        let log_handle = tokio::spawn(async move {
-            let mut reader = tokio::io::BufReader::new(stderr);
-            let mut line = String::new();
-            while let Ok(size) = reader.read_line(&mut line).await {
-                if (size == 0) && (line.is_empty()) {
-                    break;
-                }
-                tracing::warn!("Backend stderr: {}", line);
-                line.clear();
+        tokio::spawn(async move {
+            if let Err(e) =
+                relay_lines(stderr, |line| tracing::warn!("Backend stderr: {line}")).await
+            {
+                tracing::warn!("Failed to read backend stderr: {e}");
             }
         });
         let handle = tokio::spawn(async move {
@@ -130,9 +128,6 @@ impl Backend {
                     tracing::error!("Backend process exited with code {:?}", result);
                 }
             }
-
-            // Cleanup: abort log reader
-            log_handle.abort();
 
             // Cleanup: kill process if still running
             if let Err(e) = process.kill().await {
@@ -154,5 +149,35 @@ impl Backend {
 
     pub async fn recv(&mut self) -> Result<Option<Message>, ProtocolError> {
         self.duplex.recv().await
+    }
+}
+
+async fn relay_lines(
+    reader: impl AsyncRead + Unpin,
+    mut on_line: impl FnMut(&str),
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).await? > 0 {
+        on_line(String::from_utf8_lossy(&line).trim_end());
+        line.clear();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn relay_lines_continues_past_invalid_utf8() {
+        let mut lines = Vec::new();
+        relay_lines(&b"bad \xff byte\nnext\n"[..], |line| {
+            lines.push(line.to_owned())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(lines, ["bad \u{fffd} byte", "next"]);
     }
 }

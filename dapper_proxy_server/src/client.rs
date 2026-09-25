@@ -269,6 +269,10 @@ impl ProxyClient {
         levels: Option<i64>,
     ) -> anyhow::Result<dapper_session::StackTraceResult> {
         let effective_start_frame = start_frame.unwrap_or(0);
+        anyhow::ensure!(
+            effective_start_frame >= 0,
+            "`startFrame` must not be negative, got {effective_start_frame}"
+        );
         let effective_levels = levels.unwrap_or(self.config.stack_trace.max_frames as i64);
         let frames_to_request = helpers::levels_to_request(effective_levels);
 
@@ -857,7 +861,7 @@ pub(crate) mod helpers {
 
     pub(crate) fn levels_to_request(effective_levels: i64) -> i64 {
         if effective_levels > 0 {
-            effective_levels + 1
+            effective_levels.saturating_add(1)
         } else {
             0
         }
@@ -1061,6 +1065,11 @@ mod tests {
             "0 levels means unbounded: request 0 so the adapter returns all frames"
         );
         assert_eq!(helpers::levels_to_request(-1), 0);
+        assert_eq!(
+            helpers::levels_to_request(i64::MAX),
+            i64::MAX,
+            "the probe frame must not overflow"
+        );
     }
 
     #[test]
@@ -1621,6 +1630,18 @@ mod tests {
             err.to_string(),
             "Unexpected response body for threads: got `next`"
         );
+    }
+
+    #[tokio::test]
+    async fn stack_trace_rejects_a_negative_start_frame() {
+        let (client, _rx) = make_client_with_caps(None);
+
+        let err = client
+            .stack_trace(ThreadId(1), Some(-1), None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "`startFrame` must not be negative, got -1");
     }
 
     #[tokio::test]

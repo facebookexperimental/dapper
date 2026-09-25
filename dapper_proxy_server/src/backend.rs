@@ -7,8 +7,6 @@ use std::path::Path;
 use std::process::Stdio;
 
 use anyhow::bail;
-use dapper_dap_protocol::protocol::Message;
-use dapper_dap_protocol::protocol::ProtocolError;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::BufReader;
@@ -18,8 +16,8 @@ use tokio::task::JoinHandle;
 use crate::transport::DuplexChannel;
 
 pub struct Backend {
-    pub duplex: DuplexChannel,
-    pub handle: Option<JoinHandle<anyhow::Result<()>>>,
+    pub(crate) duplex: DuplexChannel,
+    pub(crate) handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 impl Backend {
@@ -141,14 +139,6 @@ impl Backend {
             duplex,
             handle: Some(handle),
         })
-    }
-
-    pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
-        self.duplex.send(message).await
-    }
-
-    pub async fn recv(&mut self) -> Result<Option<Message>, ProtocolError> {
-        self.duplex.recv().await
     }
 }
 

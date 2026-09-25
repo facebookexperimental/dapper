@@ -38,7 +38,7 @@ pub enum StoppedReason {
     #[strum(serialize = "instruction breakpoint")]
     InstructionBreakpoint,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -52,7 +52,7 @@ pub enum OutputCategory {
     Stderr,
     Telemetry,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -64,7 +64,7 @@ pub enum OutputGroup {
     StartCollapsed,
     End,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -77,7 +77,7 @@ pub enum InvalidatedAreas {
     Threads,
     Variables,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -98,7 +98,7 @@ pub enum ThreadReason {
     Started,
     Exited,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -120,7 +120,7 @@ pub enum BreakpointEventReason {
     New,
     Removed,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -132,7 +132,7 @@ pub enum SourcePresentationHint {
     Emphasize,
     Deemphasize,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -144,7 +144,7 @@ pub enum StackFramePresentationHint {
     Label,
     Subtle,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -157,7 +157,7 @@ pub enum ScopePresentationHint {
     Registers,
     ReturnValue,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -177,7 +177,7 @@ pub enum VariablePresentationHintKind {
     Virtual,
     DataBreakpoint,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -194,7 +194,7 @@ pub enum VariablePresentationHintAttributes {
     HasSideEffects,
     HasDataBreakpoint,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -208,7 +208,7 @@ pub enum VariablePresentationHintVisibility {
     Internal,
     Final,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -237,7 +237,7 @@ pub enum ChecksumAlgorithm {
     #[strum(serialize = "timestamp")]
     Timestamp,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -252,7 +252,7 @@ pub enum ColumnDescriptorType {
     #[strum(serialize = "unixTimestampUTC")]
     UnixTimestampUtc,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -282,7 +282,7 @@ pub enum CompletionItemType {
     #[strum(serialize = "customcolor")]
     CustomColor,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -294,7 +294,7 @@ pub enum DataBreakpointAccessType {
     Write,
     ReadWrite,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -317,7 +317,7 @@ pub enum ExceptionBreakMode {
     Unhandled,
     UserUnhandled,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -329,7 +329,7 @@ pub enum SteppingGranularity {
     Line,
     Instruction,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -343,7 +343,7 @@ pub enum EvaluateContext {
     Clipboard,
     Variables,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -354,7 +354,7 @@ pub enum PathFormat {
     Path,
     Uri,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -365,7 +365,7 @@ pub enum DisassembledInstructionPresentationHint {
     Normal,
     Invalid,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -387,7 +387,7 @@ pub enum ModuleEventReason {
     Changed,
     Removed,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -409,7 +409,7 @@ pub enum LoadedSourceEventReason {
     Changed,
     Removed,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -421,7 +421,7 @@ pub enum ProcessStartMethod {
     Attach,
     AttachForSuspendedLaunch,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -432,7 +432,7 @@ pub enum RunInTerminalKind {
     Integrated,
     External,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -453,7 +453,7 @@ pub enum StartDebuggingType {
     Launch,
     Attach,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -464,7 +464,7 @@ pub enum BreakpointReason {
     Pending,
     Failed,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -475,7 +475,7 @@ pub enum VariablesFilter {
     Indexed,
     Named,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -488,7 +488,7 @@ pub enum BreakpointModeApplicability {
     Data,
     Instruction,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
 }
 
@@ -499,6 +499,22 @@ pub enum StartDebuggingOutputPresentation {
     Separate,
     MergeWithParent,
     #[serde(untagged)]
-    #[strum(to_string = "{0}")]
+    #[strum(transparent)]
     Other(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn other_variants_render_their_value() {
+        let category = OutputCategory::Other("custom".to_owned());
+        assert_eq!(category.as_ref(), "custom");
+        assert_eq!(category.to_string(), "custom");
+
+        let reason = StoppedReason::Other("signal".to_owned());
+        assert_eq!(reason.as_ref(), "signal");
+        assert_eq!(reason.to_string(), "signal");
+    }
 }

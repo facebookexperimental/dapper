@@ -212,7 +212,8 @@ pub struct ExceptionInfoResponseBody {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataBreakpointInfoResponseBody {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // The spec requires `dataId` even when it is null, so `None` must not be skipped.
+    #[serde(default)]
     pub data_id: Option<String>,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1992,6 +1992,35 @@ fn test_configuration_done_none_should_not_serialize_arguments_null() {
     }
 }
 
+#[test]
+fn test_data_breakpoint_info_null_data_id_survives_reserialization() {
+    let msg = parse_message(json!({
+        "seq": 7,
+        "type": "response",
+        "request_seq": 6,
+        "success": true,
+        "command": "dataBreakpointInfo",
+        "body": {
+            "dataId": null,
+            "description": "no data breakpoint available"
+        }
+    }));
+    let Message::Response(response) = &msg else {
+        panic!("Expected Response");
+    };
+    let ResponseBody::DataBreakpointInfo(body) = &response.body else {
+        panic!("Expected DataBreakpointInfo body, got {:?}", response.body);
+    };
+    assert_eq!(body.data_id, None);
+
+    let json_val = msg.to_value().unwrap();
+    assert_eq!(
+        json_val["body"].get("dataId"),
+        Some(&serde_json::Value::Null),
+        "the spec requires dataId, so None must serialize as null: {json_val}"
+    );
+}
+
 // -- i64_from_value tests --
 
 #[test]

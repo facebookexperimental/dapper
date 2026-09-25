@@ -84,8 +84,7 @@ pub struct ProxyRequest {
     pub(crate) result: oneshot::Sender<ListenerPayload>,
 }
 
-/// A unique identifier for a client connection. This identifier is used for
-/// message routing and sequence number remapping.
+/// Names a client in the proxy's logs.
 ///
 /// NOTE: use textual ID for easier debugging.
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -999,7 +998,8 @@ pub struct ListenerPayload {
     /// This could be a real sequence number for the request messages or 0 for
     /// other types of messages, and is implementation dependent.
     pub seq: Seq,
-    /// Stream of messages from the server directly before the request was submitted.
+    /// Messages relayed from the adapter, plus injected events, starting just before the
+    /// request was sent so its response can't be missed.
     /// Uses Arc<Message> so receivers get a cheap refcount clone instead of deep-cloning.
     pub messages: broadcast::Receiver<Arc<dap::Message>>,
 }

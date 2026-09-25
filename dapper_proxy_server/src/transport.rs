@@ -132,7 +132,7 @@ impl DuplexChannel {
 
     /// Create a pair of connected in-memory DuplexChannels that can be used for
     /// internal/headless communication (in contrast to external communication
-    /// over TCP/UDP/Unix sockets)
+    /// over stdio, TCP, or Unix sockets)
     pub fn in_memory(buffer_size_bytes: usize) -> (Self, Self) {
         let (client_to_server_tx, client_to_server_rx) = tokio::io::duplex(buffer_size_bytes);
         let (server_to_client_tx, server_to_client_rx) = tokio::io::duplex(buffer_size_bytes);

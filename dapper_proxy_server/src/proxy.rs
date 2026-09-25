@@ -149,7 +149,7 @@ enum MessageSource {
 
 pub struct ProxyServer {
     backend: Backend,
-    /// This receiver is the single stream of messages that will be consumed by the backend
+    /// Requests from secondary clients; the main client writes to the backend directly.
     to_backend_rx: mpsc::UnboundedReceiver<ProxyRequest>,
     /// This sender will be cloned and passed to the client
     to_backend_tx: mpsc::UnboundedSender<ProxyRequest>,

@@ -9,6 +9,7 @@ mod execution_state;
 mod output_state;
 mod tracker_inner;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -466,9 +467,12 @@ impl DebugSessionTracker {
 
             let (output, output_history_file) =
                 if ctx.max_output_lines > 0 && inner.output_state.has_buffered_output() {
-                    let path = inner.output_state.output_file_path().to_path_buf();
+                    let path = inner
+                        .output_state
+                        .history_file_path()
+                        .map(Path::to_path_buf);
                     let buffered = inner.output_state.take_buffered_output();
-                    (buffered, Some(path))
+                    (buffered, path)
                 } else {
                     (Default::default(), None)
                 };

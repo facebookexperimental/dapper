@@ -29,12 +29,19 @@ fn get_dapper_output_dir() -> PathBuf {
 #[derive(Debug)]
 pub struct OutputState {
     output_file_path: PathBuf,
-    writer: Option<BufWriter<File>>,
+    history_file: HistoryFile,
     disabled: bool,
     max_buffer_size: usize,
     head: Vec<OutputEvent>,
     tail: VecDeque<OutputEvent>,
     total_count: usize,
+}
+
+#[derive(Debug)]
+enum HistoryFile {
+    Unopened,
+    Open(BufWriter<File>),
+    Failed,
 }
 
 impl OutputState {
@@ -43,7 +50,7 @@ impl OutputState {
         let output_file_path = output_dir.join(format!("{}.log", session_id));
         Self {
             output_file_path,
-            writer: None,
+            history_file: HistoryFile::Unopened,
             disabled: max_output_lines == 0,
             max_buffer_size: max_output_lines,
             head: Vec::new(),
@@ -52,38 +59,21 @@ impl OutputState {
         }
     }
 
-    fn initialize(&mut self) -> std::io::Result<()> {
-        if self.disabled || self.writer.is_some() {
-            return Ok(());
+    fn open_history_file(&self) -> std::io::Result<BufWriter<File>> {
+        if let Some(parent) = self.output_file_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-
-        if let Some(parent) = self.output_file_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            self.disabled = true;
-            return Err(e);
-        }
-
-        match File::create(&self.output_file_path) {
-            Ok(file) => {
-                self.writer = Some(BufWriter::new(file));
-                Ok(())
-            }
-            Err(e) => {
-                self.disabled = true;
-                Err(e)
-            }
-        }
+        Ok(BufWriter::new(File::create(&self.output_file_path)?))
     }
 
     fn flush(&mut self) {
-        if let Some(writer) = self.writer.as_mut() {
+        if let HistoryFile::Open(writer) = &mut self.history_file {
             let _ = writer.flush();
         }
     }
 
-    /// Add output to the file. Silently succeeds if output tracking is disabled.
-    /// Uses the real DAP event seq number for tracking.
+    /// Buffer an output event for the context footer and append it to the history file.
+    /// Only the first history file error is returned; the file is abandoned after it.
     pub fn add_output(
         &mut self,
         output: &str,
@@ -93,8 +83,6 @@ impl OutputState {
         if self.disabled {
             return Ok(());
         }
-
-        self.initialize()?;
 
         let event = OutputEvent {
             seq: dap_seq,
@@ -117,16 +105,34 @@ impl OutputState {
 
         self.total_count += 1;
 
-        if let Some(writer) = self.writer.as_mut() {
+        let written = self.write_history(output, category, dap_seq);
+        if written.is_err() {
+            self.history_file = HistoryFile::Failed;
+        }
+        written
+    }
+
+    fn write_history(
+        &mut self,
+        output: &str,
+        category: Option<&OutputCategory>,
+        dap_seq: Seq,
+    ) -> std::io::Result<()> {
+        if matches!(self.history_file, HistoryFile::Unopened) {
+            self.history_file = HistoryFile::Open(self.open_history_file()?);
+        }
+        if let HistoryFile::Open(writer) = &mut self.history_file {
             let category_str = category.map(|c| c.as_ref()).unwrap_or("unspecified");
             write!(writer, "[seq:{} {}] {}", dap_seq, category_str, output)?;
         }
         Ok(())
     }
 
-    /// Returns the path to the output file
-    pub fn output_file_path(&self) -> &Path {
-        &self.output_file_path
+    pub fn history_file_path(&self) -> Option<&Path> {
+        match self.history_file {
+            HistoryFile::Open(_) => Some(&self.output_file_path),
+            HistoryFile::Unopened | HistoryFile::Failed => None,
+        }
     }
 
     pub fn has_buffered_output(&self) -> bool {
@@ -148,6 +154,10 @@ impl OutputState {
 
 #[cfg(test)]
 impl OutputState {
+    pub fn output_file_path(&self) -> &Path {
+        &self.output_file_path
+    }
+
     pub fn buffer_len(&self) -> usize {
         self.total_count
     }
@@ -173,7 +183,7 @@ impl OutputState {
     }
 
     pub fn cleanup(&mut self) {
-        self.writer = None;
+        self.history_file = HistoryFile::Unopened;
         if self.output_file_path.exists()
             && let Err(e) = std::fs::remove_file(&self.output_file_path)
         {
@@ -210,6 +220,10 @@ mod tests {
 
         // Verify file exists and has content
         assert!(output_state.has_any());
+        assert_eq!(
+            output_state.history_file_path(),
+            Some(output_state.output_file_path())
+        );
 
         // Read last lines
         let content = output_state.read_last_lines(10).unwrap();
@@ -264,6 +278,25 @@ mod tests {
 
         // File should not exist since disabled
         assert!(!output_state.output_file_path().exists());
+    }
+
+    #[test]
+    fn test_output_is_buffered_when_history_file_is_unavailable() {
+        let session_id = make_test_session_id("no-history-file");
+        let not_a_directory = std::env::temp_dir().join(format!("dapper-{session_id}"));
+        std::fs::write(&not_a_directory, "").unwrap();
+        let mut output_state = OutputState::new(&session_id, 20);
+        output_state.output_file_path = not_a_directory.join("output.log");
+
+        assert!(output_state.add_output("Event 1\n", None, Seq(1)).is_err());
+        assert!(
+            output_state.add_output("Event 2\n", None, Seq(2)).is_ok(),
+            "only the first history file error should be reported"
+        );
+        assert_eq!(output_state.history_file_path(), None);
+        assert_eq!(output_state.take_buffered_output().total_count, 2);
+
+        std::fs::remove_file(&not_a_directory).unwrap();
     }
 
     #[test]

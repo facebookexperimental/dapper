@@ -27,6 +27,9 @@ use super::tracker_inner::DebugSessionTrackerInner;
 pub struct PendingExecutionRequest {
     pub thread_id: ThreadId,
     pub single_thread: Option<bool>,
+    /// A stop or exit covering this thread arrived first. DAP doesn't order a resume response
+    /// before the events it causes, so such a late response must not report the thread running.
+    superseded: bool,
 }
 
 impl From<&ContinueArguments> for PendingExecutionRequest {
@@ -34,6 +37,7 @@ impl From<&ContinueArguments> for PendingExecutionRequest {
         Self {
             thread_id: args.thread_id,
             single_thread: args.single_thread,
+            superseded: false,
         }
     }
 }
@@ -43,6 +47,7 @@ impl From<&ReverseContinueArguments> for PendingExecutionRequest {
         Self {
             thread_id: args.thread_id,
             single_thread: args.single_thread,
+            superseded: false,
         }
     }
 }
@@ -304,6 +309,7 @@ impl ExecutionState {
                         .remove(&response.request_seq);
                     if response.success
                         && let Some(pending) = pending
+                        && !pending.superseded
                     {
                         let all_threads_continued = body.all_threads_continued.unwrap_or(true);
                         if all_threads_continued {
@@ -327,6 +333,7 @@ impl ExecutionState {
                         .remove(&response.request_seq);
                     if response.success
                         && let Some(pending) = pending
+                        && !pending.superseded
                     {
                         let all_threads_continued = !this.supports_single_thread_execution
                             || !pending.single_thread.unwrap_or(false);
@@ -381,6 +388,9 @@ impl ExecutionState {
                     }
 
                     let all_stopped = stopped.all_threads_stopped.unwrap_or(false);
+                    this.supersede_pending_requests(|pending| {
+                        all_stopped || stopped.thread_id == Some(pending.thread_id)
+                    });
                     if all_stopped {
                         this.set_all_stopped(stopped);
                     } else {
@@ -400,12 +410,20 @@ impl ExecutionState {
             }
             EventKind::Exited(_) | EventKind::Terminated(_) => {
                 Self::with_execution_state(inner, |this| {
+                    this.supersede_pending_requests(|_| true);
                     this.current = ExecutionStatus::Exited;
                     this.version += 1;
                 });
             }
             _ => {}
         }
+    }
+
+    fn supersede_pending_requests(&mut self, covers: impl Fn(&PendingExecutionRequest) -> bool) {
+        self.pending_execution_requests
+            .values_mut()
+            .filter(|pending| covers(pending))
+            .for_each(|pending| pending.superseded = true);
     }
 
     fn is_valid_stopped_event(stopped: &StoppedEventBody) -> bool {
@@ -563,6 +581,41 @@ mod tests {
             reason: StoppedReason::Breakpoint,
             description: None,
             additional_information: None,
+        })
+    }
+
+    fn stopped(reason: StoppedReason, thread_id: i64, all_threads_stopped: bool) -> Message {
+        Message::Event(Event {
+            seq: 100.into(),
+            event: EventKind::Stopped(StoppedEventBody {
+                reason,
+                thread_id: Some(ThreadId(thread_id)),
+                all_threads_stopped: Some(all_threads_stopped),
+                ..Default::default()
+            }),
+        })
+    }
+
+    fn continue_request(seq: i64, thread_id: i64) -> Message {
+        Message::Request(Request {
+            seq: Seq(seq),
+            command: RequestCommand::Continue(ContinueArguments {
+                thread_id: ThreadId(thread_id),
+                ..Default::default()
+            }),
+        })
+    }
+
+    fn continue_response(request_seq: i64, all_threads_continued: bool) -> Message {
+        Message::Response(Response {
+            seq: 200.into(),
+            request_seq: Seq(request_seq),
+            success: true,
+            message: None,
+            body: ResponseBody::Continue(ContinueResponseBody {
+                all_threads_continued: Some(all_threads_continued),
+                ..Default::default()
+            }),
         })
     }
 
@@ -1113,6 +1166,65 @@ mod tests {
         assert!(state.is_thread_stopped(2.into()));
         assert!(state.any_thread_stopped());
         assert!(!state.is_all_stopped());
+    }
+
+    #[test]
+    fn test_stop_before_continue_response_is_not_overwritten() {
+        let inner = make_test_inner();
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, true));
+        track_from(&inner, &continue_request(10, 1));
+        track_to(&inner, &stopped(StoppedReason::Pause, 1, true));
+        track_to(&inner, &continue_response(10, true));
+
+        assert!(
+            es(&inner).is_all_stopped(),
+            "a continue response arriving after the next stop must not resume the debuggee"
+        );
+        assert_eq!(
+            stop_info(&inner).map(|info| info.reason),
+            Some(StoppedReason::Pause)
+        );
+        assert!(es(&inner).pending_execution_requests.is_empty());
+    }
+
+    #[test]
+    fn test_exit_before_continue_response_is_not_overwritten() {
+        let inner = make_test_inner();
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, true));
+        track_from(&inner, &continue_request(10, 1));
+        track_to(
+            &inner,
+            &Message::Event(Event {
+                seq: 101.into(),
+                event: EventKind::Exited(ExitedEventBody {
+                    exit_code: 0,
+                    ..Default::default()
+                }),
+            }),
+        );
+        track_to(&inner, &continue_response(10, true));
+
+        assert_eq!(es(&inner).current, ExecutionStatus::Exited);
+    }
+
+    #[test]
+    fn test_stop_of_another_thread_does_not_supersede_continue() {
+        let inner = make_test_inner();
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 1.into(),
+                command: RequestCommand::Launch(LaunchRequestArguments::default()),
+            }),
+        );
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, false));
+        track_from(&inner, &continue_request(10, 1));
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 2, false));
+        track_to(&inner, &continue_response(10, false));
+
+        let state = es(&inner);
+        assert!(!state.is_thread_stopped(1.into()));
+        assert!(state.is_thread_stopped(2.into()));
     }
 
     #[test]

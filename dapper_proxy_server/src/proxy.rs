@@ -286,7 +286,7 @@ impl ProxyServer {
         tasks.shutdown().await;
 
         if let Some(handle) = self.backend.handle {
-            handle.await??;
+            handle.await?;
         }
 
         Ok(())

@@ -17,7 +17,7 @@ use crate::transport::DuplexChannel;
 
 pub struct Backend {
     pub(crate) duplex: DuplexChannel,
-    pub(crate) handle: Option<JoinHandle<anyhow::Result<()>>>,
+    pub(crate) handle: Option<JoinHandle<()>>,
 }
 
 impl Backend {
@@ -118,21 +118,20 @@ impl Backend {
         });
         let handle = tokio::spawn(async move {
             let result = process.wait().await;
-            match &result {
+            match result {
                 Ok(status) if status.success() => {
                     tracing::info!("Backend process exited successfully");
                 }
-                _ => {
-                    tracing::error!("Backend process exited with code {:?}", result);
+                Ok(status) => {
+                    tracing::error!("Backend process exited unsuccessfully ({status})");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to wait for the backend process: {e}");
+                    if let Err(e) = process.kill().await {
+                        tracing::error!("Failed to kill backend process: {e}");
+                    }
                 }
             }
-
-            // Cleanup: kill process if still running
-            if let Err(e) = process.kill().await {
-                tracing::error!("Failed to kill backend process: {:?}", e);
-            }
-
-            Ok(())
         });
 
         Ok(Self {

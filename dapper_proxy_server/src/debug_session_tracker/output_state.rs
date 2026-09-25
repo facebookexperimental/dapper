@@ -46,8 +46,8 @@ impl OutputState {
             writer: None,
             disabled: max_output_lines == 0,
             max_buffer_size: max_output_lines,
-            head: Vec::with_capacity(max_output_lines / 2),
-            tail: VecDeque::with_capacity(max_output_lines - max_output_lines / 2),
+            head: Vec::new(),
+            tail: VecDeque::new(),
             total_count: 0,
         }
     }
@@ -444,6 +444,19 @@ mod tests {
         assert_eq!(buffered.tail.len(), 1);
         assert_eq!(buffered.tail[0].output, "Event 5\n");
 
+        output_state.cleanup();
+    }
+
+    #[test]
+    fn test_huge_max_output_lines_does_not_preallocate() {
+        let session_id = make_test_session_id("huge-max-lines");
+        let mut output_state = OutputState::new(&session_id, usize::MAX / 2);
+
+        output_state
+            .add_output("Event 1\n", Some(&OutputCategory::Stdout), Seq(1))
+            .unwrap();
+
+        assert_eq!(output_state.take_buffered_output().total_count, 1);
         output_state.cleanup();
     }
 

@@ -237,6 +237,8 @@ pub struct Source {
     pub adapter_data: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksums: Option<Vec<Checksum>>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -273,6 +275,8 @@ pub struct StackFrame {
     pub module_id: Option<IntOrString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation_hint: Option<StackFramePresentationHint>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -300,6 +304,8 @@ pub struct Scope {
     pub end_line: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_column: Option<i64>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 impl Scope {
@@ -334,6 +340,8 @@ pub struct Variable {
     pub declaration_location_reference: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_location_reference: Option<i64>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -374,6 +382,8 @@ pub struct Breakpoint {
     pub offset: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<BreakpointReason>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -468,6 +478,8 @@ pub struct Module {
     pub date_time_stamp: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address_range: Option<String>,
+    #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
+    pub extra: IndexMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

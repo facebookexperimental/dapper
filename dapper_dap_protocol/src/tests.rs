@@ -1667,6 +1667,62 @@ async fn test_wire_valid_roundtrip() {
     assert_eq!(original, parsed);
 }
 
+async fn wire_roundtrip(message: serde_json::Value) -> serde_json::Value {
+    let wire = parse_message(message).format().unwrap();
+    let mut cursor = tokio::io::BufReader::new(wire.as_slice());
+    let parsed = Message::read(&mut cursor).await.unwrap().unwrap();
+    parsed.to_value().unwrap()
+}
+
+#[tokio::test]
+async fn test_wire_nested_extension_keys_survive_roundtrip() {
+    let lldb_extensions = json!({"value": "42", "summary": "answer", "declaration": {"line": 3}});
+    let variables = wire_roundtrip(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 9,
+        "success": true,
+        "command": "variables",
+        "body": {
+            "variables": [{
+                "name": "x",
+                "value": "42",
+                "variablesReference": 0,
+                "$__lldb_extensions": lldb_extensions
+            }]
+        }
+    }))
+    .await;
+    assert_eq!(
+        variables["body"]["variables"][0]["$__lldb_extensions"],
+        lldb_extensions
+    );
+
+    let frame_extension = json!({"inlined": true});
+    let source_extension = json!(["build-id", 7]);
+    let stack_trace = wire_roundtrip(json!({
+        "seq": 12,
+        "type": "response",
+        "request_seq": 11,
+        "success": true,
+        "command": "stackTrace",
+        "body": {
+            "stackFrames": [{
+                "id": 1,
+                "name": "main",
+                "line": 3,
+                "column": 1,
+                "source": { "path": "/tmp/main.c", "vendorSource": source_extension },
+                "vendorFrame": frame_extension
+            }]
+        }
+    }))
+    .await;
+    let frame = &stack_trace["body"]["stackFrames"][0];
+    assert_eq!(frame["vendorFrame"], frame_extension);
+    assert_eq!(frame["source"]["vendorSource"], source_extension);
+}
+
 #[tokio::test]
 async fn test_wire_multiple_messages_sequential() {
     let msg1 = Message::Request(Request::new(RequestCommand::Threads));

@@ -53,6 +53,7 @@ impl Cli {
     }
 
     /// Load config once and apply the CLI `--json` override if present.
+    /// Call it after logging is initialized: load failures are only logged.
     pub fn resolve_config(&self) -> DapperConfig {
         let mut config = DapperConfig::load_or_default();
         if self.json {

@@ -16,3 +16,4 @@ dapper_proxy_server = { path = "../dapper_proxy_server" }
 dapper_session = { path = "../dapper_session" }
 serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 tokio = { version = "1.53.1", features = ["full", "test-util", "tracing"] }
+tracing = { version = "0.1.41", features = ["attributes", "valuable"] }

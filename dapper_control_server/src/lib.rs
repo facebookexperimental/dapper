@@ -43,8 +43,7 @@ use dapper_session::VariablesResult;
 pub type ChildTeardownHook =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-#[derive(Clone)]
-pub struct DapperControlPlaneServiceImpl {
+struct DapperControlPlaneServiceImpl {
     proxy_server_abort: tokio::task::AbortHandle,
     proxy_client: ProxyClient,
     /// Optional hook to tear down child sessions before this proxy stops, so an
@@ -73,10 +72,13 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
         }
         let request = dap::Request::new(self.proxy_client.debug_session_tracker().stop_request());
         let timeout = self.proxy_client.config().stop.timeout();
-        let _ = self
+        if let Err(e) = self
             .proxy_client
             .send_message_with_timeout(request.into(), timeout)
-            .await;
+            .await
+        {
+            tracing::warn!("DAP stop request failed during control-plane stop: {e:#}");
+        }
 
         self.proxy_server_abort.abort();
         Ok(())

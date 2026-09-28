@@ -1559,6 +1559,34 @@ fn read_byte_count_rejects_above_the_cap() {
     );
 }
 
+#[tokio::test]
+async fn read_memory_rejects_a_zero_count_before_resolving_a_session() {
+    let result = call_tool_e2e(
+        "debug_read_memory_command",
+        json!({"memory_reference": "0x1000", "count": 0}),
+    )
+    .await
+    .expect("the call itself must succeed at the MCP layer");
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(text_of(&result), "count must be > 0, got 0");
+}
+
+#[tokio::test]
+async fn write_memory_rejects_odd_length_data_before_resolving_a_session() {
+    let result = call_tool_e2e(
+        "debug_write_memory_command",
+        json!({"memory_reference": "0x1000", "data": "ABC"}),
+    )
+    .await
+    .expect("the call itself must succeed at the MCP layer");
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text_of(&result).contains("even number of digits"),
+        "got {}",
+        text_of(&result)
+    );
+}
+
 // -- format_memory_read: header, ASCII sidebar, multi-chunk, decode failure, no-data --
 
 fn make_body(

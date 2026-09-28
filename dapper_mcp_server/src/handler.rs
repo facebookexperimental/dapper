@@ -878,14 +878,14 @@ Response is JSON from the debug adapter."#
                 },
             ..
         }) = request;
-        let client = match self.get_client_or_error(session_id.as_ref()) {
-            Ok(c) => c,
-            Err(e) => return Ok(e),
-        };
-
         let count = match ReadByteCount::try_new(count) {
             Ok(count) => count,
             Err(e) => return Ok(self.err(format!("{e:#}"))),
+        };
+
+        let client = match self.get_client_or_error(session_id.as_ref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(e),
         };
 
         let args = ReadMemoryArguments {
@@ -937,17 +937,17 @@ Response is JSON from the debug adapter."#
                 },
             ..
         }) = request;
-        let client = match self.get_client_or_error(session_id.as_ref()) {
-            Ok(c) => c,
-            Err(e) => return Ok(e),
-        };
-
         // Convert user-provided hex string to base64 for DAP protocol
         let raw_bytes = match hex_string_to_bytes(&data) {
             Ok(bytes) => bytes,
             Err(e) => {
                 return Ok(self.err(format!("{e:#}")));
             }
+        };
+
+        let client = match self.get_client_or_error(session_id.as_ref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(e),
         };
 
         let args = WriteMemoryArguments {

@@ -260,8 +260,8 @@ pub struct SessionInitializer {
     next_seq: Seq,
     /// Sequence number of the launch/attach request, for matching its response.
     debug_request_seq: Option<Seq>,
-    /// Stores the launch/attach response if it arrives early (before we wait for it).
-    pending_debug_response: Option<dap::Response>,
+    /// Whether the launch/attach response arrived before `wait_for_debug_response`.
+    debug_response_received: bool,
     timeout: Duration,
     /// Idle timeout for the post-init receive loop; see
     /// `DEFAULT_RECEIVE_IDLE_TIMEOUT`.
@@ -295,7 +295,7 @@ impl SessionInitializer {
             config,
             next_seq: Seq(1),
             debug_request_seq: None,
-            pending_debug_response: None,
+            debug_response_received: false,
             timeout,
             receive_idle_timeout: DEFAULT_RECEIVE_IDLE_TIMEOUT,
             start_time: None,
@@ -368,7 +368,7 @@ impl SessionInitializer {
     }
 
     /// Receive the next message, processing any that need special handling.
-    /// Stashes debug responses, handles dapper events, then returns the message.
+    /// Records the launch/attach response, handles dapper events, then returns the message.
     async fn recv_message(
         &mut self,
         channel: &mut DuplexChannel,
@@ -386,7 +386,7 @@ impl SessionInitializer {
             dap::Message::Response(response)
                 if self.debug_request_seq == Some(response.request_seq) =>
             {
-                debug!("Stashing debug response (seq={})", response.request_seq);
+                debug!("Received debug response (seq={})", response.request_seq);
                 if !response.success {
                     let err_msg = response.error_message();
                     error!("Launch/attach request failed: {}", err_msg);
@@ -395,7 +395,7 @@ impl SessionInitializer {
                         err_msg
                     );
                 }
-                self.pending_debug_response = Some(response.clone());
+                self.debug_response_received = true;
             }
             dap::Message::Event(event) => match &event.event {
                 // Handle dapper control plane event
@@ -812,11 +812,11 @@ impl SessionInitializer {
     }
 
     /// Wait for the launch/attach response.
-    /// It may have already arrived (stored in pending_debug_response) or may come now.
+    /// It may have already arrived (see `debug_response_received`) or may come now.
     async fn wait_for_debug_response(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
-        if let Some(response) = self.pending_debug_response.take() {
+        if self.debug_response_received {
             debug!("Using previously received debug response");
-            return response.check_success();
+            return Ok(());
         }
 
         let debug_seq = self
@@ -1059,14 +1059,6 @@ impl SessionInitializer {
         seq: Seq,
         command: &str,
     ) -> anyhow::Result<dap::Response> {
-        // Check if already stashed
-        if let Some(response) = &self.pending_debug_response
-            && response.request_seq == seq
-        {
-            debug!("Using stashed response (seq={})", seq);
-            return Ok(self.pending_debug_response.take().unwrap());
-        }
-
         loop {
             let Some(msg) = self.recv_message(channel).await? else {
                 anyhow::bail!("Channel closed while waiting for `{command}` response");
@@ -1439,6 +1431,63 @@ mod tests {
             format!("{err:#}"),
             "Channel closed while waiting for `initialize` response"
         );
+    }
+
+    async fn mock_backend_answers_launch_before_initialized(
+        mut channel: DuplexChannel,
+    ) -> anyhow::Result<()> {
+        let mut seq: Seq = 1.into();
+        while let Some(msg) = channel.recv().await? {
+            let dap::Message::Request(req) = msg else {
+                continue;
+            };
+            let body = match &req.command {
+                RequestCommand::Initialize(_) => ResponseBody::Initialize(Some(Capabilities {
+                    supports_configuration_done_request: Some(true),
+                    ..Default::default()
+                })),
+                RequestCommand::Launch(_) => ResponseBody::Launch,
+                RequestCommand::ConfigurationDone(_) => ResponseBody::ConfigurationDone,
+                other => anyhow::bail!("Protocol violation: received '{}'", other.command_name()),
+            };
+            let response = dap::Response {
+                seq,
+                request_seq: req.seq,
+                success: true,
+                message: None,
+                body,
+            };
+            seq = seq.next();
+            channel.send(response.into()).await?;
+
+            match req.command {
+                RequestCommand::Launch(_) => {
+                    let initialized_event = dap::Event {
+                        seq,
+                        event: EventKind::Initialized(Default::default()),
+                    };
+                    seq = seq.next();
+                    channel.send(initialized_event.into()).await?;
+                }
+                RequestCommand::ConfigurationDone(_) => return Ok(()),
+                _ => {}
+            }
+        }
+        anyhow::bail!("Channel closed before configurationDone")
+    }
+
+    #[tokio::test]
+    async fn test_launch_response_before_initialized_completes_handshake() {
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend_answers_launch_before_initialized(server));
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .with_timeout(Duration::from_secs(2))
+            .run(client)
+            .await;
+
+        backend_handle.await.expect("backend panicked").unwrap();
+        assert!(result.is_ok(), "SessionInitializer failed: {result:?}");
     }
 
     /// Mock backend that responds to initialize but never sends the initialized event.

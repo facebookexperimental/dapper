@@ -389,15 +389,15 @@ impl SessionStore {
         paths.sort();
 
         paths.into_iter().filter_map(|path| {
-            let file = match File::open(&path) {
-                Ok(file) => file,
+            let contents = match fs::read(&path) {
+                Ok(contents) => contents,
                 Err(e) => {
-                    tracing::warn!("Failed to open session file {}: {}", path.display(), e);
+                    tracing::warn!("Failed to read session file {}: {}", path.display(), e);
                     return None;
                 }
             };
 
-            match serde_json::from_reader(file) {
+            match serde_json::from_slice(&contents) {
                 Ok(session_info) => Some(session_info),
                 Err(e) => {
                     tracing::warn!("Failed to parse session file {}: {}", path.display(), e);
@@ -653,6 +653,23 @@ mod tests {
 
         store.delete(&session1).unwrap();
         store.delete(&session2).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn iter_sessions_keeps_a_session_file_it_cannot_read() {
+        let dir = env::temp_dir().join(format!("dapper-session-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        // Opening /proc/self/mem succeeds, but reading it at offset 0 fails with EIO.
+        let path = dir.join("unreadable.json");
+        std::os::unix::fs::symlink("/proc/self/mem", &path).unwrap();
+
+        assert_eq!(SessionStore::at(&dir).iter_sessions().count(), 0);
+        assert!(
+            path.symlink_metadata().is_ok(),
+            "a read failure must not delete the session file"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Stores at different directories are fully isolated: a session saved

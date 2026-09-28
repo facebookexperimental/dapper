@@ -840,17 +840,31 @@ impl SessionInitializer {
         }
 
         let function_bps = groups.function_breakpoints();
-        if !function_bps.is_empty() {
-            debug!("Setting function breakpoints: {:?}", function_bps);
-            let request = requests::set_function_breakpoints(function_bps);
-            let response = self.request(channel, request).await?;
+        if function_bps.is_empty() {
+            return Ok(());
+        }
+        let supports_function_breakpoints = self
+            .adapter_capabilities
+            .as_ref()
+            .and_then(|c| c.supports_function_breakpoints)
+            .unwrap_or(false);
+        if !supports_function_breakpoints {
+            warn!(
+                skipped = ?function_bps,
+                "adapter does not advertise supportsFunctionBreakpoints; skipping {} function breakpoint(s)",
+                function_bps.len(),
+            );
+            return Ok(());
+        }
 
-            if !response.success {
-                warn!(
-                    "setFunctionBreakpoints failed: {}",
-                    response.message.as_deref().unwrap_or_default()
-                );
-            }
+        debug!("Setting function breakpoints: {:?}", function_bps);
+        let request = requests::set_function_breakpoints(function_bps);
+        let response = self.request(channel, request).await?;
+        if !response.success {
+            warn!(
+                "setFunctionBreakpoints failed: {}",
+                response.message.as_deref().unwrap_or_default()
+            );
         }
 
         Ok(())
@@ -2162,6 +2176,196 @@ mod tests {
             result.is_ok(),
             "init should succeed despite adapter rejection; got: {:?}",
             result
+        );
+    }
+
+    async fn mock_backend_recording_config_requests(
+        mut channel: DuplexChannel,
+        caps: Capabilities,
+        recorded: Arc<Mutex<Vec<RequestCommand>>>,
+    ) -> anyhow::Result<()> {
+        let mut state = MockState::WaitingForInitialize;
+        let mut pending_debug_request: Option<dap::Request> = None;
+        let mut seq: Seq = 1.into();
+
+        while let Ok(Some(msg)) = channel.recv().await {
+            if let dap::Message::Request(req) = msg {
+                match (&state, &req.command) {
+                    (MockState::WaitingForInitialize, RequestCommand::Initialize(_)) => {
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::Initialize(Some(caps.clone())),
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+                        state = MockState::WaitingForDebugRequest;
+                    }
+                    (
+                        MockState::WaitingForDebugRequest,
+                        RequestCommand::Launch(_) | RequestCommand::Attach(_),
+                    ) => {
+                        pending_debug_request = Some(req);
+                        let initialized_event = dap::Event {
+                            seq,
+                            event: EventKind::Initialized(Default::default()),
+                        };
+                        seq = seq.next();
+                        channel.send(initialized_event.into()).await?;
+                        state = MockState::WaitingForConfigurationDone;
+                    }
+                    (
+                        MockState::WaitingForConfigurationDone,
+                        RequestCommand::ConfigurationDone(_),
+                    ) => {
+                        let config_response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::ConfigurationDone,
+                        };
+                        seq = seq.next();
+                        channel.send(config_response.into()).await?;
+
+                        if let Some(debug_req) = pending_debug_request.take() {
+                            let body = match &debug_req.command {
+                                RequestCommand::Launch(_) => ResponseBody::Launch,
+                                RequestCommand::Attach(_) => ResponseBody::Attach,
+                                _ => unreachable!(),
+                            };
+                            let debug_response = dap::Response {
+                                seq,
+                                request_seq: debug_req.seq,
+                                success: true,
+                                message: None,
+                                body,
+                            };
+                            channel.send(debug_response.into()).await?;
+                        }
+                        return Ok(());
+                    }
+                    (MockState::WaitingForConfigurationDone, command) => {
+                        let body = match command {
+                            RequestCommand::SetBreakpoints(_) => {
+                                ResponseBody::SetBreakpoints(Default::default())
+                            }
+                            RequestCommand::SetFunctionBreakpoints(_) => {
+                                ResponseBody::SetFunctionBreakpoints(Default::default())
+                            }
+                            RequestCommand::SetExceptionBreakpoints(_) => {
+                                ResponseBody::SetExceptionBreakpoints(None)
+                            }
+                            other => anyhow::bail!(
+                                "Protocol violation: received '{}' during configuration",
+                                other.command_name()
+                            ),
+                        };
+                        recorded.lock().unwrap().push(command.clone());
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body,
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+                    }
+                    (current_state, cmd) => {
+                        anyhow::bail!(
+                            "Protocol violation: received '{}' in state {:?}",
+                            cmd.command_name(),
+                            current_state
+                        );
+                    }
+                }
+            }
+        }
+        anyhow::bail!("Channel closed before completion, state: {:?}", state)
+    }
+
+    async fn record_breakpoint_install(caps: Capabilities) -> Vec<RequestCommand> {
+        let config = launch_config(
+            vec![
+                BreakpointSpec::source("a.cpp", 10),
+                BreakpointSpec::function("main"),
+                BreakpointSpec::source("b.cpp", 20),
+                BreakpointSpec::function("helper"),
+            ],
+            false,
+        );
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend_recording_config_requests(
+            server,
+            caps,
+            Arc::clone(&recorded),
+        ));
+        let initializer = SessionInitializer::new(config).with_timeout(Duration::from_secs(2));
+        let result = initializer.run(client).await;
+
+        backend_handle.await.expect("backend panicked").unwrap();
+        assert!(result.is_ok(), "init failed: {:?}", result);
+        recorded.lock().unwrap().clone()
+    }
+
+    fn set_breakpoints_paths(recorded: &[RequestCommand]) -> Vec<&str> {
+        let mut paths: Vec<&str> = recorded
+            .iter()
+            .filter_map(|command| match command {
+                RequestCommand::SetBreakpoints(args) => args.source.path.as_deref(),
+                _ => None,
+            })
+            .collect();
+        paths.sort_unstable();
+        paths
+    }
+
+    #[tokio::test]
+    async fn test_function_breakpoints_sent_after_source_breakpoints_when_supported() {
+        let recorded = record_breakpoint_install(Capabilities {
+            supports_configuration_done_request: Some(true),
+            supports_function_breakpoints: Some(true),
+            ..Default::default()
+        })
+        .await;
+
+        assert_eq!(recorded.len(), 3, "got {recorded:?}");
+        assert_eq!(
+            set_breakpoints_paths(&recorded[..2]),
+            ["a.cpp", "b.cpp"],
+            "expected one setBreakpoints per file first; got {recorded:?}"
+        );
+        match &recorded[2] {
+            RequestCommand::SetFunctionBreakpoints(args) => {
+                let names: Vec<&str> = args.breakpoints.iter().map(|bp| bp.name.as_str()).collect();
+                assert_eq!(names, ["main", "helper"]);
+            }
+            other => panic!("expected a trailing setFunctionBreakpoints, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_function_breakpoints_skipped_when_not_supported() {
+        let recorded = record_breakpoint_install(Capabilities {
+            supports_configuration_done_request: Some(true),
+            ..Default::default()
+        })
+        .await;
+
+        assert_eq!(
+            set_breakpoints_paths(&recorded),
+            ["a.cpp", "b.cpp"],
+            "source breakpoints are still installed; got {recorded:?}"
+        );
+        assert_eq!(
+            recorded.len(),
+            2,
+            "setFunctionBreakpoints must not be sent without supportsFunctionBreakpoints; got {recorded:?}"
         );
     }
 

@@ -10,8 +10,24 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use dapper_config::OutputFormat;
+use dapper_control_api::ControlPlaneServer;
+use dapper_dap_protocol::data_types::FrameId;
+use dapper_dap_protocol::data_types::Thread;
+use dapper_dap_protocol::data_types::ThreadId;
+use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
+use dapper_session::CapabilitiesResult;
+use dapper_session::NavigationResult;
+use dapper_session::NavigationType;
+use dapper_session::RawDapResult;
+use dapper_session::ScopesResult;
+use dapper_session::SetBreakpointsResult;
+use dapper_session::SetExceptionBreakpointsResult;
+use dapper_session::SetVariableResult;
+use dapper_session::StackTraceResult;
+use dapper_session::StatusResult;
 use dapper_session::ThreadsResult;
+use dapper_session::VariablesResult;
 use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
@@ -1190,6 +1206,178 @@ async fn unparsable_parameters_are_reported_as_rejected() {
         text_of(&result).starts_with(PARAMS_REJECTED_PREFIX),
         "got {}",
         text_of(&result)
+    );
+}
+
+// -- fake control plane: tool success paths --
+
+fn unfaked<T>() -> anyhow::Result<T> {
+    anyhow::bail!("not implemented by FakeControlPlane")
+}
+
+struct FakeControlPlane {
+    threads: Vec<Thread>,
+}
+
+#[async_trait::async_trait]
+impl DapperControlPlane for FakeControlPlane {
+    async fn eval_repl(&self, _: &str, _: Option<FrameId>) -> anyhow::Result<String> {
+        unfaked()
+    }
+
+    async fn stop(&self) -> anyhow::Result<()> {
+        unfaked()
+    }
+
+    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
+        Ok(ControlPlaneResult {
+            result: ThreadsResult {
+                threads: self.threads.clone(),
+                ..Default::default()
+            },
+            context: None,
+        })
+    }
+
+    async fn stack_trace(
+        &self,
+        _: ThreadId,
+        _: Option<i64>,
+        _: Option<i64>,
+    ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
+        unfaked()
+    }
+
+    async fn scopes(&self, _: FrameId) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
+        unfaked()
+    }
+
+    async fn variables(
+        &self,
+        _: VariablesReference,
+    ) -> anyhow::Result<ControlPlaneResult<VariablesResult>> {
+        unfaked()
+    }
+
+    async fn navigate(
+        &self,
+        _: NavigationType,
+        _: ThreadId,
+        _: Option<bool>,
+    ) -> anyhow::Result<ControlPlaneResult<NavigationResult>> {
+        unfaked()
+    }
+
+    async fn set_variable(
+        &self,
+        _: VariablesReference,
+        _: &str,
+        _: &str,
+    ) -> anyhow::Result<ControlPlaneResult<SetVariableResult>> {
+        unfaked()
+    }
+
+    async fn set_breakpoints(
+        &self,
+        _: &str,
+        _: bool,
+        _: &[SourceBreakpoint],
+    ) -> anyhow::Result<ControlPlaneResult<SetBreakpointsResult>> {
+        unfaked()
+    }
+
+    async fn set_exception_breakpoints(
+        &self,
+        _: &[String],
+        _: bool,
+    ) -> anyhow::Result<ControlPlaneResult<SetExceptionBreakpointsResult>> {
+        unfaked()
+    }
+
+    async fn send_dap_request(
+        &self,
+        _: &str,
+        _: Option<Value>,
+        _: bool,
+        _: u64,
+    ) -> anyhow::Result<RawDapResult> {
+        unfaked()
+    }
+
+    async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
+        unfaked()
+    }
+
+    async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>> {
+        unfaked()
+    }
+}
+
+struct FakeSession {
+    store: SessionStore,
+    session: SessionInfo,
+    server: ControlPlaneServer,
+}
+
+impl FakeSession {
+    async fn start(fake: FakeControlPlane) -> Self {
+        let server = dapper_control_api::serve(None, fake)
+            .await
+            .expect("serve the fake control plane");
+        let session = SessionInfo::generate("fake".into(), Some(server.port), None, None, None);
+        let store = isolated_store();
+        store.save(&session).expect("save the fake session");
+        Self {
+            store,
+            session,
+            server,
+        }
+    }
+
+    fn handler(&self) -> McpHandler {
+        full_toolset_handler_with(McpServerEnv {
+            sessions: self.store.clone(),
+            ..isolated_env()
+        })
+    }
+}
+
+impl Drop for FakeSession {
+    fn drop(&mut self) {
+        self.server.handle.abort();
+        let _ = self.store.delete(&self.session);
+    }
+}
+
+#[tokio::test]
+async fn threads_tool_renders_the_control_plane_threads() {
+    let threads = vec![
+        Thread {
+            id: 1.into(),
+            name: "main".to_owned(),
+        },
+        Thread {
+            id: 2.into(),
+            name: "worker".to_owned(),
+        },
+    ];
+    let fake = FakeSession::start(FakeControlPlane {
+        threads: threads.clone(),
+    })
+    .await;
+
+    let result = call_tool_e2e_with(fake.handler(), "debug_threads_command", json!({}))
+        .await
+        .expect("the call itself must succeed at the MCP layer");
+
+    assert_eq!(result.is_error, Some(false), "got {}", text_of(&result));
+    assert_eq!(
+        text_of(&result),
+        ThreadsResult {
+            threads,
+            ..Default::default()
+        }
+        .to_string()
     );
 }
 

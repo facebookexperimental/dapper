@@ -268,8 +268,6 @@ pub struct SessionInitializer {
     receive_idle_timeout: Duration,
     /// Time when initialization started, for progress reporting.
     start_time: Option<Instant>,
-    /// Control plane port if dapper event was received.
-    control_plane_port: Option<Port>,
     event_writer: EventWriter,
     /// Capabilities reported by the adapter in the `initialize` response.
     /// Captured eagerly so later steps (e.g. `set_exception_breakpoints`)
@@ -299,7 +297,6 @@ impl SessionInitializer {
             timeout,
             receive_idle_timeout: DEFAULT_RECEIVE_IDLE_TIMEOUT,
             start_time: None,
-            control_plane_port: None,
             event_writer: EventWriter::stdout(),
             adapter_capabilities: None,
             child_spawn_tx: None,
@@ -642,7 +639,6 @@ impl SessionInitializer {
         }
 
         let port = status.port.context("control plane status missing port")?;
-        self.control_plane_port = Some(port);
         self.event_writer.emit(&ProgressEvent::DapperReady {
             session_id: status.session_id,
             control_port: port,

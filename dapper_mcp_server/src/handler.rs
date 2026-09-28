@@ -12,6 +12,7 @@ use std::sync::RwLockReadGuard;
 use std::sync::RwLockWriteGuard;
 use std::time::Instant;
 
+use anyhow::Context as _;
 use base64::Engine as _;
 use dapper_config::DapperConfig;
 use dapper_config::OutputFormat;
@@ -343,13 +344,10 @@ impl McpHandler {
         let client = match reused {
             Some(client) => client,
             None => {
-                let client = Arc::new(match session.control_plane_port {
-                    Some(port) => DapperControlPlaneClient::for_port(port),
-                    None => DapperControlPlaneClient::discover(
-                        self.sessions.clone(),
-                        self.scope_id.clone(),
-                    ),
-                });
+                let port = session
+                    .control_plane_port
+                    .context("the resolved session has no control plane port")?;
+                let client = Arc::new(DapperControlPlaneClient::for_port(port));
                 *self.cached_mut() = Some(CachedClient {
                     client: Arc::clone(&client),
                     session,

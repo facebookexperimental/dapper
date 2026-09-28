@@ -208,9 +208,10 @@ pub enum BreakpointSpec {
     },
     /// Exception breakpoint filter. The filter ID must match one advertised
     /// by the debug adapter in the `initialize` response's
-    /// `exceptionBreakpointFilters`. The optional `condition` is intended for
-    /// `filterOptions`-style installation, subject to adapter capability
-    /// gating performed by the install path (wired in a subsequent PR).
+    /// `exceptionBreakpointFilters`. The optional `condition` is sent via
+    /// `filterOptions` only if the adapter advertises both
+    /// `supportsExceptionFilterOptions` and the filter's `supportsCondition`;
+    /// otherwise it is dropped with a warning.
     Exception {
         filter: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

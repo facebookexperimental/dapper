@@ -10,9 +10,10 @@ use serde::Serialize;
 ///
 /// Mirrors the shape of the DAP `setExceptionBreakpoints` request: when
 /// `condition` is `None` the filter belongs in the request's `filters` array,
-/// and when `Some` it belongs in `filterOptions`. The actual partition (and
-/// adapter-capability gating that may drop unsupported conditions) is
-/// performed by the request builder added in a subsequent PR.
+/// and when `Some` it belongs in `filterOptions`. The request builder sends it
+/// there only if the adapter advertises both `supportsExceptionFilterOptions`
+/// and the filter's `supportsCondition`; otherwise it drops the condition with
+/// a warning.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExceptionFilterEntry {

@@ -49,8 +49,8 @@ pub trait DapperControlPlane: Send + Sync {
         variables_reference: VariablesReference,
     ) -> anyhow::Result<ControlPlaneResult<VariablesResult>>;
 
-    /// Navigate debugger execution (step in/over/out or continue) for
-    /// all threads or specified thread id.
+    /// Navigate debugger execution (step in/over/out/back, continue, reverse
+    /// continue, or pause) for all threads or specified thread id.
     /// When `single_thread` is true, all other suspended threads are not resumed.
     /// Requires the adapter to advertise `supportsSingleThreadExecutionRequests`.
     async fn navigate(

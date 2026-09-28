@@ -17,7 +17,7 @@ message EvalResponse {
 }
 
 message StopRequest {}
-message StopResponse {};
+message StopResponse {}
 
 message ThreadsRequest {}
 message ThreadsResponse {
@@ -75,8 +75,8 @@ enum NavigationType {
   // Wire compatibility: protobuf enums are forward-compatible at the wire
   // level, but dapper's gRPC server uses NavigationType::try_from to decode
   // (see dapper_control_api/src/grpc.rs `navigate`) and rejects unknown
-  // variants with "Invalid navigation type". Coordinate the server upgrade
-  // before clients begin emitting values 5 or 6.
+  // variants with "Invalid navigation type". A new variant must be deployed on
+  // servers before clients emit it.
   NAVIGATION_TYPE_STEP_BACK = 5;
   NAVIGATION_TYPE_REVERSE_CONTINUE = 6;
 }
@@ -196,8 +196,8 @@ service DapperControlPlane {
   // Get variables for a specific variables reference
   rpc Variables(VariablesRequest) returns (VariablesResponse);
 
-  // Navigate debugger execution (step in/over/out or continue) for a specific
-  // thread
+  // Navigate debugger execution (step in/over/out/back, continue, reverse
+  // continue, or pause) for a specific thread
   rpc Navigate(NavigateRequest) returns (NavigateResponse);
 
   // Set a variable value in a specific variables reference

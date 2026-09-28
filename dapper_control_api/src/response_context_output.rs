@@ -3,9 +3,8 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-//! Structured, serializable representation of a [`ResponseContext`] for JSON output.
-//! Mirrors the plaintext formatting in `envelope.rs`, but produces typed structs
-//! instead of formatted strings.
+//! The config-shaped view of a [`ResponseContext`] that both renderers consume:
+//! JSON serializes it directly and `envelope.rs` turns it into plaintext.
 
 use dapper_config::ContextConfig;
 use dapper_dap_protocol::data_types::Seq;
@@ -19,8 +18,8 @@ use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use serde::Serialize;
 
-/// Structured JSON representation of a [`ResponseContext`], combining session info
-/// and context sections (execution state, breakpoints, output, other sessions).
+/// The shaped view of a [`ResponseContext`], combining session info and context
+/// sections (execution state, breakpoints, output, other sessions).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseContextOutput<'a> {
@@ -111,7 +110,7 @@ impl<'a> ResponseContextOutput<'a> {
     }
 }
 
-/// Session info for the JSON context header (mirrors `format_context_header` in `envelope.rs`).
+/// Session info for the context header, which `format_context_header` renders as plaintext.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfoOutput<'a> {
@@ -218,7 +217,7 @@ impl<'a> ExceptionFiltersOutput<'a> {
             return None;
         }
         // Tracker stores entries already sorted by filter id, but sort
-        // defensively here so the JSON output is robust to refactors.
+        // defensively here so both renderers are robust to refactors.
         let mut filters: Vec<&ExceptionFilterEntry> =
             context.installed_exception_filters.iter().collect();
         filters.sort_unstable_by(|a, b| a.filter.cmp(&b.filter));

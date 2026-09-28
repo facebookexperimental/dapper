@@ -240,8 +240,6 @@ impl Proxy {
             tracing::info!("Running in headless mode (no external DAP client)");
             let (server_channel, client_channel) = DuplexChannel::in_memory(64 * 1024);
 
-            // Spawn SessionInitializer with the client side of the channel
-            let init_config = session_config.clone();
             // Wire the child-session supervisor (Unix-only; gated on autoSpawn).
             // On non-Unix or when autoSpawn is off, there is no channel and
             // `startDebugging` reverse requests fail closed.
@@ -267,12 +265,10 @@ impl Proxy {
                 let _ = reentry;
                 None
             };
+            // Spawn SessionInitializer with the client side of the channel
             let handle = tokio::spawn(async move {
                 let mut initializer =
-                    SessionInitializer::new(init_config).with_event_writer(event_writer);
-                if let Some(timeout_secs) = session_config.init_timeout_secs {
-                    initializer = initializer.with_timeout(Duration::from_secs(timeout_secs));
-                }
+                    SessionInitializer::new(session_config).with_event_writer(event_writer);
                 if let Some(tx) = child_spawn_tx {
                     initializer = initializer.with_child_spawn_tx(tx);
                 }
@@ -389,7 +385,7 @@ impl Proxy {
         Ok(exit_code)
     }
 
-    const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Send a DAP disconnect to the backend debugger, then abort the proxy
     /// server task. Fields like `terminate_debuggee` and `suspend_debuggee`

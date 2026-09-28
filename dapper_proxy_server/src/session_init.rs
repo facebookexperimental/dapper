@@ -307,7 +307,8 @@ impl SessionInitializer {
         }
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    #[cfg(test)]
+    fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
@@ -1455,8 +1456,7 @@ mod tests {
         let (server, client) = DuplexChannel::in_memory(1024);
         let backend_handle = tokio::spawn(mock_backend_hangs_after_initialize(server));
 
-        let initializer = SessionInitializer::new(config.clone())
-            .with_timeout(Duration::from_secs(config.init_timeout_secs.unwrap()));
+        let initializer = SessionInitializer::new(config);
         let start = std::time::Instant::now();
         let result = initializer.run(client).await;
         let elapsed = start.elapsed();

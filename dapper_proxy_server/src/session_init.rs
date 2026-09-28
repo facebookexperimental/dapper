@@ -824,7 +824,9 @@ impl SessionInitializer {
             .context("No debug request was sent")?;
 
         debug!("Waiting for debug response (seq={})", debug_seq);
-        let response = self.wait_for_response(channel, debug_seq).await?;
+        let response = self
+            .wait_for_response(channel, debug_seq, "launch/attach")
+            .await?;
         response.check_success()
     }
 
@@ -1046,14 +1048,16 @@ impl SessionInitializer {
         channel: &mut DuplexChannel,
         request: dap::Request,
     ) -> anyhow::Result<dap::Response> {
+        let command = request.command_name().to_owned();
         let seq = self.send(channel, request).await?;
-        self.wait_for_response(channel, seq).await
+        self.wait_for_response(channel, seq, &command).await
     }
 
     async fn wait_for_response_no_timeout(
         &mut self,
         channel: &mut DuplexChannel,
         seq: Seq,
+        command: &str,
     ) -> anyhow::Result<dap::Response> {
         // Check if already stashed
         if let Some(response) = &self.pending_debug_response
@@ -1065,7 +1069,7 @@ impl SessionInitializer {
 
         loop {
             let Some(msg) = self.recv_message(channel).await? else {
-                anyhow::bail!("Channel closed while waiting for response");
+                anyhow::bail!("Channel closed while waiting for `{command}` response");
             };
 
             match msg {
@@ -1086,13 +1090,15 @@ impl SessionInitializer {
         &mut self,
         channel: &mut DuplexChannel,
         seq: Seq,
+        command: &str,
     ) -> anyhow::Result<dap::Response> {
+        let timeout = self.timeout;
         tokio::time::timeout(
-            self.timeout,
-            self.wait_for_response_no_timeout(channel, seq),
+            timeout,
+            self.wait_for_response_no_timeout(channel, seq, command),
         )
         .await
-        .context("Timed out waiting for response")?
+        .with_context(|| format!("Timed out after {timeout:?} waiting for `{command}` response"))?
     }
 
     async fn receive_messages_until_closed(
@@ -1392,6 +1398,46 @@ mod tests {
         assert!(
             message.contains("initialize"),
             "the failure should name the failed step, got: {message}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_handshake_timeout_names_the_request() {
+        let (mut server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle =
+            tokio::spawn(async move { while let Ok(Some(_)) = server.recv().await {} });
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .run(client)
+            .await;
+
+        backend_handle.abort();
+        let err = format!(
+            "{:#}",
+            result.expect_err("an unanswered initialize must time out")
+        );
+        assert!(
+            err.starts_with("Timed out after 300s waiting for `initialize` response"),
+            "the timeout should name the request, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_closed_channel_error_names_the_request() {
+        let (mut server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(async move {
+            let _ = server.recv().await;
+        });
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .run(client)
+            .await;
+
+        backend_handle.await.expect("backend panicked");
+        let err = result.expect_err("a closed channel must fail init");
+        assert_eq!(
+            format!("{err:#}"),
+            "Channel closed while waiting for `initialize` response"
         );
     }
 

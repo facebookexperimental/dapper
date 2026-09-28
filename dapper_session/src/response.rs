@@ -319,8 +319,8 @@ pub struct StackTraceResult {
 
 impl fmt::Display for StackTraceResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let start = self.start_frame as usize;
-        let end = start + self.stack_frames.len().saturating_sub(1);
+        let start = usize::try_from(self.start_frame).unwrap_or(0);
+        let end = start.saturating_add(self.stack_frames.len().saturating_sub(1));
 
         writeln!(
             f,
@@ -342,7 +342,11 @@ impl fmt::Display for StackTraceResult {
         }
 
         for (index, frame) in self.stack_frames.iter().enumerate() {
-            writeln!(f, "  {}", frame.format_with_index(start + index))?;
+            writeln!(
+                f,
+                "  {}",
+                frame.format_with_index(start.saturating_add(index))
+            )?;
         }
 
         if let Some(scopes_result) = &self.scopes {
@@ -1138,6 +1142,21 @@ mod tests {
         let output = result.to_string();
         assert!(output.contains("Stack trace (frames 5 - 5) for thread 2:"));
         assert!(output.contains("#5: bar"));
+    }
+
+    #[test]
+    fn format_stack_trace_with_negative_start_frame() {
+        let result = StackTraceResult {
+            stack_frames: vec![make_frame(10, "main"), make_frame(11, "foo")],
+            start_frame: -1,
+            thread_id: ThreadId(1),
+            ..Default::default()
+        };
+        let output = result.to_string();
+        assert!(
+            output.contains("Stack trace (frames 0 - 1) for thread 1:"),
+            "got: {output}"
+        );
     }
 
     #[test]

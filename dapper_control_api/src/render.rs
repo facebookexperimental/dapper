@@ -34,15 +34,22 @@ pub fn render_json<T: Serialize>(
     result: &ControlPlaneResult<T>,
     config: &DapperConfig,
 ) -> anyhow::Result<String> {
-    let mut map = serde_json::Map::new();
-    map.insert("result".to_string(), serde_json::to_value(&result.result)?);
-    if let Some(ref ctx) = result.context {
-        let context = ResponseContextOutput::from_response_context(ctx, &config.context);
-        if !context.is_empty() {
-            map.insert("context".to_string(), serde_json::to_value(&context)?);
-        }
-    }
-    Ok(serde_json::to_string(&map)?)
+    let context = result
+        .context
+        .as_ref()
+        .map(|ctx| ResponseContextOutput::from_response_context(ctx, &config.context))
+        .filter(|context| !context.is_empty());
+    Ok(serde_json::to_string(&JsonEnvelope {
+        context,
+        result: &result.result,
+    })?)
+}
+
+#[derive(Serialize)]
+struct JsonEnvelope<'a, T> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<ResponseContextOutput<'a>>,
+    result: &'a T,
 }
 
 pub fn render_plaintext<T: fmt::Display>(
@@ -73,6 +80,7 @@ fn render_with_envelope(
 #[cfg(test)]
 mod tests {
     use dapper_session::BreakpointInfo;
+    use dapper_session::CapabilitiesResult;
     use dapper_session::ExecutionStateSummary;
     use dapper_session::ExecutionStatus;
     use dapper_session::SessionInfo;
@@ -132,6 +140,20 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn render_json_preserves_the_adapter_key_order() {
+        let blob = r#"{"supportsStepBack":true,"zzzVendorFlag":true,"aaaVendorFlag":1}"#;
+        let result = ControlPlaneResult {
+            result: CapabilitiesResult(Some(
+                serde_json::from_str(blob).expect("valid capabilities"),
+            )),
+            context: None,
+        };
+        let output =
+            render_json(&result, &DapperConfig::default()).expect("render_json should succeed");
+        assert_eq!(output, format!(r#"{{"result":{blob}}}"#));
     }
 
     #[test]

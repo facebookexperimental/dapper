@@ -53,12 +53,8 @@ pub enum WaitedEvent {
 }
 
 impl RawDapResult {
-    fn body_value(&self) -> Option<serde_json::Value> {
-        extract_response_body(&self.body)
-    }
-
     fn to_json_value(&self) -> serde_json::Value {
-        let body_value = self.body_value();
+        let body_value = extract_response_body(&self.body);
 
         match &self.event {
             Some(WaitedEvent::Received(event_kind)) => {
@@ -99,7 +95,7 @@ impl RawDapResult {
 fn tagged_body<T: Serialize>(value: &T) -> Option<serde_json::Value> {
     serde_json::to_value(value)
         .ok()
-        .and_then(|v| v.get("body").cloned())
+        .and_then(|mut v| v.get_mut("body").map(Value::take))
 }
 
 fn extract_response_body(body: &ResponseBody) -> Option<serde_json::Value> {

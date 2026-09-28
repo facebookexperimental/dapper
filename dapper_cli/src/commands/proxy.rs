@@ -306,7 +306,7 @@ impl Proxy {
             }
             Err(e) => {
                 tracing::warn!(
-                    "Failed to start control plane: {}. Continuing without control plane.",
+                    "Failed to start control plane: {:#}. Continuing without control plane.",
                     e
                 );
                 None

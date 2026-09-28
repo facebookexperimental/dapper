@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
+use anyhow::Context;
 use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
 use dapper_control_proto::EvalRequest;
@@ -75,27 +76,13 @@ where
     T: DapperControlPlane + 'static,
 {
     // Try to bind to the control plane port early
-    let port_number = port.map_or(0, |p| p.get());
-    let addr = format!("127.0.0.1:{}", port_number);
-    let bind_result = tokio::net::TcpListener::bind(&addr).await;
-
-    let (listener, actual_port) = match bind_result {
-        Ok(listener) => {
-            let port = listener.local_addr()?.port();
-            tracing::info!("Bound control plane port: {}", port);
-            let actual_port =
-                Port::try_new(port).ok_or(anyhow::anyhow!("bound port should be non-zero"))?;
-            (listener, actual_port)
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Failed to bind control plane to port {}: {}",
-                port_number,
-                e
-            );
-            return Err(anyhow::Error::from(e));
-        }
-    };
+    let addr = format!("127.0.0.1:{}", port.map_or(0, |p| p.get()));
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("Failed to bind control plane to {addr}"))?;
+    let bound_port = listener.local_addr()?.port();
+    tracing::info!("Bound control plane port: {}", bound_port);
+    let actual_port = Port::try_new(bound_port).context("bound port should be non-zero")?;
 
     let handle = tokio::spawn(async move {
         let handler = DapperControlPlaneHandler { control_plane };
@@ -1440,6 +1427,23 @@ mod tests {
 
         let err = result.expect_err("the server's eval_repl should fail");
         assert_eq!(format!("{err:#}"), FAILING_EVAL_ERROR);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn serve_names_the_address_it_failed_to_bind() -> anyhow::Result<()> {
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = occupied.local_addr()?.port();
+
+        let server = TestServer::new(Arc::new(AtomicBool::new(false)));
+        let Err(err) = serve(Port::try_new(port), server).await else {
+            panic!("binding an occupied port should fail");
+        };
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(&format!("127.0.0.1:{port}")),
+            "got: {message}"
+        );
         Ok(())
     }
 

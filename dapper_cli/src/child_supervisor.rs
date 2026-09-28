@@ -51,6 +51,8 @@ use tokio::process::Child;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use tracing::debug;
 use tracing::info;
 use tracing::warn;
@@ -100,6 +102,9 @@ trait ChildSessionSpawner: Send + Sync {
 struct ChildEntry {
     pid: u32,
     config_path: PathBuf,
+    /// Completes once the child has been reaped, with `Err`: its waiter drops
+    /// the sender without sending.
+    exited: oneshot::Receiver<()>,
 }
 
 /// Registry of live children — the single source of truth for the concurrent
@@ -210,10 +215,10 @@ pub(crate) struct ChildTeardown {
 
 impl ChildTeardown {
     /// Tear down all live children: SIGTERM each child proxy's process group (so
-    /// it disconnects its adapter), wait `grace`, then SIGKILL and remove each
-    /// temp config. Idempotent (the registry drains atomically) and best-effort
-    /// (`ESRCH` and cleanup errors are ignored so parent shutdown always
-    /// proceeds).
+    /// it disconnects its adapter), give them up to `grace` to exit, SIGKILL the
+    /// groups of those that haven't, and remove each temp config. Idempotent (the
+    /// registry drains atomically) and best-effort (`ESRCH` and cleanup errors are
+    /// ignored so parent shutdown always proceeds).
     ///
     /// Limitation: `from-config` puts each child's adapter in its own session, so
     /// a wedged + SIGKILLed child proxy can orphan its adapter. A drained pid may
@@ -228,9 +233,11 @@ impl ChildTeardown {
         for entry in &children {
             signal_child_group(entry.pid, libc::SIGTERM);
         }
-        tokio::time::sleep(self.grace).await;
-        for entry in &children {
-            signal_child_group(entry.pid, libc::SIGKILL);
+        let deadline = Instant::now() + self.grace;
+        for mut entry in children {
+            if timeout_at(deadline, &mut entry.exited).await.is_err() {
+                signal_child_group(entry.pid, libc::SIGKILL);
+            }
             if let Err(e) = tokio::fs::remove_file(&entry.config_path).await
                 && e.kind() != std::io::ErrorKind::NotFound
             {
@@ -344,12 +351,14 @@ async fn run_child_supervisor(
                 // shared with `begin_shutdown`): the child is either tracked or
                 // rejected (already replied), never orphaned. If not tracked we
                 // still own the handle, so tear it down.
+                let (exited_tx, exited) = oneshot::channel();
                 let entry = ChildEntry {
                     pid: child.pid(),
                     config_path: child.config_path().to_path_buf(),
+                    exited,
                 };
                 if registry.insert_and_ack(entry, reply) {
-                    spawn_child_waiter(registry.clone(), child);
+                    spawn_child_waiter(registry.clone(), child, exited_tx);
                 } else {
                     teardown_spawned_child(child).await;
                 }
@@ -362,12 +371,18 @@ async fn run_child_supervisor(
     debug!("child-spawn channel closed; supervisor task exiting");
 }
 
-/// Spawn a task that waits for `child` to exit, then removes it from the
-/// registry (releasing its `max_children` slot) and deletes its temp config.
-fn spawn_child_waiter(registry: ChildRegistry, mut child: Box<dyn SpawnedChild>) {
+/// Spawn a task that waits for `child` to exit, drops `exited` so a teardown in
+/// progress stops waiting on it, then removes it from the registry (releasing
+/// its `max_children` slot) and deletes its temp config.
+fn spawn_child_waiter(
+    registry: ChildRegistry,
+    mut child: Box<dyn SpawnedChild>,
+    exited: oneshot::Sender<()>,
+) {
     tokio::spawn(async move {
         let pid = child.pid();
         child.wait().await;
+        drop(exited);
         // Single-owner remove-then-act: only whoever removes the entry cleans up.
         if let Some(entry) = registry.remove(pid) {
             debug!(
@@ -758,12 +773,15 @@ fn spawn_events_drain(reader: std::io::PipeReader, pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use tokio::sync::broadcast;
     use tokio::sync::oneshot;
+    use tokio::task::JoinHandle;
 
     use super::*;
     use crate::invocation::CommandWord;
@@ -1140,14 +1158,8 @@ mod tests {
     #[test]
     fn test_begin_shutdown_is_idempotent_and_blocks_inserts() {
         let registry = ChildRegistry::default();
-        registry.insert(ChildEntry {
-            pid: 4242,
-            config_path: PathBuf::from("/nonexistent/a.json"),
-        });
-        registry.insert(ChildEntry {
-            pid: 4243,
-            config_path: PathBuf::from("/nonexistent/b.json"),
-        });
+        registry.insert(exited_entry(4242, "/nonexistent/a.json"));
+        registry.insert(exited_entry(4243, "/nonexistent/b.json"));
         assert_eq!(registry.live_count(), 2);
         assert!(!registry.is_shutting_down());
 
@@ -1174,13 +1186,7 @@ mod tests {
         // Once shutting down, insert_and_ack rejects the child and replies failure.
         let (reply, mut reply_rx) = oneshot::channel();
         assert!(
-            !registry.insert_and_ack(
-                ChildEntry {
-                    pid: 4244,
-                    config_path: PathBuf::from("/nonexistent/c.json"),
-                },
-                reply,
-            ),
+            !registry.insert_and_ack(exited_entry(4244, "/nonexistent/c.json"), reply),
             "inserts must be rejected once shutdown has begun"
         );
         assert!(reply_rx.try_recv().expect("replied").is_err());
@@ -1192,13 +1198,7 @@ mod tests {
         // Tracked: a live receiver gets Ok and the child stays tracked.
         let registry = ChildRegistry::default();
         let (reply, reply_rx) = oneshot::channel();
-        assert!(registry.insert_and_ack(
-            ChildEntry {
-                pid: 4242,
-                config_path: PathBuf::from("/nonexistent/a.json"),
-            },
-            reply,
-        ));
+        assert!(registry.insert_and_ack(exited_entry(4242, "/nonexistent/a.json"), reply));
         assert!(reply_rx.await.expect("acked").is_ok());
         assert_eq!(registry.live_count(), 1);
 
@@ -1207,13 +1207,7 @@ mod tests {
         let registry = ChildRegistry::default();
         registry.begin_shutdown();
         let (reply, reply_rx) = oneshot::channel();
-        assert!(!registry.insert_and_ack(
-            ChildEntry {
-                pid: 4243,
-                config_path: PathBuf::from("/nonexistent/b.json"),
-            },
-            reply,
-        ));
+        assert!(!registry.insert_and_ack(exited_entry(4243, "/nonexistent/b.json"), reply));
         assert!(reply_rx.await.expect("replied").is_err());
         assert_eq!(registry.live_count(), 0);
 
@@ -1222,13 +1216,7 @@ mod tests {
         let registry = ChildRegistry::default();
         let (reply, reply_rx) = oneshot::channel();
         drop(reply_rx);
-        assert!(!registry.insert_and_ack(
-            ChildEntry {
-                pid: 4244,
-                config_path: PathBuf::from("/nonexistent/c.json"),
-            },
-            reply,
-        ));
+        assert!(!registry.insert_and_ack(exited_entry(4244, "/nonexistent/c.json"), reply));
         assert_eq!(registry.live_count(), 0, "caller-gone child is rolled back");
     }
 
@@ -1249,15 +1237,12 @@ mod tests {
         let registry = ChildRegistry::default();
 
         // Distinct pids near the top of the pid space, so neither names a live
-        // group (the SIGKILL no-ops on ESRCH); this tests the drain + cleanup.
+        // group (the SIGTERM no-ops on ESRCH); this tests the drain + cleanup.
         let mut paths = Vec::new();
         for (i, name) in ["a.json", "b.json"].into_iter().enumerate() {
             let path = tmp.path().join(name);
             std::fs::write(&path, b"{}").unwrap();
-            registry.insert(ChildEntry {
-                pid: 0x7FFF_FFFE - i as u32,
-                config_path: path.clone(),
-            });
+            registry.insert(exited_entry(0x7FFF_FFFE - i as u32, path.clone()));
             paths.push(path);
         }
         assert_eq!(registry.live_count(), 2);
@@ -1389,60 +1374,109 @@ mod tests {
         let _ = supervisor.await;
     }
 
-    /// Exercises the *real* process-group signaling path (not the sentinel-pid
-    /// no-op the other teardown tests use): spawn a genuine long-lived child in
-    /// its own session/process group (via `setsid`), so `signal_child_group`'s
-    /// `kill(-pid, …)` targets only that child's group — never the test runner —
-    /// then assert `teardown` actually signals it dead and removes its temp
-    /// config.
-    #[tokio::test]
-    async fn test_teardown_signals_and_reaps_real_child_process() {
-        use std::os::unix::process::CommandExt;
-        use std::os::unix::process::ExitStatusExt;
+    fn exited_entry(pid: u32, config_path: impl Into<PathBuf>) -> ChildEntry {
+        ChildEntry {
+            pid,
+            config_path: config_path.into(),
+            exited: oneshot::channel().1,
+        }
+    }
 
+    fn track(mut child: Child, config_path: &Path) -> (ChildEntry, JoinHandle<ExitStatus>) {
+        let pid = child.id().expect("a running child has a pid");
+        let (exited_tx, exited) = oneshot::channel();
+        let reaper = tokio::spawn(async move {
+            let status = child.wait().await.expect("reap test child");
+            drop(exited_tx);
+            status
+        });
+        let entry = ChildEntry {
+            pid,
+            config_path: config_path.to_path_buf(),
+            exited,
+        };
+        (entry, reaper)
+    }
+
+    #[tokio::test]
+    async fn test_teardown_does_not_wait_out_the_grace_for_exited_children() {
+        let teardown = ChildTeardown {
+            registry: ChildRegistry::default(),
+            grace: Duration::from_secs(3600),
+        };
+        // Top of the pid space, so the SIGTERM no-ops on ESRCH.
+        teardown
+            .registry
+            .insert(exited_entry(0x7FFF_FFFE, "/nonexistent/exited.json"));
+
+        tokio::time::timeout(Duration::from_secs(5), teardown.teardown())
+            .await
+            .expect("teardown must not sleep the grace period for a child that already exited");
+    }
+
+    #[tokio::test]
+    async fn test_teardown_ends_a_real_child_with_sigterm() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("real-child.json");
         std::fs::write(&config_path, b"{}").unwrap();
-
-        // A real child that blocks until signaled, placed in its own
-        // session/process group so the group-targeted kill cannot reach the
-        // test's own process group.
-        let mut cmd = std::process::Command::new("sleep");
-        cmd.arg("120");
-        // SAFETY: `setsid` is async-signal-safe and is the only call made in the
-        // forked child before `exec`.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let mut child = cmd.spawn().expect("spawn real child process (sleep)");
-        let pid = child.id();
+        // Its own process group, so the group-targeted signal can't reach the
+        // test runner.
+        let child = Command::new("sleep")
+            .arg("120")
+            .process_group(0)
+            .spawn()
+            .expect("spawn real child process (sleep)");
+        let (entry, reaper) = track(child, &config_path);
 
         let registry = ChildRegistry::default();
-        registry.insert(ChildEntry {
-            pid,
-            config_path: config_path.clone(),
-        });
+        registry.insert(entry);
         let teardown = ChildTeardown {
             registry: registry.clone(),
-            grace: Duration::from_millis(100),
+            grace: Duration::from_secs(3600),
         };
+        tokio::time::timeout(Duration::from_secs(5), teardown.teardown())
+            .await
+            .expect("teardown must return as soon as the child exits");
 
+        let status = reaper.await.unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "got: {status:?}");
+        assert_eq!(registry.live_count(), 0, "registry must be drained");
+        assert!(
+            !config_path.exists(),
+            "teardown must remove the child's temp config"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_teardown_sigkills_a_child_that_ignores_sigterm() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("stubborn-child.json");
+        std::fs::write(&config_path, b"{}").unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "trap '' TERM; echo ready; exec sleep 120"])
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .expect("spawn real child process (sh)");
+        // SIGTERM must not arrive before the shell has installed its trap.
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ready)
+            .await
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        let (entry, reaper) = track(child, &config_path);
+
+        let registry = ChildRegistry::default();
+        registry.insert(entry);
+        let teardown = ChildTeardown {
+            registry: registry.clone(),
+            grace: Duration::from_millis(200),
+        };
         teardown.teardown().await;
 
-        // The child must have been killed by teardown's signal; reap it and
-        // confirm it was terminated by a signal (SIGTERM within the grace
-        // window, or the last-resort SIGKILL).
-        let status = child.wait().expect("reap signaled child");
-        assert!(
-            status.signal().is_some(),
-            "teardown must terminate the real child via a signal, got: {status:?}"
-        );
-        assert_eq!(registry.live_count(), 0, "registry must be drained");
+        let status = reaper.await.unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "got: {status:?}");
         assert!(
             !config_path.exists(),
             "teardown must remove the child's temp config"

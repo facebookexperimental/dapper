@@ -5,6 +5,8 @@
 
 #![warn(clippy::all)]
 
+use std::io::ErrorKind;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -250,18 +252,25 @@ impl ContextConfig {
 
 impl DapperConfig {
     pub fn load() -> Result<Self> {
-        let config_path = Self::get_config_path()?;
+        Self::load_from(&Self::get_config_path()?)
+    }
 
-        if !config_path.exists() {
-            tracing::debug!(
-                "Config file not found at {}, using defaults",
-                config_path.display()
-            );
-            return Ok(Self::default());
-        }
-
-        let content = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
+    fn load_from(config_path: &Path) -> Result<Self> {
+        let content = match std::fs::read_to_string(config_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                tracing::debug!(
+                    "Config file not found at {}, using defaults",
+                    config_path.display()
+                );
+                return Ok(Self::default());
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to read config file: {}", config_path.display())
+                });
+            }
+        };
 
         let config: Self = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", config_path.display()))?;
@@ -272,7 +281,7 @@ impl DapperConfig {
 
     pub fn load_or_default() -> Self {
         Self::load().unwrap_or_else(|e| {
-            tracing::warn!("Failed to load config: {}, using defaults", e);
+            tracing::warn!("Failed to load config, using defaults: {e:#}");
             Self::default()
         })
     }
@@ -302,6 +311,39 @@ impl DapperConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_from_missing_file_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = DapperConfig::load_from(&dir.path().join("config.toml"))
+            .expect("a missing config file is not an error");
+        assert_eq!(config.output_format, OutputFormat::Plaintext);
+        assert_eq!(config.stop.timeout_seconds, 15);
+    }
+
+    #[test]
+    fn load_from_malformed_file_keeps_the_toml_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "output_format = [\n").unwrap();
+
+        let error = DapperConfig::load_from(&path).expect_err("a malformed file must not load");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Failed to parse config file") && message.contains("line 1"),
+            "the error chain must keep the TOML location, got: {message}"
+        );
+    }
+
+    #[test]
+    fn load_from_unreadable_path_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").unwrap();
+
+        DapperConfig::load_from(&file.join("config.toml"))
+            .expect_err("only a missing file falls back to defaults");
+    }
 
     #[test]
     fn test_command_config_sections() {

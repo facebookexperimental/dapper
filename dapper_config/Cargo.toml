@@ -16,3 +16,4 @@ tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 
 [dev-dependencies]
 dapper_session = { path = "../dapper_session" }
+tempfile = "3.27.0"

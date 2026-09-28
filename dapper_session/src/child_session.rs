@@ -86,13 +86,13 @@ pub struct ChildSessionProfile {
 /// The `unsupportedMessage` carried by the `lldb-dap` preset. With a stdio
 /// parent the preset's only rule is action-incompatible, so the reverse request
 /// fails closed with this declarative message rather than a Rust branch.
-pub const LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE: &str = "startDebugging unsupported for lldb-dap profile with stdio parent backend; lldb-dap session handoff requires a reusable tcp/uds server endpoint";
+const LLDB_DAP_STDIO_UNSUPPORTED_MESSAGE: &str = "startDebugging unsupported for lldb-dap profile with stdio parent backend; lldb-dap session handoff requires a reusable tcp/uds server endpoint";
 
 impl ChildSessionProfile {
     /// The bundled `debugpy` preset: a connect-back rule. debugpy with
     /// `subProcess: true` emits `attach` with `configuration.connect.{host,port}`,
     /// so the child attaches there (no `parentBackend` constraint).
-    pub fn debugpy_preset() -> Self {
+    fn debugpy_preset() -> Self {
         ChildSessionProfile {
             rules: vec![ChildSessionRule {
                 when: RuleCondition {
@@ -120,7 +120,7 @@ impl ChildSessionProfile {
     /// for the handoff (lldb-dap resolves the handed-off target IDs in the same
     /// adapter process). A stdio parent has no applicable rule, so the
     /// declarative `unsupportedMessage` explains the fail-closed case.
-    pub fn lldb_dap_preset() -> Self {
+    fn lldb_dap_preset() -> Self {
         ChildSessionProfile {
             rules: vec![ChildSessionRule {
                 when: RuleCondition {

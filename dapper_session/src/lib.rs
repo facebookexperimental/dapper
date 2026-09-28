@@ -28,7 +28,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use strum::Display;
 
-pub mod child_session;
+mod child_session;
 pub mod config;
 
 mod port;
@@ -214,7 +214,7 @@ impl SessionInfo {
         self
     }
 
-    pub fn is_process_alive(&self) -> bool {
+    fn is_process_alive(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
             std::path::Path::new(&format!("/proc/{}", self.pid)).exists()
@@ -250,7 +250,7 @@ impl SessionInfo {
         }
     }
 
-    pub fn is_port_reachable(&self) -> bool {
+    fn is_port_reachable(&self) -> bool {
         match self.control_plane_port {
             None => false,
             Some(port) => {
@@ -365,7 +365,7 @@ impl SessionStore {
 
     /// Iterate all parseable session files. Unparsable files are deleted as
     /// they are encountered (they are debris from crashed sessions).
-    pub fn iter_sessions(&self) -> impl Iterator<Item = SessionInfo> + use<> {
+    fn iter_sessions(&self) -> impl Iterator<Item = SessionInfo> + use<> {
         let mut paths: Vec<PathBuf> = fs::read_dir(&self.dir)
             .map(|entries| {
                 entries

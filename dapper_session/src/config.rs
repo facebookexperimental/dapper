@@ -45,8 +45,9 @@ pub struct DebugSessionConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, serde_json::Value>,
     /// Optional override for the DAP initialize request arguments.
-    /// When provided, these arguments replace the defaults entirely,
-    /// giving the caller full control over what fields are sent.
+    /// When provided, these arguments replace the defaults entirely, except
+    /// `supportsStartDebuggingRequest` and `supportsRunInTerminalRequest`,
+    /// which dapper always sets from what the headless driver can honor.
     /// When absent, dapper's built-in defaults are used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initialize_args: Option<serde_json::Value>,

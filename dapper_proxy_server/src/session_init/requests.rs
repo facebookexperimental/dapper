@@ -40,7 +40,6 @@ pub fn initialize(
             columns_start_at1: Some(true),
             supports_variable_type: Some(true),
             supports_variable_paging: Some(true),
-            supports_run_in_terminal_request: Some(false),
             locale: Some("en-us".to_owned()),
             ..Default::default()
         }
@@ -52,6 +51,9 @@ pub fn initialize(
     // `supportsStartDebuggingRequest: true` can't make us advertise support we
     // can't honor, and a full override can't silently drop it when enabled.
     args.supports_start_debugging_request = supports_start_debugging.then_some(true);
+    // Headless mode declines every `runInTerminal` reverse request, so an
+    // override advertising it would fail launches that the adapter can run itself.
+    args.supports_run_in_terminal_request = Some(false);
 
     Ok(Request::new(RequestCommand::Initialize(args)))
 }
@@ -199,6 +201,7 @@ mod tests {
                 assert_eq!(args.adapter_id, "dapper");
                 assert_eq!(args.supports_variable_type, Some(true));
                 assert_eq!(args.supports_start_debugging_request, None);
+                assert_eq!(args.supports_run_in_terminal_request, Some(false));
             }
             _ => panic!("Expected Initialize command"),
         }
@@ -258,6 +261,23 @@ mod tests {
             RequestCommand::Initialize(args) => {
                 assert_eq!(args.supports_start_debugging_request, Some(true))
             }
+            _ => panic!("Expected Initialize command"),
+        }
+    }
+
+    #[test]
+    fn test_override_cannot_advertise_run_in_terminal() {
+        let overrides = serde_json::json!({
+            "adapterID": "cppdbg",
+            "supportsRunInTerminalRequest": true
+        });
+        let req = initialize(Some(&overrides), false).unwrap();
+        match req.command {
+            RequestCommand::Initialize(args) => assert_eq!(
+                args.supports_run_in_terminal_request,
+                Some(false),
+                "headless mode declines runInTerminal, so an override must not advertise it"
+            ),
             _ => panic!("Expected Initialize command"),
         }
     }

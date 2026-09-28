@@ -30,6 +30,7 @@ use dapper_session::config::StdioSpawnConfig;
 use dapper_session::config::TcpSpawnConfig;
 #[cfg(unix)]
 use dapper_session::config::UdsSpawnConfig;
+use tokio::task::JoinError;
 
 use crate::invocation::Reentry;
 
@@ -275,11 +276,7 @@ impl Proxy {
                 if let Some(tx) = child_spawn_tx {
                     initializer = initializer.with_child_spawn_tx(tx);
                 }
-                if let Err(e) = initializer.run(client_channel).await {
-                    tracing::error!("DAP initialization failed: {}", e);
-                    return Err(e);
-                }
-                Ok(())
+                initializer.run(client_channel).await
             });
 
             (server_channel, Some(handle))
@@ -324,9 +321,12 @@ impl Proxy {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-        let (result, needs_shutdown) = tokio::select! {
+        let needs_shutdown = tokio::select! {
             // No shutdown: the proxy server task has already torn itself down.
-            result = proxy_server_handle => (result, false),
+            result = proxy_server_handle => {
+                log_proxy_server_exit(result);
+                false
+            }
             result = async {
                 match initializer_handle {
                     Some(handle) => handle.await,
@@ -334,19 +334,22 @@ impl Proxy {
                 }
             } => match result {
                 // No shutdown: the idempotent catch-all teardown below covers it.
-                Ok(Ok(())) => (Ok(Ok(())), false),
+                Ok(Ok(())) => {
+                    tracing::info!("Headless session ended");
+                    false
+                }
                 Ok(Err(e)) => {
-                    tracing::error!("DAP initialization failed, shutting down proxy: {}", e);
-                    (Ok(Err(e)), true)
+                    tracing::error!("DAP initialization failed, shutting down proxy: {e:#}");
+                    true
                 }
                 Err(e) => {
-                    tracing::error!("DAP initializer task panicked, shutting down proxy: {}", e);
-                    (Err(e), true)
+                    tracing::error!("DAP initializer task panicked, shutting down proxy: {e}");
+                    true
                 }
             },
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received SIGINT, shutting down gracefully...");
-                (Ok(Ok(())), true)
+                true
             }
             _ = async {
                 #[cfg(unix)]
@@ -355,7 +358,7 @@ impl Proxy {
                 std::future::pending::<()>().await;
             } => {
                 tracing::info!("Received SIGTERM, shutting down gracefully...");
-                (Ok(Ok(())), true)
+                true
             }
         };
 
@@ -392,11 +395,6 @@ impl Proxy {
             }
         }
 
-        match result {
-            Ok(Ok(())) => tracing::info!("Proxy server completed successfully"),
-            Ok(Err(e)) => tracing::error!("Proxy server error: {}", e),
-            Err(e) => tracing::error!("Proxy server task error: {}", e),
-        }
         Ok(())
     }
 
@@ -428,6 +426,16 @@ impl Proxy {
     }
 }
 
+fn log_proxy_server_exit(result: Result<anyhow::Result<()>, JoinError>) {
+    match result {
+        Ok(Ok(())) => tracing::info!("Proxy server completed successfully"),
+        Ok(Err(e)) => tracing::error!("Proxy server error: {e:#}"),
+        // A control-plane `stop` ends the proxy by aborting its task.
+        Err(e) if e.is_cancelled() => tracing::info!("Proxy server stopped"),
+        Err(e) => tracing::error!("Proxy server task panicked: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
@@ -435,10 +443,12 @@ mod tests {
     use std::net::SocketAddr;
 
     use clap::Parser;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
     use crate::cli::Cli;
     use crate::cli::Commands;
+    use crate::cli::tests::CapturedEvents;
 
     /// `BackendMode::Process` takes the adapter command as a
     /// `trailing_var_arg` with `allow_hyphen_values`, so everything after it
@@ -872,5 +882,43 @@ mod tests {
 
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("required"));
+    }
+
+    fn captured_proxy_server_exit(result: Result<anyhow::Result<()>, JoinError>) -> CapturedEvents {
+        let captured = CapturedEvents::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
+        log_proxy_server_exit(result);
+        captured
+    }
+
+    #[tokio::test]
+    async fn cancelled_proxy_server_task_is_logged_as_stopped() {
+        let handle = tokio::spawn(std::future::pending::<anyhow::Result<()>>());
+        handle.abort();
+        let captured = captured_proxy_server_exit(handle.await);
+
+        assert!(
+            captured.contains(&["level=INFO", "message=Proxy server stopped"]),
+            "an aborted proxy task is how a control-plane stop ends the proxy"
+        );
+        assert!(
+            !captured.contains(&["level=ERROR"]),
+            "a control-plane stop must not be logged as an error"
+        );
+    }
+
+    #[test]
+    fn proxy_server_error_is_logged_with_its_cause_chain() {
+        let error = anyhow::anyhow!("backend closed the connection").context("proxy loop failed");
+        let captured = captured_proxy_server_exit(Ok(Err(error)));
+
+        assert!(
+            captured.contains(&[
+                "level=ERROR",
+                "proxy loop failed: backend closed the connection"
+            ]),
+            "the error log must keep the cause chain"
+        );
     }
 }

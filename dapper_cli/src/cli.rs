@@ -131,7 +131,7 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
@@ -139,12 +139,12 @@ mod tests {
 
     use super::*;
 
-    /// Collects rendered event fields for assertion.
+    /// Collects each event's level and rendered fields for assertion.
     #[derive(Clone, Default)]
-    struct CapturedEvents(Arc<Mutex<Vec<String>>>);
+    pub(crate) struct CapturedEvents(Arc<Mutex<Vec<String>>>);
 
     impl CapturedEvents {
-        fn contains(&self, needles: &[&str]) -> bool {
+        pub(crate) fn contains(&self, needles: &[&str]) -> bool {
             self.0
                 .lock()
                 .expect("capture mutex is never poisoned in tests")
@@ -171,7 +171,7 @@ mod tests {
                 }
             }
 
-            let mut rendered = String::new();
+            let mut rendered = format!("level={} ", event.metadata().level());
             event.record(&mut Visitor(&mut rendered));
             self.0
                 .lock()

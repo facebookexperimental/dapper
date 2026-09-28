@@ -280,6 +280,9 @@ pub struct SessionInitializer {
     /// to `startDebugging` reverse requests. `None` disables child spawning, so
     /// the reverse request fails closed.
     child_spawn_tx: Option<mpsc::Sender<ChildSpawnRequest>>,
+    /// Set by `recv_message`, so an `exited`/`terminated` event that arrives
+    /// during the handshake also ends the post-init receive loop.
+    debuggee_ended: bool,
 }
 
 impl SessionInitializer {
@@ -300,6 +303,7 @@ impl SessionInitializer {
             event_writer: EventWriter::stdout(),
             adapter_capabilities: None,
             child_spawn_tx: None,
+            debuggee_ended: false,
         }
     }
 
@@ -401,7 +405,9 @@ impl SessionInitializer {
                     });
                 }
                 // Handle program stopped/exited/terminated events
-                EventKind::Stopped(_) | EventKind::Exited(_) | EventKind::Terminated(_) => {
+                EventKind::Stopped(_) => self.handle_program_stopped_event(event),
+                EventKind::Exited(_) | EventKind::Terminated(_) => {
+                    self.debuggee_ended = true;
                     self.handle_program_stopped_event(event);
                 }
                 // Absorb post-initialize capability updates so later init steps see them.
@@ -1065,7 +1071,7 @@ impl SessionInitializer {
         &mut self,
         channel: &mut DuplexChannel,
     ) -> anyhow::Result<()> {
-        loop {
+        while !self.debuggee_ended {
             let received = match tokio::time::timeout(
                 self.receive_idle_timeout,
                 self.recv_message(channel),
@@ -1090,31 +1096,18 @@ impl SessionInitializer {
             };
 
             match received {
-                Ok(Some(msg)) => {
-                    // In headless mode, exit once the debuggee terminates.
-                    // The `exited` and `terminated` events signal the debug
-                    // session is over; without this, the proxy hangs.
-                    if let dap::Message::Event(event) = &msg
-                        && matches!(
-                            &event.event,
-                            EventKind::Exited(_) | EventKind::Terminated(_)
-                        )
-                    {
-                        debug!("Received {:?} event, init client exiting", event.event);
-                        break;
-                    }
-                    trace!("Received message: {:?}", msg.message_type());
-                }
+                Ok(Some(msg)) => trace!("Received message: {:?}", msg.message_type()),
                 Ok(None) => {
                     debug!("Channel closed, init client exiting");
-                    break;
+                    return Ok(());
                 }
                 Err(e) => {
                     warn!("Error receiving message: {}", e);
-                    break;
+                    return Ok(());
                 }
             }
         }
+        debug!("Debuggee ended, init client exiting");
         Ok(())
     }
 }
@@ -1455,10 +1448,14 @@ mod tests {
         );
     }
 
-    /// Mock backend that completes the full DAP handshake, then goes silent —
-    /// never sending an `Exited`/`Terminated` event and keeping the channel
-    /// open. Used to exercise the post-init receive-loop idle timeout.
-    async fn mock_backend_hangs_after_ready(mut channel: DuplexChannel) -> anyhow::Result<()> {
+    /// Mock backend that completes the full DAP handshake, then goes silent,
+    /// keeping the channel open. It sends `terminated` right before the
+    /// `configurationDone` response if `terminate_during_handshake`, and never
+    /// sends `exited`/`terminated` otherwise.
+    async fn mock_backend_hangs_after_ready(
+        mut channel: DuplexChannel,
+        terminate_during_handshake: bool,
+    ) -> anyhow::Result<()> {
         let mut state = MockState::WaitingForInitialize;
         let mut pending_debug_request: Option<dap::Request> = None;
         let mut seq: Seq = 1.into();
@@ -1498,6 +1495,15 @@ mod tests {
                         MockState::WaitingForConfigurationDone,
                         RequestCommand::ConfigurationDone(_),
                     ) => {
+                        if terminate_during_handshake {
+                            let terminated = dap::Event {
+                                seq,
+                                event: EventKind::Terminated(None),
+                            };
+                            seq = seq.next();
+                            channel.send(terminated.into()).await?;
+                        }
+
                         let config_response = dap::Response {
                             seq,
                             request_seq: req.seq,
@@ -1524,9 +1530,7 @@ mod tests {
                             channel.send(debug_response.into()).await?;
                         }
 
-                        // Handshake done; now hang forever without ever sending
-                        // an `Exited`/`Terminated` event, keeping the channel
-                        // open so the receive loop must rely on its idle timeout.
+                        // Handshake done; hang forever with the channel open.
                         std::future::pending::<()>().await;
                     }
                     (current_state, cmd) => {
@@ -1550,7 +1554,7 @@ mod tests {
         let config = launch_config(vec![], false);
 
         let (server, client) = DuplexChannel::in_memory(1024);
-        let backend_handle = tokio::spawn(mock_backend_hangs_after_ready(server));
+        let backend_handle = tokio::spawn(mock_backend_hangs_after_ready(server, false));
 
         let initializer = SessionInitializer::new(config)
             .with_timeout(Duration::from_secs(2))
@@ -1570,6 +1574,22 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "idle timeout took too long: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_terminated_during_handshake_ends_receive_loop() {
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend_hangs_after_ready(server, true));
+
+        let initializer = SessionInitializer::new(launch_config(vec![], false))
+            .with_receive_idle_timeout(Duration::from_secs(3600));
+        let result = tokio::time::timeout(Duration::from_secs(5), initializer.run(client)).await;
+
+        backend_handle.abort();
+        assert!(
+            matches!(result, Ok(Ok(()))),
+            "a debuggee that ended during the handshake must end the receive loop, got: {result:?}"
         );
     }
 

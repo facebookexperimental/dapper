@@ -183,7 +183,7 @@ impl Proxy {
         session_id: &SessionId,
         config: DapperConfig,
         reentry: Reentry,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i32> {
         let control_port = Port::try_new(self.control_port);
         tracing::info!(self.control_port, "Starting dapper proxy");
         let sessions = match SessionStore::default_location() {
@@ -321,35 +321,26 @@ impl Proxy {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-        let needs_shutdown = tokio::select! {
+        let (needs_shutdown, exit_code) = tokio::select! {
             // No shutdown: the proxy server task has already torn itself down.
             result = proxy_server_handle => {
                 log_proxy_server_exit(result);
-                false
+                (false, 0)
             }
             result = async {
                 match initializer_handle {
                     Some(handle) => handle.await,
                     None => std::future::pending().await,
                 }
-            } => match result {
-                // No shutdown: the idempotent catch-all teardown below covers it.
-                Ok(Ok(())) => {
-                    tracing::info!("Headless session ended");
-                    false
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("DAP initialization failed, shutting down proxy: {e:#}");
-                    true
-                }
-                Err(e) => {
-                    tracing::error!("DAP initializer task panicked, shutting down proxy: {e}");
-                    true
-                }
-            },
+            } => {
+                // Only a failed initializer shuts down; after a finished one the
+                // idempotent catch-all teardown below covers it.
+                let exit_code = initializer_exit_code(result);
+                (exit_code != 0, exit_code)
+            }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("Received SIGINT, shutting down gracefully...");
-                true
+                (true, 0)
             }
             _ = async {
                 #[cfg(unix)]
@@ -358,7 +349,7 @@ impl Proxy {
                 std::future::pending::<()>().await;
             } => {
                 tracing::info!("Received SIGTERM, shutting down gracefully...");
-                true
+                (true, 0)
             }
         };
 
@@ -395,7 +386,7 @@ impl Proxy {
             }
         }
 
-        Ok(())
+        Ok(exit_code)
     }
 
     const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -423,6 +414,24 @@ impl Proxy {
             tracing::warn!("DAP disconnect request failed during shutdown: {}", e);
         }
         proxy_server_abort.abort();
+    }
+}
+
+/// Logs how the headless initializer ended and returns the process exit code.
+fn initializer_exit_code(result: Result<anyhow::Result<()>, JoinError>) -> i32 {
+    match result {
+        Ok(Ok(())) => {
+            tracing::info!("Headless session ended");
+            0
+        }
+        Ok(Err(e)) => {
+            tracing::error!("DAP initialization failed, shutting down proxy: {e:#}");
+            1
+        }
+        Err(e) => {
+            tracing::error!("DAP initializer task panicked, shutting down proxy: {e}");
+            1
+        }
     }
 }
 
@@ -906,6 +915,20 @@ mod tests {
             !captured.contains(&["level=ERROR"]),
             "a control-plane stop must not be logged as an error"
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_failed_initializer_exits_non_zero() {
+        assert_eq!(initializer_exit_code(Ok(Ok(()))), 0);
+        assert_eq!(
+            initializer_exit_code(Ok(Err(anyhow::anyhow!("initialize request failed")))),
+            1
+        );
+        let panicked = tokio::spawn(async {
+            panic!("initializer bug");
+        })
+        .await;
+        assert_eq!(initializer_exit_code(panicked.map(Ok)), 1);
     }
 
     #[test]

@@ -103,16 +103,16 @@ impl Commands {
         log_reason(reason);
 
         let result = match self {
-            Commands::Debug(cmd) => cmd.run(config).await,
+            Commands::Debug(cmd) => cmd.run(config).await.map(|()| 0),
             Commands::Proxy(cmd) => cmd.run(session_id, config, reentry).await,
-            Commands::Mcp(cmd) => cmd.run(config).await,
+            Commands::Mcp(cmd) => cmd.run(config).await.map(|()| 0),
             Commands::Help { .. } => {
                 unreachable!("Help is dispatched in the binary entry point before Commands::run")
             }
         };
 
         match result {
-            Ok(()) => Ok(0),
+            Ok(exit_code) => Ok(exit_code),
             // A closed stdout (e.g. `dapper debug ... | head`) is not a
             // command failure: report the conventional exit code instead
             // of an error trace. Both binaries funnel through here.

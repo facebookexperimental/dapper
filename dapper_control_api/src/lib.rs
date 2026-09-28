@@ -18,10 +18,8 @@ mod response_context_output;
 mod control_plane_result;
 pub use control_plane_result::ControlPlaneResult;
 
-pub mod render;
+mod render;
 pub use render::render;
-pub use render::render_json;
-pub use render::render_plaintext;
 
 mod rendered_response;
 pub use rendered_response::RenderedResponse;

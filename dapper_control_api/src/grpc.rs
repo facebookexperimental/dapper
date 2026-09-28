@@ -396,7 +396,7 @@ where
     }
 }
 
-pub(crate) async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
+async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
 where
     F: Future<Output = anyhow::Result<T>>,
 {

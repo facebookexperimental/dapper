@@ -14,7 +14,7 @@ pub struct ControlPlaneResult<T> {
 }
 
 impl<T: Serialize> ControlPlaneResult<T> {
-    pub fn to_json_fields(&self) -> anyhow::Result<(String, String)> {
+    pub(crate) fn to_json_fields(&self) -> anyhow::Result<(String, String)> {
         let result_json = serde_json::to_string(&self.result)?;
         let context_json = match &self.context {
             Some(ctx) => serde_json::to_string(ctx)?,
@@ -25,7 +25,10 @@ impl<T: Serialize> ControlPlaneResult<T> {
 }
 
 impl<T: DeserializeOwned> ControlPlaneResult<T> {
-    pub fn from_proto_fields(result_json: String, context_json: String) -> anyhow::Result<Self> {
+    pub(crate) fn from_proto_fields(
+        result_json: String,
+        context_json: String,
+    ) -> anyhow::Result<Self> {
         if result_json.is_empty() {
             return Err(anyhow::anyhow!(
                 "Server returned empty result_json; \

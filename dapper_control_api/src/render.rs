@@ -30,7 +30,7 @@ pub fn render<T: fmt::Display + Serialize>(
 /// Render a `ControlPlaneResult` as a JSON object with `result` and optional `context` fields.
 /// The context mirrors what `render_with_envelope` shows in plaintext (context header + footer),
 /// rather than dumping the entire `ResponseContext`.
-pub fn render_json<T: Serialize>(
+fn render_json<T: Serialize>(
     result: &ControlPlaneResult<T>,
     config: &DapperConfig,
 ) -> anyhow::Result<String> {
@@ -52,7 +52,7 @@ struct JsonEnvelope<'a, T> {
     result: &'a T,
 }
 
-pub fn render_plaintext<T: fmt::Display>(
+fn render_plaintext<T: fmt::Display>(
     result: &ControlPlaneResult<T>,
     config: &DapperConfig,
 ) -> String {

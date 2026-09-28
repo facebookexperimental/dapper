@@ -356,7 +356,10 @@ impl SessionStore {
         match fs::remove_file(&file_path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(anyhow::anyhow!("Failed to delete session file: {}", e)),
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to delete session file {}: {e}",
+                file_path.display()
+            )),
         }
     }
 

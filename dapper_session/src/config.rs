@@ -104,7 +104,8 @@ impl DebugSessionConfig {
     /// spawned process runs in its own session and cannot steal the terminal's
     /// foreground process group (e.g. Ctrl+C reaches dapper, not the debuggee).
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open debug session config {}", path.display()))?;
         let mut config: Self =
             serde_json::from_reader(BufReader::new(file)).with_context(|| {
                 format!(
@@ -289,6 +290,16 @@ mod tests {
 
         assert_eq!(parsed.breakpoints.len(), 2);
         assert_eq!(parsed.metadata.get("sessionId").unwrap(), "test-session");
+    }
+
+    #[test]
+    fn from_file_error_names_a_missing_config() {
+        let path = Path::new("/nonexistent/dapper-session-config.json");
+        let err = DebugSessionConfig::from_file(path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("/nonexistent/dapper-session-config.json"),
+            "got: {err:#}"
+        );
     }
 
     #[test]

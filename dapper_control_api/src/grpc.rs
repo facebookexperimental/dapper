@@ -220,10 +220,9 @@ where
                 navigation_type,
                 single_thread,
             } = request.into_inner();
-            let navigation_type_enum = match NavigationType::try_from(navigation_type) {
-                Ok(proto_navigation_type) => navigation_type_from_proto(proto_navigation_type),
-                Err(_) => return Err(anyhow::anyhow!("Invalid navigation type")),
-            };
+            let navigation_type_enum = NavigationType::try_from(navigation_type)
+                .map(navigation_type_from_proto)
+                .context("Invalid navigation type")?;
             let cp_result = self
                 .control_plane
                 .navigate(navigation_type_enum, thread_id.into(), single_thread)
@@ -331,10 +330,7 @@ where
             let arguments: Option<serde_json::Value> = if arguments_json.is_empty() {
                 None
             } else {
-                Some(
-                    serde_json::from_str(&arguments_json)
-                        .map_err(|e| anyhow::anyhow!("Invalid JSON arguments: {}", e))?,
-                )
+                Some(serde_json::from_str(&arguments_json).context("Invalid JSON arguments")?)
             };
 
             match self
@@ -344,7 +340,7 @@ where
             {
                 Ok(raw_dap_result) => {
                     let response_json = serde_json::to_string(&raw_dap_result)
-                        .map_err(|e| anyhow::anyhow!("Failed to serialize RawDapResult: {}", e))?;
+                        .context("Failed to serialize RawDapResult")?;
                     Ok(RawDapResponse {
                         success: true,
                         response_json,
@@ -852,8 +848,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
             .into_inner();
 
         if success {
-            serde_json::from_str(&response_json)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize RawDapResult: {}", e))
+            serde_json::from_str(&response_json).context("Failed to deserialize RawDapResult")
         } else {
             Err(anyhow::anyhow!(error_message))
         }
@@ -877,7 +872,10 @@ impl DapperControlPlane for DapperControlPlaneClient {
         if result_json.is_empty() {
             let capabilities = match capabilities_json.is_empty() {
                 true => None,
-                false => Some(serde_json::from_str(&capabilities_json)?),
+                false => Some(
+                    serde_json::from_str(&capabilities_json)
+                        .context("Failed to parse capabilities_json")?,
+                ),
             };
             return Ok(ControlPlaneResult {
                 result: CapabilitiesResult(capabilities),
@@ -1427,6 +1425,35 @@ mod tests {
 
         let err = result.expect_err("the server's eval_repl should fail");
         assert_eq!(format!("{err:#}"), FAILING_EVAL_ERROR);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn navigate_names_the_rejected_navigation_type() -> anyhow::Result<()> {
+        let control_plane_server =
+            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let channel = Endpoint::try_from(format!(
+            "http://127.0.0.1:{}",
+            control_plane_server.port.get()
+        ))?
+        .connect_lazy();
+        let result = dapper_control_plane_client::DapperControlPlaneClient::new(channel)
+            .navigate(NavigateRequest {
+                thread_id: 1,
+                navigation_type: 99,
+                single_thread: None,
+            })
+            .await;
+        control_plane_server.handle.abort();
+
+        let status = result.expect_err("an unknown navigation type should be rejected");
+        assert!(
+            status
+                .message()
+                .starts_with("Invalid navigation type: unknown enumeration value 99"),
+            "got: {}",
+            status.message()
+        );
         Ok(())
     }
 

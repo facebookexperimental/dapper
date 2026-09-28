@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use anyhow::Context;
 use dapper_session::ResponseContext;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -32,11 +33,12 @@ impl<T: DeserializeOwned> ControlPlaneResult<T> {
             ));
         }
 
-        let result: T = serde_json::from_str(&result_json)?;
+        let result: T =
+            serde_json::from_str(&result_json).context("Failed to parse result_json")?;
         let context = if context_json.is_empty() {
             None
         } else {
-            Some(serde_json::from_str(&context_json)?)
+            Some(serde_json::from_str(&context_json).context("Failed to parse context_json")?)
         };
 
         Ok(Self { result, context })
@@ -96,6 +98,25 @@ mod tests {
         let result =
             ControlPlaneResult::<ThreadsResult>::from_proto_fields(String::new(), String::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_proto_fields_names_the_unparsable_field() {
+        let valid = serde_json::to_string(&ThreadsResult::default()).expect("serialize");
+        for (result_json, context_json, field) in [
+            ("{".to_string(), String::new(), "result_json"),
+            (valid, "{".to_string(), "context_json"),
+        ] {
+            let Err(err) =
+                ControlPlaneResult::<ThreadsResult>::from_proto_fields(result_json, context_json)
+            else {
+                panic!("malformed {field} should fail to parse");
+            };
+            assert!(
+                format!("{err:#}").starts_with(&format!("Failed to parse {field}: ")),
+                "got: {err:#}"
+            );
+        }
     }
 
     #[test]

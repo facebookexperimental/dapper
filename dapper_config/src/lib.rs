@@ -290,7 +290,6 @@ impl DapperConfig {
         Ok(Self::get_config_dir()?.join("config.toml"))
     }
 
-    #[cfg(not(test))]
     fn get_config_dir() -> Result<PathBuf> {
         if let Ok(env_dir) = std::env::var("DAPPER_CONFIG_DIR") {
             return Ok(PathBuf::from(env_dir));
@@ -300,11 +299,6 @@ impl DapperConfig {
             .ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?
             .join("dapper");
         Ok(config_dir)
-    }
-
-    #[cfg(test)]
-    fn get_config_dir() -> Result<PathBuf> {
-        Ok(dapper_session::get_user_temp_dir().join("test_config"))
     }
 }
 

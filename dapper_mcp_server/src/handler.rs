@@ -245,7 +245,7 @@ impl McpHandler {
             Ok(session)
         } else if let Some(port) = self.control_port {
             self.sessions
-                .iter_active_sessions(self.scope_id.clone())
+                .iter_active_sessions(None)
                 .find(|s| s.control_plane_port == Some(port))
                 .ok_or_else(|| anyhow::anyhow!("no session found on port {port}"))
         } else {

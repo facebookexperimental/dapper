@@ -349,6 +349,33 @@ fn an_explicit_session_id_overrides_the_control_port() {
     );
 }
 
+#[test]
+fn control_port_lookup_ignores_the_scope() {
+    let (_listener, session) = live_session("fdb-session");
+    let session = SessionInfo {
+        scope_id: Some(ScopeId::new("fdb-1")),
+        ..session
+    };
+    let env = McpServerEnv {
+        control_port: session.control_plane_port,
+        scope_id: Some(ScopeId::new("other")),
+        ..isolated_env()
+    };
+    let store = env.sessions.clone();
+    store.save(&session).expect("seed the session");
+    let handler = full_toolset_handler_with(env);
+
+    let resolved = handler.resolve_session(None);
+    store.delete(&session).expect("clean up the session");
+
+    assert_eq!(
+        resolved
+            .expect("--control-port must find its session whatever --scope-id says")
+            .session_id,
+        session.session_id
+    );
+}
+
 /// When a fixed `control_port` is configured, `get_client` must NOT use the
 /// cache-first fast path, which keys on session_id. It must fall through to
 /// `resolve_session`, which errors here: the explicit id and the port both

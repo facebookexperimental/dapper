@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::error::Error as _;
 use std::future::Future;
 use std::result::Result;
 use std::sync::Arc;
@@ -52,6 +53,7 @@ use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::Code;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
@@ -421,6 +423,16 @@ where
     }
 }
 
+/// Unwraps the error text `to_tonic` sends as an `Unknown` status. Any other
+/// status (e.g. a local transport failure, which has a source) keeps tonic's rendering.
+fn status_error(status: Status) -> anyhow::Error {
+    if status.code() == Code::Unknown && status.source().is_none() && !status.message().is_empty() {
+        anyhow::Error::msg(status.message().to_owned())
+    } else {
+        anyhow::Error::new(status)
+    }
+}
+
 struct CachedConnection {
     channel: Channel,
     port: u16,
@@ -665,20 +677,25 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 command: command.to_owned(),
                 frame_id: frame_id.map(Into::into),
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         Ok(response)
     }
 
     async fn stop(&self) -> anyhow::Result<()> {
         let mut client = self.get_client().await?;
-        client.stop(StopRequest {}).await?;
+        client.stop(StopRequest {}).await.map_err(status_error)?;
         Ok(())
     }
 
     async fn threads(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
         let mut client = self.get_client().await?;
-        let resp = client.threads(ThreadsRequest {}).await?.into_inner();
+        let resp = client
+            .threads(ThreadsRequest {})
+            .await
+            .map_err(status_error)?
+            .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
 
@@ -695,7 +712,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 start_frame,
                 levels,
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -709,7 +727,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
             .scopes(ScopesRequest {
                 frame_id: frame_id.into(),
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -723,7 +742,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
             .variables(VariablesRequest {
                 variables_reference: variables_reference.into(),
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -743,7 +763,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 navigation_type: proto_navigation_type as i32,
                 single_thread,
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -761,7 +782,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 name: name.to_owned(),
                 value: value.to_owned(),
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -790,7 +812,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 clear_existing,
                 breakpoints,
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -806,7 +829,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 filters: filters.to_vec(),
                 clear_existing,
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
@@ -836,7 +860,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 wait_for_event,
                 timeout_seconds,
             })
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
 
         if success {
@@ -855,7 +880,8 @@ impl DapperControlPlane for DapperControlPlaneClient {
             context_json,
         } = client
             .capabilities(CapabilitiesRequest {})
-            .await?
+            .await
+            .map_err(status_error)?
             .into_inner();
 
         // A proxy predating `result_json` fills only the legacy field. An
@@ -877,7 +903,11 @@ impl DapperControlPlane for DapperControlPlaneClient {
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::StatusResult>> {
         let mut client = self.get_client().await?;
-        let resp = client.status(StatusRequest {}).await?.into_inner();
+        let resp = client
+            .status(StatusRequest {})
+            .await
+            .map_err(status_error)?
+            .into_inner();
         ControlPlaneResult::from_proto_fields(resp.result_json, resp.context_json)
     }
 }
@@ -919,6 +949,9 @@ mod tests {
         }
     }
 
+    const FAILING_EVAL_COMMAND: &str = "fail";
+    const FAILING_EVAL_ERROR: &str = "evaluation failed\nNameError: name 'x' is not defined";
+
     struct TestServer {
         stop_was_called: Arc<AtomicBool>,
         breakpoint_specs: Arc<Mutex<Vec<SourceBreakpoint>>>,
@@ -938,6 +971,9 @@ mod tests {
             command: &str,
             frame_id: Option<FrameId>,
         ) -> anyhow::Result<String> {
+            if command == FAILING_EVAL_COMMAND {
+                anyhow::bail!(FAILING_EVAL_ERROR);
+            }
             match frame_id {
                 Some(fid) => Ok(format!("eval result for: {command} (frame {fid})")),
                 None => Ok(format!("eval result for: {command}")),
@@ -1392,6 +1428,30 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_error_is_the_server_error_text() -> anyhow::Result<()> {
+        let control_plane_server =
+            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let client = DapperControlPlaneClient::for_port(control_plane_server.port);
+        let result = client.eval_repl(FAILING_EVAL_COMMAND, None).await;
+        control_plane_server.handle.abort();
+
+        let err = result.expect_err("the server's eval_repl should fail");
+        assert_eq!(format!("{err:#}"), FAILING_EVAL_ERROR);
+        Ok(())
+    }
+
+    #[test]
+    fn status_error_keeps_tonic_rendering_for_other_statuses() {
+        for status in [
+            Status::unavailable("tcp connect error"),
+            Status::unknown(""),
+        ] {
+            let rendered = status.to_string();
+            assert_eq!(status_error(status).to_string(), rendered);
+        }
     }
 
     fn fake_session(id: &str, port: Option<u16>, scope: Option<&str>) -> SessionInfo {

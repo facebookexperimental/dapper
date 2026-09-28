@@ -359,6 +359,13 @@ impl SessionInitializer {
         })
     }
 
+    fn supports_configuration_done(&self) -> bool {
+        self.adapter_capabilities
+            .as_ref()
+            .and_then(|c| c.supports_configuration_done_request)
+            .unwrap_or(false)
+    }
+
     /// Receive the next message, processing any that need special handling.
     /// Stashes debug responses, handles dapper events, then returns the message.
     async fn recv_message(
@@ -885,8 +892,8 @@ impl SessionInitializer {
     /// and `configurationDone`, per the DAP spec ordering.
     ///
     /// Validation (per design):
-    /// 1. If the adapter advertises no exception filters at all, no-op
-    ///    with a debug log when no explicit `Exception` entries are in
+    /// 1. If the adapter advertises no exception filters at all, install
+    ///    nothing, with a debug log when no explicit `Exception` entries are in
     ///    config (avoids spamming startup), or a warn log listing the
     ///    skipped filter ids when there are explicit entries (so users
     ///    don't lose their config silently). Init succeeds either way.
@@ -895,6 +902,9 @@ impl SessionInitializer {
     ///    and silent skipping would mask a typo.
     /// 3. Adapter-rejected response is logged at warn (not bailed) so the
     ///    rest of init can complete; matches the function-bp pattern.
+    /// 4. With nothing to install, an adapter that does not advertise
+    ///    `supportsConfigurationDoneRequest` still gets an empty request: per
+    ///    the spec's `initialized` sequence it is the end-of-configuration signal.
     async fn set_exception_breakpoints(
         &mut self,
         channel: &mut DuplexChannel,
@@ -919,7 +929,7 @@ impl SessionInitializer {
                     skipped.len(),
                 );
             }
-            return Ok(());
+            return self.send_legacy_end_of_configuration(channel).await;
         }
 
         // Validate explicit filter ids against the advertised set — this is
@@ -948,7 +958,7 @@ impl SessionInitializer {
 
         if merged.is_empty() {
             debug!("No exception breakpoints to install");
-            return Ok(());
+            return self.send_legacy_end_of_configuration(channel).await;
         }
 
         // `merged.into_values()` already iterates in BTreeMap key order, so
@@ -977,13 +987,30 @@ impl SessionInitializer {
         Ok(())
     }
 
+    async fn send_legacy_end_of_configuration(
+        &mut self,
+        channel: &mut DuplexChannel,
+    ) -> anyhow::Result<()> {
+        if self.supports_configuration_done() {
+            return Ok(());
+        }
+        debug!(
+            "Sending empty setExceptionBreakpoints: adapter does not advertise supportsConfigurationDoneRequest"
+        );
+        let (request, _) =
+            build_set_exception_breakpoints_request(&[], self.adapter_capabilities.as_ref());
+        let response = self.request(channel, request).await?;
+        if !response.success {
+            warn!(
+                "setExceptionBreakpoints failed: {}",
+                response.message.as_deref().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     async fn configuration_done(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
-        let supports = self
-            .adapter_capabilities
-            .as_ref()
-            .and_then(|c| c.supports_configuration_done_request)
-            .unwrap_or(false);
-        if !supports {
+        if !self.supports_configuration_done() {
             debug!(
                 "Skipping configurationDone request: adapter does not advertise supportsConfigurationDoneRequest"
             );
@@ -2489,21 +2516,26 @@ mod tests {
     }
 
     /// Mock backend that does not advertise supportsConfigurationDoneRequest,
-    /// and expects no configurationDone request (per DAP spec). Sends debug
-    /// response after initialized event without waiting for configurationDone.
-    async fn mock_backend_no_config_done(mut channel: DuplexChannel) -> anyhow::Result<()> {
+    /// and expects no configurationDone request (per DAP spec). It sends the
+    /// debug response only after the empty setExceptionBreakpoints that the
+    /// spec makes the end of configuration for such an adapter.
+    async fn mock_backend_no_config_done(
+        mut channel: DuplexChannel,
+        caps: Capabilities,
+    ) -> anyhow::Result<()> {
         let mut seq: Seq = 1.into();
+        let mut pending_debug_request: Option<dap::Request> = None;
 
         while let Ok(Some(msg)) = channel.recv().await {
             if let dap::Message::Request(req) = msg {
-                match req.command {
+                match &req.command {
                     RequestCommand::Initialize(_) => {
                         let response = dap::Response {
                             seq,
                             request_seq: req.seq,
                             success: true,
                             message: None,
-                            body: ResponseBody::Initialize(Some(Capabilities::default())),
+                            body: ResponseBody::Initialize(Some(caps.clone())),
                         };
                         seq = seq.next();
                         channel
@@ -2513,6 +2545,7 @@ mod tests {
                     }
 
                     RequestCommand::Launch(_) | RequestCommand::Attach(_) => {
+                        pending_debug_request = Some(req);
                         let initialized_event = dap::Event {
                             seq,
                             event: EventKind::Initialized(Default::default()),
@@ -2522,15 +2555,32 @@ mod tests {
                             .send(initialized_event.into())
                             .await
                             .context("Failed to send initialized event")?;
-                        // Adapter does not support configurationDone, so send debug response now
-                        let debug_response_body = match &req.command {
+                    }
+
+                    RequestCommand::SetExceptionBreakpoints(args)
+                        if args.filters.is_empty() && args.filter_options.is_none() =>
+                    {
+                        let response = dap::Response {
+                            seq,
+                            request_seq: req.seq,
+                            success: true,
+                            message: None,
+                            body: ResponseBody::SetExceptionBreakpoints(None),
+                        };
+                        seq = seq.next();
+                        channel.send(response.into()).await?;
+
+                        let debug_req = pending_debug_request
+                            .take()
+                            .context("setExceptionBreakpoints before launch/attach")?;
+                        let debug_response_body = match &debug_req.command {
                             RequestCommand::Launch(_) => ResponseBody::Launch,
                             RequestCommand::Attach(_) => ResponseBody::Attach,
                             _ => unreachable!(),
                         };
                         let debug_response = dap::Response {
                             seq,
-                            request_seq: req.seq,
+                            request_seq: debug_req.seq,
                             success: true,
                             message: None,
                             body: debug_response_body,
@@ -2556,14 +2606,9 @@ mod tests {
         anyhow::bail!("Channel closed before completion")
     }
 
-    #[tokio::test]
-    async fn test_configuration_done_skipped_when_not_supported() {
-        // Adapter does NOT advertise supportsConfigurationDoneRequest.
-        // SessionInitializer should skip sending configurationDone and still succeed.
-        let config = launch_config(vec![], false);
-
+    async fn run_against_mock_without_config_done(caps: Capabilities, config: DebugSessionConfig) {
         let (server, client) = DuplexChannel::in_memory(1024);
-        let backend_handle = tokio::spawn(mock_backend_no_config_done(server));
+        let backend_handle = tokio::spawn(mock_backend_no_config_done(server, caps));
 
         let initializer = SessionInitializer::new(config).with_timeout(Duration::from_secs(1));
         let result = initializer.run(client).await;
@@ -2571,10 +2616,32 @@ mod tests {
         let backend_result = backend_handle.await.expect("backend task panicked");
         assert!(
             backend_result.is_ok(),
-            "Mock backend failed (should not have received configurationDone): {:?}",
+            "Mock backend failed (it needs the empty setExceptionBreakpoints and no configurationDone): {:?}",
             backend_result
         );
         assert!(result.is_ok(), "SessionInitializer failed: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_configuration_done_skipped_when_not_supported() {
+        // Adapter does NOT advertise supportsConfigurationDoneRequest.
+        // SessionInitializer should skip sending configurationDone and still succeed.
+        run_against_mock_without_config_done(Capabilities::default(), launch_config(vec![], false))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_legacy_end_of_configuration_sent_when_no_advertised_filter_is_selected() {
+        let caps = Capabilities {
+            exception_breakpoint_filters: Some(vec![ExceptionBreakpointsFilter {
+                filter: "raised".to_string(),
+                label: "Raised".to_string(),
+                default: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        run_against_mock_without_config_done(caps, launch_config(vec![], true)).await;
     }
 
     /// Drive `recv_message` once with `request` (a serialized DAP reverse

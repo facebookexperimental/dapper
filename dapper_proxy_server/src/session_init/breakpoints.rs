@@ -31,9 +31,7 @@ pub struct BreakpointGroups {
 impl BreakpointGroups {
     /// Create breakpoint groups from a list of breakpoints. Source-line
     /// breakpoints are bucketed by file path, function-name breakpoints are
-    /// collected together, and exception filters are converted to
-    /// `ExceptionFilterEntry` via the shared conversion in
-    /// `dapper_session`.
+    /// collected together, and exception filters become `ExceptionFilterEntry`s.
     pub fn from_breakpoints(breakpoints: &[BreakpointSpec]) -> Self {
         let mut groups = Self::default();
 
@@ -45,13 +43,6 @@ impl BreakpointGroups {
                 BreakpointSpec::Source { path, line } => {
                     groups.source.entry(path.clone()).or_default().push(*line);
                 }
-                // Destructure directly rather than going through
-                // `from_breakpoint_spec(bp)`. The conversion in the shared
-                // crate returns `Option` because it accepts any
-                // `BreakpointSpec`, but here we've already matched on the
-                // `Exception` variant — using the `Option`-returning helper
-                // would invite a silent drop if the conversion ever changed
-                // shape. The fields are the same on both types.
                 BreakpointSpec::Exception { filter, condition } => {
                     groups.exceptions.push(ExceptionFilterEntry {
                         filter: filter.clone(),

@@ -600,18 +600,13 @@ async fn session_targeted_tool_still_accepts_no_reason() {
     assert_params_accepted(&result, "omitted arguments object must stay valid");
 }
 
-/// Surfaces as an `is_error` result, not a protocol error, so
-/// `assert_params_accepted` would not catch a regression here.
 #[tokio::test]
 async fn a_wrong_typed_reason_does_not_reject_the_call() {
     for reason in [json!(7), json!(["a"])] {
-        let result = call_tool_e2e("debug_threads_command", json!({"reason": reason}))
-            .await
-            .expect("the call must reach the handler");
-        assert!(
-            !text_of(&result).contains("failed to deserialize"),
-            "a non-string reason must be dropped, not rejected; got {}",
-            text_of(&result)
+        let result = call_tool_e2e("debug_threads_command", json!({"reason": reason})).await;
+        assert_params_accepted(
+            &result,
+            &format!("a non-string reason ({reason}) must be dropped, not rejected"),
         );
     }
 }
@@ -1099,20 +1094,39 @@ async fn call_tool_e2e_raw(
     result
 }
 
-/// Assert that a `call_tool_e2e` result did not fail with a
-/// deserialization error (MCP error code -32602). The tool itself
-/// may return an application-level error (e.g. "no active session")
-/// which is fine — we only care that parameter parsing succeeded.
+/// rmcp's prefix for the text of a tool result whose arguments failed to
+/// deserialize.
+const PARAMS_REJECTED_PREFIX: &str = "failed to deserialize parameters";
+
+/// rmcp reports rejected arguments as an `is_error` tool result, not an MCP
+/// error, so only the text tells them apart from allowed application errors.
 fn assert_params_accepted(
     result: &Result<CallToolResult, rmcp::service::ServiceError>,
     context: &str,
 ) {
-    match result {
-        Err(rmcp::service::ServiceError::McpError(e)) if e.code.0 == -32602 => {
-            panic!("{context}: parameter deserialization failed: {}", e.message);
-        }
-        _ => {} // Ok or any non-deserialization error is fine
-    }
+    let result = result
+        .as_ref()
+        .unwrap_or_else(|e| panic!("{context}: the call must reach the handler, got {e}"));
+    assert!(
+        !text_of(result).starts_with(PARAMS_REJECTED_PREFIX),
+        "{context}: parameter deserialization failed: {}",
+        text_of(result)
+    );
+}
+
+/// Pins the prefix [`assert_params_accepted`] looks for, without which that
+/// helper would pass vacuously.
+#[tokio::test]
+async fn unparsable_parameters_are_reported_as_rejected() {
+    let result = call_tool_e2e("debug_stack_trace_command", json!({"thread_id": "abc"}))
+        .await
+        .expect("a rejected argument must still produce a tool result");
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text_of(&result).starts_with(PARAMS_REJECTED_PREFIX),
+        "got {}",
+        text_of(&result)
+    );
 }
 
 // -- stack_trace: ThreadId, Option<i64> levels, Option<i64> start_frame --

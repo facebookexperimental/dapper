@@ -46,6 +46,14 @@ pub struct ChildSessionConfig {
     pub profile: ChildSessionProfile,
 }
 
+impl ChildSessionConfig {
+    /// Whether `startDebugging` may spawn children at all, before any rule is
+    /// matched against the request.
+    pub fn spawning_enabled(&self) -> bool {
+        self.auto_spawn && self.max_depth > 0 && self.max_children > 0
+    }
+}
+
 fn default_max_children() -> u32 {
     16
 }
@@ -648,6 +656,46 @@ fn dotted_to_pointer(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::DebugSessionConfig;
+
+    #[test]
+    fn test_spawning_enabled_requires_auto_spawn_and_positive_budgets() {
+        let enabled = ChildSessionConfig {
+            auto_spawn: true,
+            max_children: 1,
+            max_depth: 1,
+            profile: ChildSessionProfile::default(),
+        };
+        assert!(enabled.spawning_enabled());
+
+        for (field, disabled) in [
+            (
+                "autoSpawn",
+                ChildSessionConfig {
+                    auto_spawn: false,
+                    ..enabled.clone()
+                },
+            ),
+            (
+                "maxChildren",
+                ChildSessionConfig {
+                    max_children: 0,
+                    ..enabled.clone()
+                },
+            ),
+            (
+                "maxDepth",
+                ChildSessionConfig {
+                    max_depth: 0,
+                    ..enabled.clone()
+                },
+            ),
+        ] {
+            assert!(
+                !disabled.spawning_enabled(),
+                "{field} alone must disable spawning"
+            );
+        }
+    }
 
     #[test]
     fn test_child_sessions_debugpy_rule_roundtrip() {

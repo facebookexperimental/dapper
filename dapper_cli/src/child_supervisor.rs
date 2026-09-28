@@ -398,10 +398,7 @@ pub(crate) fn setup_child_supervisor(
     reentry: Reentry,
 ) -> Option<(mpsc::Sender<ChildSpawnRequest>, ChildTeardown)> {
     let child_sessions = config.child_sessions.as_ref()?;
-    if !child_sessions.auto_spawn
-        || child_sessions.max_children == 0
-        || child_sessions.max_depth == 0
-    {
+    if !child_sessions.spawning_enabled() {
         return None;
     }
 

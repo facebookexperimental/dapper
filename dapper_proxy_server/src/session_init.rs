@@ -34,6 +34,7 @@ use dapper_dap_protocol::responses::UnknownResponseBody;
 use dapper_session::ExceptionFilterEntry;
 use dapper_session::Port;
 use dapper_session::SessionId;
+use dapper_session::config::ChildSessionConfig;
 use dapper_session::config::DebugSessionConfig;
 use dapper_session::config::can_resolve_for_parent_backend;
 use dapper_session::config::resolve_child_session;
@@ -347,9 +348,7 @@ impl SessionInitializer {
             return false;
         }
         self.config.child_sessions.as_ref().is_some_and(|c| {
-            c.auto_spawn
-                && c.max_depth > 0
-                && c.max_children > 0
+            c.spawning_enabled()
                 && c.profile
                     .rules
                     .iter()
@@ -463,14 +462,14 @@ impl SessionInitializer {
         args: &StartDebuggingRequestArguments,
     ) -> anyhow::Result<()> {
         // Gate in the handler too — a non-compliant adapter can send this even
-        // unadvertised. `max_children > 0` is part of the gate so a deliberate
+        // unadvertised. The gate covers `max_children > 0`, so a deliberate
         // `maxChildren: 0` declines here rather than hitting the no-channel
         // branch below (no channel is installed for a zero cap).
         let enabled = self
             .config
             .child_sessions
             .as_ref()
-            .is_some_and(|c| c.auto_spawn && c.max_depth > 0 && c.max_children > 0);
+            .is_some_and(ChildSessionConfig::spawning_enabled);
         if !enabled {
             return self.decline_reverse_request(channel, request).await;
         }

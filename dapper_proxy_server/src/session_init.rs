@@ -38,11 +38,8 @@ use dapper_session::config::ChildSessionConfig;
 use dapper_session::config::DebugSessionConfig;
 use dapper_session::config::can_resolve_for_parent_backend;
 use dapper_session::config::resolve_child_session;
-// Re-exported so `client.rs` can build the same partition+gating-aware
-// setExceptionBreakpoints request that the headless install path uses,
-// without widening the whole `requests` submodule. Consumed by the
-// control-plane `ProxyClient::set_exception_breakpoints` method added in
-// a follow-up PR.
+// Re-exported for `ProxyClient::set_exception_breakpoints` in `client.rs`, so it
+// builds the same capability-gated request as the headless install path.
 pub(crate) use requests::build_set_exception_breakpoints_request;
 use serde::Deserialize;
 use serde::Serialize;
@@ -60,10 +57,8 @@ use crate::dapper_event::ControlPlaneStatus;
 use crate::dapper_event::DapperEvent;
 use crate::transport::DuplexChannel;
 
-/// Default timeout for waiting for DAP messages.
-///
-/// NOTE: assumed to be generous enough for real world use. Let's see if we need
-/// to make it configurable.
+/// Default timeout for each wait in the DAP initialization handshake;
+/// `initTimeoutSecs` in the session config overrides it.
 const DEFAULT_INIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Idle timeout for the post-initialization receive loop. If the debug adapter
@@ -674,14 +669,16 @@ impl SessionInitializer {
         }
     }
 
-    /// Run the full initialization sequence, then receive messages until the channel closes.
+    /// Run the DAP handshake, then receive messages until the debuggee exits or
+    /// terminates or the channel closes. Fails if the handshake fails, or if the
+    /// adapter then stays silent for the receive idle timeout.
     ///
-    /// Per DAP spec, the sequence is:
+    /// Per DAP spec, the handshake is:
     /// 1. Send initialize request, wait for response
     /// 2. Send launch/attach request (don't block for response)
     /// 3. Wait for initialized event
     /// 4. Send configuration (breakpoints, etc.)
-    /// 5. Send configurationDone, wait for response
+    /// 5. Send configurationDone if the adapter supports it, wait for response
     /// 6. Wait for launch/attach response (may come after configurationDone)
     pub async fn run(mut self, mut channel: DuplexChannel) -> anyhow::Result<()> {
         self.start_time = Some(Instant::now());

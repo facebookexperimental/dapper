@@ -7,6 +7,7 @@ use std::fmt;
 use std::fmt::Write as _;
 
 use dapper_dap_protocol::capabilities::Capabilities;
+use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::Scope;
 use dapper_dap_protocol::data_types::StackFrame;
@@ -132,31 +133,27 @@ impl fmt::Display for CapabilitiesResult {
                 f,
                 "Adapter capabilities not yet available (initialize response not received)."
             ),
-            // Summarized from the serialized form so the walker also reports
-            // the adapter-specific keys `Capabilities::extra` collects.
-            Some(capabilities) => {
-                let value =
-                    serde_json::to_value(capabilities).expect("Capabilities is plain serializable");
-                write!(f, "{}", format_capabilities(&value))
-            }
+            Some(capabilities) => write!(f, "{}", format_capabilities(capabilities)),
         }
     }
 }
 
-fn format_capabilities(value: &Value) -> String {
-    let mut supported = Vec::new();
-    if let Some(obj) = value.as_object() {
-        for (key, val) in obj {
-            if val == &Value::Bool(true) {
-                supported.push(key.as_str());
-            }
-        }
-    }
-    let exception_filters_section: Option<String> = value
-        .get("exceptionBreakpointFilters")
-        .and_then(|v| v.as_array())
-        .filter(|arr| !arr.is_empty())
-        .map(|arr| format_exception_breakpoint_filters(arr.as_slice()));
+fn format_capabilities(capabilities: &Capabilities) -> String {
+    // Summarized from the serialized form so the walker also reports
+    // the adapter-specific keys `Capabilities::extra` collects.
+    let value = serde_json::to_value(capabilities).expect("Capabilities is plain serializable");
+    let mut supported: Vec<&str> = value
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, val)| **val == Value::Bool(true))
+        .map(|(key, _)| key.as_str())
+        .collect();
+    let exception_filters_section = capabilities
+        .exception_breakpoint_filters
+        .as_deref()
+        .filter(|filters| !filters.is_empty())
+        .map(format_exception_breakpoint_filters);
     if supported.is_empty() && exception_filters_section.is_none() {
         return "No optional capabilities reported by the adapter.".to_string();
     }
@@ -181,47 +178,28 @@ fn format_capabilities(value: &Value) -> String {
 /// `Capabilities` response) as a sorted list of filter ids with optional
 /// label/default/supports_condition annotations. The bool-only walker
 /// above silently drops this array, so it gets its own dedicated section.
-fn format_exception_breakpoint_filters(filters: &[Value]) -> String {
-    let mut entries: Vec<&Value> = filters.iter().collect();
-    entries.sort_by(|a, b| {
-        a.get("filter")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(b.get("filter").and_then(|v| v.as_str()).unwrap_or(""))
-    });
+fn format_exception_breakpoint_filters(filters: &[ExceptionBreakpointsFilter]) -> String {
+    let mut filters: Vec<&ExceptionBreakpointsFilter> = filters.iter().collect();
+    filters.sort_by(|a, b| a.filter.cmp(&b.filter));
 
     let mut output = String::from("Exception breakpoint filters:\n");
-    for entry in entries {
-        let filter = entry
-            .get("filter")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(unknown)");
-        // Up to 3 annotations: label, default, supports_condition.
-        let mut annotations: Vec<String> = Vec::with_capacity(3);
-        // Debug-format the label so values containing whitespace or
-        // punctuation render with visible quotes — useful for an LLM
-        // agent reading the capability output.
-        if let Some(label) = entry.get("label").and_then(|v| v.as_str()) {
-            annotations.push(format!("label: {label:?}"));
-        }
-        if entry
-            .get("default")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            annotations.push("default: true".to_string());
-        }
-        if entry
-            .get("supportsCondition")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            annotations.push("supports_condition: true".to_string());
-        }
+    for filter in filters {
+        let annotations: Vec<String> = [
+            // Debug-format the label so values containing whitespace or
+            // punctuation render with visible quotes — useful for an LLM
+            // agent reading the capability output.
+            (!filter.label.is_empty()).then(|| format!("label: {:?}", filter.label)),
+            (filter.default == Some(true)).then(|| "default: true".to_string()),
+            (filter.supports_condition == Some(true))
+                .then(|| "supports_condition: true".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if annotations.is_empty() {
-            let _ = writeln!(output, "  - {filter}");
+            let _ = writeln!(output, "  - {}", filter.filter);
         } else {
-            let _ = writeln!(output, "  - {filter} ({})", annotations.join(", "));
+            let _ = writeln!(output, "  - {} ({})", filter.filter, annotations.join(", "));
         }
     }
     output
@@ -1947,20 +1925,20 @@ mod tests {
 
 #[cfg(test)]
 mod capabilities_tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
-    fn format_capabilities_renders_exception_filters() {
-        let value = json!({
-            "supportsStepBack": true,
-            "exceptionBreakpointFilters": [
-                {"filter": "uncaught", "label": "Uncaught", "default": true, "supportsCondition": true},
-                {"filter": "raised", "label": "Raised"}
-            ]
-        });
-        let rendered = format_capabilities(&value);
+    fn capabilities_result_renders_exception_filters() {
+        let rendered = caps_from(
+            r#"{
+                "supportsStepBack": true,
+                "exceptionBreakpointFilters": [
+                    {"filter": "uncaught", "label": "Uncaught", "default": true, "supportsCondition": true},
+                    {"filter": "raised", "label": "Raised"}
+                ]
+            }"#,
+        )
+        .to_string();
         // Bool capabilities come first.
         assert!(rendered.contains("Supported capabilities:\n  - supportsStepBack\n"));
         // Exception filters section follows, sorted by filter id.
@@ -1985,29 +1963,29 @@ mod capabilities_tests {
     }
 
     #[test]
-    fn format_capabilities_omits_section_when_array_missing() {
-        let value = json!({"supportsStepBack": true});
-        assert!(!format_capabilities(&value).contains("Exception breakpoint filters:"));
+    fn capabilities_result_omits_the_filters_section_without_filters() {
+        for blob in [
+            r#"{"supportsStepBack":true}"#,
+            r#"{"supportsStepBack":true,"exceptionBreakpointFilters":[]}"#,
+        ] {
+            let rendered = caps_from(blob).to_string();
+            assert!(
+                !rendered.contains("Exception breakpoint filters:"),
+                "got: {rendered}"
+            );
+        }
     }
 
     #[test]
-    fn format_capabilities_omits_section_when_array_empty() {
-        let value = json!({
-            "supportsStepBack": true,
-            "exceptionBreakpointFilters": []
-        });
-        assert!(!format_capabilities(&value).contains("Exception breakpoint filters:"));
-    }
-
-    #[test]
-    fn format_capabilities_only_exception_filters_no_supported_caps() {
-        let value = json!({
-            "exceptionBreakpointFilters": [{"filter": "raised"}]
-        });
-        let rendered = format_capabilities(&value);
+    fn capabilities_result_lists_an_unlabeled_filter_without_supported_caps() {
+        let rendered =
+            caps_from(r#"{"exceptionBreakpointFilters":[{"filter":"raised"}]}"#).to_string();
         // No "Supported capabilities:" preamble when there are no bool caps.
         assert!(!rendered.contains("Supported capabilities:"));
-        assert!(rendered.contains("Exception breakpoint filters:\n  - raised\n"));
+        assert!(
+            rendered.contains("Exception breakpoint filters:\n  - raised\n"),
+            "got: {rendered}"
+        );
     }
 
     fn caps_from(blob: &str) -> CapabilitiesResult {

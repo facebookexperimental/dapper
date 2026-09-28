@@ -454,24 +454,17 @@ pub struct SetVariableResult {
 
 impl fmt::Display for SetVariableResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let type_info = self
-            .body
-            .type_
-            .as_deref()
-            .map(|t| format!(" ({})", t))
-            .unwrap_or_default();
-
-        let variables_reference = self.body.variables_reference.unwrap_or_default();
-        let child_ref = if variables_reference.has_children() {
-            format!(" [ref: {}]", variables_reference)
-        } else {
-            String::new()
+        let variable = Variable {
+            name: self.name.clone(),
+            value: self.body.value.clone(),
+            var_type: self.body.type_.clone(),
+            variables_reference: self.body.variables_reference.unwrap_or_default(),
+            ..Default::default()
         };
-
         write!(
             f,
-            "Variable '{}' set successfully\n  {}: {}{}{}\n",
-            self.name, self.name, self.body.value, type_info, child_ref
+            "Variable '{}' set successfully\n  {variable}\n",
+            self.name
         )
     }
 }

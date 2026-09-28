@@ -357,12 +357,12 @@ impl fmt::Display for StackTraceResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionsResult {
-    #[serde(default, serialize_with = "serialize_sessions_without_debugger_args")]
+    #[serde(serialize_with = "serialize_sessions_without_debugger_args")]
     pub sessions: Vec<crate::SessionInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_id: Option<crate::ScopeId>,
 }
 
@@ -1899,32 +1899,6 @@ mod tests {
             "serialized session should contain exactly these keys (no debugger_args)"
         );
         assert_eq!(session_obj["sessionId"], "s1");
-    }
-
-    #[test]
-    fn serde_sessions_result_deserialize_empty() {
-        let json = r#"{"sessions": [], "scopeId": null}"#;
-        let result: SessionsResult = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            result,
-            SessionsResult {
-                sessions: vec![],
-                scope_id: None,
-            }
-        );
-    }
-
-    #[test]
-    fn serde_sessions_result_deserialize_defaults() {
-        let json = "{}";
-        let result: SessionsResult = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            result,
-            SessionsResult {
-                sessions: vec![],
-                scope_id: None,
-            }
-        );
     }
 
     #[test]

@@ -378,11 +378,6 @@ impl SessionInitializer {
                 if !response.success {
                     let err_msg = response.error_message();
                     error!("Launch/attach request failed: {}", err_msg);
-                    self.event_writer.emit(&ProgressEvent::SessionInit {
-                        status: Status::Failed,
-                        message: format!("Launch/attach request failed: {}", err_msg),
-                        elapsed: self.elapsed(),
-                    });
                     anyhow::bail!(
                         "Debug adapter returned error for launch/attach request: {}",
                         err_msg
@@ -688,18 +683,14 @@ impl SessionInitializer {
         });
         info!("Starting DAP initialization sequence");
 
-        self.initialize(&mut channel).await?;
-        self.send_debug_request(&mut channel).await?;
-        self.wait_for_initialized_event(&mut channel).await?;
-        // Build the breakpoint groups once and thread them into both
-        // install steps; otherwise each step re-iterates the config and
-        // they could drift if grouping ever gains validation/dedup logic.
-        let groups = BreakpointGroups::from_breakpoints(&self.config.breakpoints);
-        self.set_breakpoints(&mut channel, &groups).await?;
-        self.set_exception_breakpoints(&mut channel, &groups)
-            .await?;
-        self.configuration_done(&mut channel).await?;
-        self.wait_for_debug_response(&mut channel).await?;
+        if let Err(e) = self.handshake(&mut channel).await {
+            self.event_writer.emit(&ProgressEvent::SessionInit {
+                status: Status::Failed,
+                message: format!("{e:#}"),
+                elapsed: self.elapsed(),
+            });
+            return Err(e);
+        }
 
         self.event_writer.emit(&ProgressEvent::SessionInit {
             status: Status::Completed,
@@ -714,6 +705,20 @@ impl SessionInitializer {
         self.receive_messages_until_closed(&mut channel).await?;
 
         Ok(())
+    }
+
+    async fn handshake(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
+        self.initialize(channel).await?;
+        self.send_debug_request(channel).await?;
+        self.wait_for_initialized_event(channel).await?;
+        // Build the breakpoint groups once and thread them into both
+        // install steps; otherwise each step re-iterates the config and
+        // they could drift if grouping ever gains validation/dedup logic.
+        let groups = BreakpointGroups::from_breakpoints(&self.config.breakpoints);
+        self.set_breakpoints(channel, &groups).await?;
+        self.set_exception_breakpoints(channel, &groups).await?;
+        self.configuration_done(channel).await?;
+        self.wait_for_debug_response(channel).await
     }
 
     async fn initialize(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
@@ -1315,6 +1320,58 @@ mod tests {
 
         backend_handle.abort();
         assert!(result.is_err());
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_failed_initialize_emits_session_init_failed() {
+        let events = SharedBuf::default();
+        let (mut server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(async move {
+            let Some(dap::Message::Request(req)) = server.recv().await? else {
+                anyhow::bail!("expected the initialize request");
+            };
+            let response = dap::Response {
+                seq: 1.into(),
+                request_seq: req.seq,
+                success: false,
+                message: Some("adapter refused".to_owned()),
+                body: ResponseBody::Initialize(None),
+            };
+            server.send(response.into()).await
+        });
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .with_timeout(Duration::from_secs(2))
+            .with_event_writer(EventWriter::Writer(Box::new(events.clone())))
+            .run(client)
+            .await;
+
+        backend_handle.await.expect("backend panicked").unwrap();
+        result.expect_err("a failed initialize response must fail init");
+        let output = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
+        let last: serde_json::Value =
+            serde_json::from_str(output.lines().last().expect("events were emitted")).unwrap();
+        assert_eq!(last["stage"], "SESSION_INIT", "got {output}");
+        assert_eq!(last["status"], "failed", "got {output}");
+        let message = last["message"].as_str().expect("message is a string");
+        assert!(
+            message.contains("initialize"),
+            "the failure should name the failed step, got: {message}"
+        );
     }
 
     /// Mock backend that responds to initialize but never sends the initialized event.

@@ -311,10 +311,48 @@ fn get_client_fast_path_respects_cached_session_liveness() {
     drop(listener);
 }
 
+/// The session stays active only while the returned listener is held.
+fn live_session(id: &str) -> (TcpListener, SessionInfo) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = Port::try_new(listener.local_addr().unwrap().port()).unwrap();
+    let session = SessionInfo::generate(id.into(), Some(port), None, None, None);
+    (listener, session)
+}
+
+#[test]
+fn an_explicit_session_id_overrides_the_control_port() {
+    let (_listener_a, a) = live_session("a");
+    let (_listener_b, b) = live_session("b");
+    let env = McpServerEnv {
+        control_port: a.control_plane_port,
+        ..isolated_env()
+    };
+    let store = env.sessions.clone();
+    store.save(&a).expect("seed session a");
+    store.save(&b).expect("seed session b");
+    let handler = full_toolset_handler_with(env);
+
+    let explicit = handler.resolve_session(Some(&b.session_id));
+    let implicit = handler.resolve_session(None);
+    store.delete(&a).expect("clean up session a");
+    store.delete(&b).expect("clean up session b");
+
+    assert_eq!(
+        explicit.expect("session b is live").session_id,
+        b.session_id,
+        "an explicit session_id must win over --control-port"
+    );
+    assert_eq!(
+        implicit.expect("session a is live").session_id,
+        a.session_id,
+        "a call without a session_id must target the --control-port session"
+    );
+}
+
 /// When a fixed `control_port` is configured, `get_client` must NOT use the
-/// cache-first fast path (that path keys on session_id, but a port-configured
-/// handler resolves by port). It must fall through to `resolve_session`, which
-/// resolves by port and errors here since no session listens on the port.
+/// cache-first fast path, which keys on session_id. It must fall through to
+/// `resolve_session`, which errors here: the explicit id and the port both
+/// name sessions missing from the empty store.
 #[test]
 fn get_client_skips_fast_path_when_control_port_set() {
     let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
@@ -344,14 +382,13 @@ fn get_client_skips_fast_path_when_control_port_set() {
     });
     *handler.last_session_id.lock().unwrap() = Some(sid.clone());
 
-    // control_port is Some -> fast path skipped -> resolve_session by port -> Err.
     assert!(
         handler.get_client(None).is_err(),
         "control_port handler must bypass the fast path and resolve by port"
     );
     assert!(
         handler.get_client(Some(&sid)).is_err(),
-        "control_port handler must bypass the fast path even with explicit id"
+        "control_port handler must bypass the fast path and resolve the explicit id"
     );
 
     drop(listener);

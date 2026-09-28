@@ -91,7 +91,8 @@ struct CachedClient {
 
 /// Everything an `McpHandler` needs from its environment.
 pub struct McpServerEnv {
-    /// Fixed control plane port; when set, session discovery is bypassed.
+    /// Control plane port of the session targeted by calls that pass no
+    /// `session_id`.
     pub control_port: Option<Port>,
     /// Scope filter for session discovery.
     pub scope_id: Option<ScopeId>,
@@ -229,12 +230,7 @@ impl McpHandler {
 
     /// Resolve the target session from an optional explicit session ID.
     fn resolve_session(&self, session_id: Option<&SessionId>) -> anyhow::Result<SessionInfo> {
-        if let Some(explicit_port) = self.control_port {
-            self.sessions
-                .iter_active_sessions(self.scope_id.clone())
-                .find(|s| s.control_plane_port.map(|p| p.get()) == Some(explicit_port.get()))
-                .ok_or_else(|| anyhow::anyhow!("no session found on port {}", explicit_port.get()))
-        } else if let Some(id) = session_id {
+        if let Some(id) = session_id {
             let session = self
                 .sessions
                 .find_active_session_with_id(self.scope_id.clone(), id)
@@ -247,6 +243,11 @@ impl McpHandler {
                 })?;
             self.set_last_session_id(id);
             Ok(session)
+        } else if let Some(port) = self.control_port {
+            self.sessions
+                .iter_active_sessions(self.scope_id.clone())
+                .find(|s| s.control_plane_port == Some(port))
+                .ok_or_else(|| anyhow::anyhow!("no session found on port {port}"))
         } else {
             let from_last = self.last_session().as_ref().and_then(|id| {
                 self.sessions

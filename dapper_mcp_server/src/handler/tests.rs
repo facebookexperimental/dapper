@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneServer;
 use dapper_dap_protocol::data_types::FrameId;
+use dapper_dap_protocol::data_types::StackFrame;
 use dapper_dap_protocol::data_types::Thread;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
@@ -32,6 +33,7 @@ use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
 use serde_json::to_value;
+use tokio::sync::watch;
 use tracing::field::Field;
 use tracing_subscriber::layer::Context;
 
@@ -1215,8 +1217,39 @@ fn unfaked<T>() -> anyhow::Result<T> {
     anyhow::bail!("not implemented by FakeControlPlane")
 }
 
+#[derive(Default)]
 struct FakeControlPlane {
     threads: Vec<Thread>,
+    /// Threads listed here get their stack traces answered in this order,
+    /// each only after the one before it has been answered.
+    stack_answer_order: Vec<ThreadId>,
+    stacks_answered: watch::Sender<usize>,
+}
+
+impl FakeControlPlane {
+    async fn stack_trace_result(&self, thread_id: ThreadId) -> anyhow::Result<StackTraceResult> {
+        if let Some(turn) = self
+            .stack_answer_order
+            .iter()
+            .position(|id| *id == thread_id)
+        {
+            self.stacks_answered
+                .subscribe()
+                .wait_for(|answered| *answered == turn)
+                .await?;
+        }
+        let result = StackTraceResult {
+            stack_frames: vec![StackFrame {
+                id: thread_id.as_i64().into(),
+                name: format!("top of thread {thread_id}"),
+                ..Default::default()
+            }],
+            thread_id,
+            ..Default::default()
+        };
+        self.stacks_answered.send_modify(|answered| *answered += 1);
+        Ok(result)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1241,11 +1274,14 @@ impl DapperControlPlane for FakeControlPlane {
 
     async fn stack_trace(
         &self,
-        _: ThreadId,
+        thread_id: ThreadId,
         _: Option<i64>,
         _: Option<i64>,
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
-        unfaked()
+        Ok(ControlPlaneResult {
+            result: self.stack_trace_result(thread_id).await?,
+            context: None,
+        })
     }
 
     async fn scopes(&self, _: FrameId) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
@@ -1363,6 +1399,7 @@ async fn threads_tool_renders_the_control_plane_threads() {
     ];
     let fake = FakeSession::start(FakeControlPlane {
         threads: threads.clone(),
+        ..Default::default()
     })
     .await;
 
@@ -1379,6 +1416,36 @@ async fn threads_tool_renders_the_control_plane_threads() {
         }
         .to_string()
     );
+}
+
+#[tokio::test]
+async fn thread_snapshot_keeps_thread_order_when_stacks_arrive_out_of_order() {
+    let threads: Vec<Thread> = (1..=3)
+        .map(|id| Thread {
+            id: id.into(),
+            name: format!("thread-{id}"),
+        })
+        .collect();
+    let fake = FakeSession::start(FakeControlPlane {
+        stack_answer_order: threads.iter().rev().map(|thread| thread.id).collect(),
+        threads,
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_tool_e2e_with(fake.handler(), "debug_thread_snapshot", json!({}))
+        .await
+        .expect("the call itself must succeed at the MCP layer");
+
+    let snapshot: Value =
+        serde_json::from_str(text_of(&result)).expect("the snapshot must be JSON");
+    let ids: Vec<Option<i64>> = snapshot["threads"]
+        .as_array()
+        .expect("the snapshot must list threads")
+        .iter()
+        .map(|thread| thread["id"].as_i64())
+        .collect();
+    assert_eq!(ids, [Some(1), Some(2), Some(3)], "got {snapshot:#}");
 }
 
 // -- stack_trace: ThreadId, Option<i64> levels, Option<i64> start_frame --

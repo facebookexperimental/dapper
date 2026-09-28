@@ -1051,7 +1051,7 @@ Response is JSON from the debug adapter."#
                         entry
                     }
                 })
-                .buffer_unordered(16)
+                .buffered(16)
                 .collect()
                 .await
         } else {

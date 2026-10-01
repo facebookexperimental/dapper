@@ -38,6 +38,9 @@ const TOOLSET_TABLE = `| Toolset | Tools | Description |
 | \`full\` | All standard + evaluate, set-variable, read-memory, write-memory, thread-snapshot | All tools including memory access |
 | \`raw\` | dap-request, stop | Single pass-through tool for any DAP command |`;
 
+const ALWAYS_AVAILABLE_TOOLS =
+  '`status`, `capabilities`, `sessions`, `config`';
+
 const REFERENCE_FRONTMATTER: Record<string, () => string> = {
   'agent.md': () => 'title: Agent Operating Guide\nsidebar_label: Agent Guide',
   'breakpoints.md': () => 'title: Breakpoints\nsidebar_label: Breakpoints',
@@ -133,7 +136,9 @@ function renderHelpTopic(source: string): string {
     .split('{{program}}')
     .join(PROGRAM_NAME)
     .split('{{toolset_table}}')
-    .join(TOOLSET_TABLE);
+    .join(TOOLSET_TABLE)
+    .split('{{always_available_tools}}')
+    .join(ALWAYS_AVAILABLE_TOOLS);
   const frontmatter = REFERENCE_FRONTMATTER[path.basename(source)];
   return frontmatter == null ? body : `---\n${frontmatter()}\n---\n\n${body}`;
 }

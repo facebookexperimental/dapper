@@ -13,13 +13,14 @@ use crate::toolsets::Toolset;
 
 /// Serve MCP on stdin and stdout
 pub async fn serve(env: McpServerEnv, toolset: Toolset) -> anyhow::Result<()> {
+    let handler = McpHandler::new(env, &toolset);
     tracing::info!(
         "Starting MCP server with toolset '{}' ({} tool(s))",
         toolset.name,
-        toolset.tools.len()
+        handler.tool_count()
     );
 
-    let service = McpHandler::new(env, &toolset)
+    let service = handler
         .serve(stdio())
         .await
         .context("Failed to start serving")?;

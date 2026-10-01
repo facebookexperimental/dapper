@@ -20,7 +20,7 @@ For session targeting (`--scope-id`, `--control-port`, ambiguity rules) see `{{p
 
 The `raw` toolset is the escape hatch for DAP commands that the typed tools don't expose. Prefer `standard`/`full` so the agent sees self-describing tool schemas; reach for `raw` only when you genuinely need an adapter-specific request.
 
-`sessions` is exposed by the MCP handler **regardless of `--toolset`** — it isn't in any `BuiltinToolset::tools()` definition (so it doesn't appear as a row above), but the handler keeps it available everywhere. `capabilities` shows up in `minimal`/`standard`/`full` per the table above and is *also* kept available in `raw`. Agents should still prefer the `--scope-id` / `--control-port` plumbing over enumerating sessions in an MCP loop.
+The MCP handler also exposes these tools **regardless of `--toolset` or `--enable-tool`**: {{always_available_tools}}. Agents should still prefer the `--scope-id` / `--control-port` plumbing over enumerating sessions in an MCP loop.
 
 ## Custom tool selection
 

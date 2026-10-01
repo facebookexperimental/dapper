@@ -67,6 +67,14 @@ impl From<DebugTool> for std::borrow::Cow<'static, str> {
     }
 }
 
+/// Tools the MCP server exposes whatever the toolset, custom ones included.
+pub const ALWAYS_AVAILABLE: [DebugTool; 4] = [
+    DebugTool::Status,
+    DebugTool::Capabilities,
+    DebugTool::Sessions,
+    DebugTool::Config,
+];
+
 /// A toolset defining which debugging tools are available
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toolset {

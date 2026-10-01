@@ -44,6 +44,7 @@ use super::params::MAX_STACK_DEPTH;
 use super::params::MAX_THREADS_HARD_CAP;
 use super::params::MAX_WRITE_BYTES;
 use super::*;
+use crate::toolsets::DebugTool;
 
 #[test]
 fn breakpoint_spec_from_object() {
@@ -870,24 +871,36 @@ fn extract_reason_trims_surrounding_whitespace() {
 }
 
 #[test]
-fn sessions_tool_always_available() {
-    for builtin in &[
+fn always_available_tools_are_in_every_toolset() {
+    let empty = Toolset::custom("empty".to_owned(), Vec::new());
+    let toolsets = [
         crate::toolsets::BuiltinToolset::Minimal,
         crate::toolsets::BuiltinToolset::Standard,
         crate::toolsets::BuiltinToolset::Full,
         crate::toolsets::BuiltinToolset::Raw,
-    ] {
-        let toolset = crate::toolsets::Toolset::from(*builtin);
+    ]
+    .map(Toolset::from)
+    .into_iter()
+    .chain([empty.clone()]);
+    for toolset in toolsets {
         let handler = McpHandler::new(isolated_env(), &toolset);
-        assert!(
-            handler
-                .tool_router
-                .map
-                .contains_key("debug_sessions_command"),
-            "debug_sessions_command should be available in {:?} toolset",
-            builtin
-        );
+        for tool in ALWAYS_AVAILABLE {
+            assert!(
+                handler.tool_router.map.contains_key(tool.as_ref()),
+                "{tool} should be available in the {} toolset",
+                toolset.name
+            );
+        }
     }
+
+    assert_eq!(
+        McpHandler::new(isolated_env(), &empty)
+            .tool_router
+            .map
+            .len(),
+        ALWAYS_AVAILABLE.len(),
+        "an empty toolset must expose exactly the always-available tools"
+    );
 }
 
 #[test]
@@ -2100,11 +2113,9 @@ fn tool_routes_and_debug_tool_variants_match() {
     use strum::VariantNames;
 
     let router = all_tool_routes();
-    let always_available = McpHandler::always_available_tools();
     for name in router.map.keys() {
         assert!(
-            DebugTool::VARIANTS.contains(&name.as_ref())
-                || always_available.contains(&name.as_ref()),
+            DebugTool::VARIANTS.contains(&name.as_ref()),
             "tool '{name}' has no DebugTool variant and would be stripped from every toolset"
         );
     }

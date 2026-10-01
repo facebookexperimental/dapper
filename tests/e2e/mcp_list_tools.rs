@@ -5,6 +5,7 @@
 
 use dapper_e2e_support::create_mcp_client;
 use dapper_e2e_support::create_mcp_client_with_toolset;
+use dapper_mcp_server::ALWAYS_AVAILABLE;
 use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::Toolset;
 
@@ -36,14 +37,9 @@ async fn list_tools() -> anyhow::Result<()> {
 async fn list_tools_minimal_toolset() -> anyhow::Result<()> {
     let toolset: Toolset = BuiltinToolset::Minimal.into();
     let mut expected_tools = toolset.to_tool_names();
-    let always_available = vec![
-        "debug_sessions_command".to_string(),
-        "debug_status_command".to_string(),
-        "debug_config_command".to_string(),
-    ];
-    for tool in &always_available {
-        if !expected_tools.contains(tool) {
-            expected_tools.push(tool.clone());
+    for tool in ALWAYS_AVAILABLE.map(|tool| tool.to_string()) {
+        if !expected_tools.contains(&tool) {
+            expected_tools.push(tool);
         }
     }
 

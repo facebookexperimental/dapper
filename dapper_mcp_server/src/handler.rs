@@ -55,7 +55,7 @@ use rmcp::service::RoleServer;
 use rmcp::tool;
 use rmcp::tool_router;
 
-use crate::toolsets::DebugTool;
+use crate::toolsets::ALWAYS_AVAILABLE;
 use crate::toolsets::Toolset;
 
 mod format;
@@ -164,27 +164,11 @@ fn render_result<T: std::fmt::Display + serde::Serialize>(
 
 #[tool_router]
 impl McpHandler {
-    /// Tools available in every toolset.
-    fn always_available_tools() -> [&'static str; 4] {
-        [
-            DebugTool::Status.into(),
-            DebugTool::Capabilities.into(),
-            DebugTool::Sessions.into(),
-            DebugTool::Config.into(),
-        ]
-    }
-
     pub fn new(env: McpServerEnv, toolset: &Toolset) -> Self {
         let mut tool_router = Self::tool_router();
-
-        // Strip tools not in the active toolset (always-available tools are kept)
-        let always_available = Self::always_available_tools();
-        let all_tools: Vec<_> = tool_router.map.keys().cloned().collect();
-        for tool in all_tools {
-            if !toolset.contains_tool(tool.as_ref()) && !always_available.contains(&tool.as_ref()) {
-                tool_router.remove_route(&tool);
-            }
-        }
+        tool_router.map.retain(|name, _| {
+            toolset.contains_tool(name) || ALWAYS_AVAILABLE.iter().any(|tool| tool.as_ref() == name)
+        });
 
         Self {
             control_port: env.control_port,
@@ -195,6 +179,10 @@ impl McpHandler {
             cached_client: Arc::new(RwLock::new(None)),
             last_session_id: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn tool_count(&self) -> usize {
+        self.tool_router.map.len()
     }
 
     fn last_session(&self) -> MutexGuard<'_, Option<SessionId>> {

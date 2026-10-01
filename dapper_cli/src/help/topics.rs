@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use std::fmt::Write;
 
 use clap::ValueEnum;
+use dapper_mcp_server::ALWAYS_AVAILABLE;
 use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
 
@@ -88,12 +89,27 @@ pub const BUILTINS: &[Topic] = &[
 ];
 
 /// `mcp` topic body — `mcp.md` with `{{toolset_table}}` expanded from
-/// `BuiltinToolset::value_variants()`. The substituted markdown still
+/// `BuiltinToolset::value_variants()` and `{{always_available_tools}}`
+/// from `ALWAYS_AVAILABLE`. The substituted markdown still
 /// contains `{{program}}` tokens; the dispatcher's
 /// `render::substitute` pass swaps those out downstream.
 fn render_mcp_topic(_: &Context<'_>) -> Cow<'static, str> {
     const RAW: &str = include_str!("topics/mcp.md");
-    Cow::Owned(RAW.replace("{{toolset_table}}", &render_toolset_table()))
+    Cow::Owned(
+        RAW.replace("{{toolset_table}}", &render_toolset_table())
+            .replace(
+                "{{always_available_tools}}",
+                &render_always_available_tools(),
+            ),
+    )
+}
+
+fn render_always_available_tools() -> String {
+    ALWAYS_AVAILABLE
+        .iter()
+        .map(|tool| format!("`{}`", display_tool_name(tool)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Render the `| Toolset | Tools |` table from the actual
@@ -212,6 +228,25 @@ mod tests {
                         "rendered mcp body missing tool `{display}` for toolset `{ts}`"
                     );
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn mcp_dynamic_body_lists_the_always_available_tools() {
+        with_ctx(&Reentry::Standalone, "dapper", |ctx| {
+            let mcp = BUILTINS
+                .iter()
+                .find(|t| t.name == "mcp")
+                .expect("mcp topic registered");
+            let rendered = mcp.body.render(ctx);
+            assert!(!rendered.contains("{{always_available_tools}}"));
+            for tool in &ALWAYS_AVAILABLE {
+                let display = format!("`{}`", display_tool_name(tool));
+                assert!(
+                    rendered.contains(&display),
+                    "rendered mcp body missing always-available tool {display}:\n{rendered}"
+                );
             }
         });
     }

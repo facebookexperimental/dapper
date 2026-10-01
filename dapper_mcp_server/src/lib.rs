@@ -13,6 +13,7 @@ mod server;
 
 pub use handler::McpServerEnv;
 pub use server::serve;
+pub use toolsets::ALWAYS_AVAILABLE;
 pub use toolsets::BuiltinToolset;
 pub use toolsets::DebugTool;
 pub use toolsets::Toolset;

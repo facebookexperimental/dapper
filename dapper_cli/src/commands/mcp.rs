@@ -10,10 +10,10 @@ use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
 use dapper_mcp_server::McpServerEnv;
 use dapper_mcp_server::Toolset;
-use dapper_session::Port;
-use dapper_session::ScopeId;
 use dapper_session::SessionStore;
 use strum::VariantNames;
+
+use crate::commands::SessionTarget;
 
 fn debug_tool_parser() -> impl clap::builder::TypedValueParser {
     clap::builder::PossibleValuesParser::new(DebugTool::VARIANTS)
@@ -23,17 +23,8 @@ fn debug_tool_parser() -> impl clap::builder::TypedValueParser {
 /// Start the MCP server on stdin/stdout
 #[derive(Parser)]
 pub struct Mcp {
-    /// Control plane port to connect to.
-    /// If omitted, auto-discovers the unique active session — or errors with the
-    /// candidate list when more than one is active. Pass --control-port (always
-    /// deterministic) or a tighter --scope-id / DAPPER_SCOPE_ID to disambiguate.
-    /// Tools also accept a `session_id` argument for per-call targeting.
-    #[arg(long)]
-    control_port: Option<Port>,
-    /// Scope identifier to target a specific session.
-    /// Filters auto-discovery. May also be set via DAPPER_SCOPE_ID.
-    #[arg(long, env = "DAPPER_SCOPE_ID")]
-    scope_id: Option<ScopeId>,
+    #[command(flatten)]
+    target: SessionTarget,
     /// Builtin toolset to use
     #[arg(long, value_enum, default_value_t)]
     toolset: BuiltinToolset,
@@ -55,8 +46,8 @@ impl Mcp {
         };
 
         let env = McpServerEnv {
-            control_port: self.control_port,
-            scope_id: self.scope_id,
+            control_port: self.target.control_port,
+            scope_id: self.target.scope_id,
             sessions: SessionStore::default_location()?,
             config,
         };
@@ -71,43 +62,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_scope_id_from_cli_arg() {
-        let mcp = Mcp::try_parse_from(["mcp", "--scope-id", "test-scope"]).unwrap();
-        assert_eq!(mcp.scope_id, Some(ScopeId::new("test-scope")));
-    }
-
-    #[test]
-    fn parse_scope_id_from_env_var() {
-        temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
-            let mcp = Mcp::try_parse_from(["mcp"]).unwrap();
-            assert_eq!(mcp.scope_id, Some(ScopeId::new("env-scope")));
-        });
-    }
-
-    #[test]
-    fn cli_arg_takes_precedence_over_env_var() {
-        temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
-            let mcp = Mcp::try_parse_from(["mcp", "--scope-id", "cli-scope"]).unwrap();
-            assert_eq!(mcp.scope_id, Some(ScopeId::new("cli-scope")));
-        });
-    }
-
-    #[test]
     fn control_port_parses_and_rejects_zero() {
         let mcp = Mcp::try_parse_from(["mcp", "--control-port", "8080"]).unwrap();
-        assert_eq!(mcp.control_port.map(|p| p.get()), Some(8080));
+        assert_eq!(mcp.target.control_port.map(|p| p.get()), Some(8080));
         assert!(
             Mcp::try_parse_from(["mcp", "--control-port", "0"]).is_err(),
             "port 0 must be rejected at parse time"
         );
-    }
-
-    #[test]
-    fn defaults_when_neither_arg_nor_env() {
-        temp_env::with_var_unset("DAPPER_SCOPE_ID", || {
-            let mcp = Mcp::try_parse_from(["mcp"]).unwrap();
-            assert_eq!(mcp.scope_id, None);
-            assert_eq!(mcp.control_port, None);
-        });
     }
 }

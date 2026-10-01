@@ -27,6 +27,8 @@ use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::SessionsResult;
 
+use crate::commands::SessionTarget;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum StepType {
     /// Step into function calls.
@@ -265,16 +267,8 @@ enum DebugCommands {
 /// Connect to the control plane and send a command for debugging
 #[derive(Parser)]
 pub struct Debug {
-    /// Control plane port to connect to.
-    /// If omitted, auto-discovers the unique active session — or errors with the
-    /// candidate list when more than one is active. Pass --control-port (always
-    /// deterministic) or a tighter --scope-id / DAPPER_SCOPE_ID to disambiguate.
-    #[arg(long)]
-    control_port: Option<Port>,
-    /// Scope identifier to target a specific session.
-    /// Filters auto-discovery and the `sessions` listing. May also be set via DAPPER_SCOPE_ID.
-    #[arg(long, env = "DAPPER_SCOPE_ID")]
-    scope_id: Option<ScopeId>,
+    #[command(flatten)]
+    target: SessionTarget,
 
     #[command(subcommand)]
     command: DebugCommands,
@@ -282,11 +276,11 @@ pub struct Debug {
 
 impl Debug {
     pub async fn run(self, config: DapperConfig) -> anyhow::Result<()> {
-        let client = match self.control_port {
+        let client = match self.target.control_port {
             Some(port) => DapperControlPlaneClient::for_port(port),
             None => DapperControlPlaneClient::discover(
                 SessionStore::default_location()?,
-                self.scope_id.clone(),
+                self.target.scope_id.clone(),
             ),
         };
 
@@ -302,8 +296,8 @@ impl Debug {
             DebugCommands::Config {} => {
                 let session = find_config_session(
                     &SessionStore::default_location()?,
-                    self.control_port,
-                    self.scope_id,
+                    self.target.control_port,
+                    self.target.scope_id,
                 )?;
                 let output = serde_json::json!({
                     "debugger_args": session.debugger_args,
@@ -438,12 +432,12 @@ impl Debug {
             }
             DebugCommands::Sessions {} => {
                 let sessions: Vec<SessionInfo> = SessionStore::default_location()?
-                    .iter_active_sessions(self.scope_id.clone())
+                    .iter_active_sessions(self.target.scope_id.clone())
                     .collect();
 
                 let sessions_result = SessionsResult {
                     sessions,
-                    scope_id: self.scope_id.clone(),
+                    scope_id: self.target.scope_id,
                 };
                 let result = ControlPlaneResult {
                     result: sessions_result,
@@ -542,14 +536,14 @@ mod tests {
     fn parse_scope_id_from_cli_arg() {
         let debug =
             Debug::try_parse_from(["debug", "--scope-id", "test-scope", "threads"]).unwrap();
-        assert_eq!(debug.scope_id, Some(ScopeId::new("test-scope")));
+        assert_eq!(debug.target.scope_id, Some(ScopeId::new("test-scope")));
     }
 
     #[test]
     fn parse_scope_id_from_env_var() {
         temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
             let debug = Debug::try_parse_from(["debug", "threads"]).unwrap();
-            assert_eq!(debug.scope_id, Some(ScopeId::new("env-scope")));
+            assert_eq!(debug.target.scope_id, Some(ScopeId::new("env-scope")));
         });
     }
 
@@ -558,7 +552,7 @@ mod tests {
         temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
             let debug =
                 Debug::try_parse_from(["debug", "--scope-id", "cli-scope", "threads"]).unwrap();
-            assert_eq!(debug.scope_id, Some(ScopeId::new("cli-scope")));
+            assert_eq!(debug.target.scope_id, Some(ScopeId::new("cli-scope")));
         });
     }
 
@@ -566,8 +560,8 @@ mod tests {
     fn defaults_when_neither_arg_nor_env() {
         temp_env::with_var_unset("DAPPER_SCOPE_ID", || {
             let debug = Debug::try_parse_from(["debug", "threads"]).unwrap();
-            assert_eq!(debug.scope_id, None);
-            assert_eq!(debug.control_port, None);
+            assert_eq!(debug.target.scope_id, None);
+            assert_eq!(debug.target.control_port, None);
         });
     }
 
@@ -597,7 +591,7 @@ mod tests {
     fn config_subcommand_with_scope_id() {
         let debug = Debug::try_parse_from(["debug", "--scope-id", "my-scope", "config"]).unwrap();
         assert!(matches!(debug.command, DebugCommands::Config {}));
-        assert_eq!(debug.scope_id, Some(ScopeId::new("my-scope")));
+        assert_eq!(debug.target.scope_id, Some(ScopeId::new("my-scope")));
     }
 
     #[test]

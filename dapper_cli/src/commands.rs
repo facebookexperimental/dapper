@@ -18,9 +18,10 @@ pub use proxy::Proxy;
 #[derive(clap::Args)]
 pub(crate) struct SessionTarget {
     /// Control plane port to connect to.
-    /// If omitted, auto-discovers the unique active session — or errors with the
-    /// candidate list when more than one is active. Pass --control-port (always
-    /// deterministic) or a tighter --scope-id / DAPPER_SCOPE_ID to disambiguate.
+    /// If omitted, auto-discovers the unique active session (or, when several are
+    /// active, the only root session) and errors with the candidate list when
+    /// that is ambiguous. Pass --control-port (always deterministic) or a tighter
+    /// --scope-id / DAPPER_SCOPE_ID to disambiguate.
     #[arg(long)]
     control_port: Option<Port>,
     /// Scope identifier to target a specific session.

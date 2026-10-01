@@ -228,11 +228,9 @@ enum DebugCommands {
     Sessions {},
     /// Print the JSON capabilities reported by the debug adapter (from the
     /// `initialize` response). Includes `exceptionBreakpointFilters` if the
-    /// adapter advertises any. Stdout is always raw JSON (`null` when the
-    /// initialize response has not yet arrived, in which case an explanatory
-    /// notice is also printed to stderr); pipe through `jq` for pretty-
-    /// printing. Always exits 0 — `--output-format` does not apply because
-    /// the adapter blob has no canonical plaintext rendering at this layer.
+    /// adapter advertises any. Stdout is raw JSON with or without `--json`;
+    /// pipe it through `jq` to pretty-print. Before the initialize response
+    /// arrives it prints `null`, with a notice on stderr, and still exits 0.
     Capabilities {},
     /// Send a raw DAP (Debug Adapter Protocol) request
     ///

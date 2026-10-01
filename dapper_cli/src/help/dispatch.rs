@@ -29,9 +29,8 @@ use crate::invocation::Reentry;
 
 /// Errors surfaced by [`handle`]. Carry the data needed to render a
 /// stderr diagnostic plus the exit code the caller should use, so the
-/// dispatcher itself never calls [`std::process::exit`] — the binary
-/// entry point gets a clean `Result` to propagate, which keeps tokio's
-/// runtime shutdown intact.
+/// dispatcher itself never calls [`std::process::exit`] and tests can
+/// assert on the outcome.
 #[derive(Debug)]
 pub enum HelpError {
     UnknownTopic { key: String, program_name: String },
@@ -69,10 +68,7 @@ impl HelpError {
 /// renders.
 ///
 /// On `Err(HelpError)` the binary entry point is expected to call
-/// `err.print(); std::process::exit(err.exit_code())`. Returning the
-/// error rather than exiting from inside the dispatcher keeps the
-/// process-exit at the boundary where tokio's runtime is no longer
-/// holding any live state.
+/// `err.print(); std::process::exit(err.exit_code())`.
 pub fn handle(
     topic: &[String],
     reentry: &Reentry,

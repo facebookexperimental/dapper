@@ -22,9 +22,7 @@ async fn main() -> Result<()> {
 
     // Help is a pure-stdout markdown render — short-circuit before
     // logging/session/config side effects so it never touches disk or
-    // emits log lines. Unknown-topic errors exit at this boundary
-    // rather than from inside the dispatcher so tokio's runtime gets
-    // to shut down cleanly.
+    // emits log lines.
     if let Commands::Help { topic } = &cli.command {
         if let Err(e) = help::handle(topic, &reentry, &program, &[]) {
             e.print();

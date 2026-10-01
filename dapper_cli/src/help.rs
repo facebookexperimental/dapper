@@ -182,12 +182,8 @@ mod argv_tests {
 
     #[test]
     fn other_flags_intentionally_dropped_legacy_compat() {
-        // `--scope-id=X` is a flag; `proxy` is the positional we keep.
-        // Help output is invariant of CLI flags, and forwarding flags
-        // to `dapper help` would produce a clap parse error — so the
-        // rewriter drops them, matching the legacy `skill::handle`
-        // contract. (`--scope-id=X` is fused so `take_while` stops on
-        // it without leaking the value as a bogus positional.)
+        // The topic path is the run of positionals right after the program
+        // name, so a leading flag empties it and `proxy` is dropped too.
         assert_eq!(
             rewrite_skill_to_help("dapper", s(&["--scope-id=X", "proxy", "--skill"])),
             s(&["dapper", "help"])

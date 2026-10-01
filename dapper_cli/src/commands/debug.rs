@@ -263,7 +263,8 @@ enum DebugCommands {
         /// Wait for stopped/exited events after request (for pause, continue, step commands)
         #[arg(long)]
         wait_for_event: bool,
-        /// Timeout in seconds for event wait
+        /// Timeout in seconds for the request and, with `--wait-for-event`, for
+        /// the event wait. Default: 60; 0 also means 60.
         #[arg(long, default_value_t = 60)]
         timeout: u64,
     },

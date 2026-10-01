@@ -110,7 +110,7 @@ Send any DAP request directly with the `dap` subcommand:
 {{program}} debug dap continue --arguments '{"threadId": 1}' --wait-for-event
 ```
 
-`--wait-for-event` blocks until the next `stopped`/`exited` event (default 60 s, override with `--timeout`). Output is pretty-printed JSON; pipe into `jq` for further processing.
+`--wait-for-event` blocks until the next `stopped`/`exited` event. `--timeout` bounds the request and, with `--wait-for-event`, the event wait (default 60 s; 0 also means 60). Output is pretty-printed JSON; pipe into `jq` for further processing.
 
 ## Sessions
 

@@ -81,7 +81,7 @@ async fn evaluate_expression() -> anyhow::Result<()> {
                 let mut map = rmcp::serde_json::Map::new();
                 map.insert(
                     "expression".to_string(),
-                    rmcp::serde_json::Value::String("undefined_var_xyz".to_string()),
+                    rmcp::serde_json::Value::String("nonexistent_var_xyz".to_string()),
                 );
                 map
             });
@@ -99,7 +99,7 @@ async fn evaluate_expression() -> anyhow::Result<()> {
 
     assert!(
         indicates_error,
-        "Evaluate 'undefined_var_xyz' should indicate an error, got is_error: {:?}, content: {}",
+        "Evaluate 'nonexistent_var_xyz' should indicate an error, got is_error: {:?}, content: {}",
         error_eval_result.is_error, error_eval_content
     );
 

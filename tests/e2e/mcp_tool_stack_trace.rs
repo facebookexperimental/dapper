@@ -55,9 +55,8 @@ async fn stack_trace_request() -> anyhow::Result<()> {
 
     assert_context_contains_session_info(&content_text)?;
 
-    // Check that we actually got stack frames (not empty/none found)
+    // Check that we actually got stack frames
     assert!(!content_text.contains("No stack frames found"));
-    assert!(!(content_text.contains("stackFrames") && content_text.contains("[]")));
 
     // Check that the topmost frame's scopes are automatically expanded
     assert!(

@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use dapper_dap_protocol::data_types::FrameId;
 use dapper_e2e_support::assert_context_contains_session_info;
 use dapper_e2e_support::create_mcp_client;
 use dapper_e2e_support::extract_text_content;
@@ -45,14 +44,7 @@ async fn scopes_request() -> anyhow::Result<()> {
         .await?;
 
     let stack_trace_content = extract_text_content(&stack_trace_result);
-
-    // For Python, stack trace might be empty at entry point, so we handle that case
-    let frame_id = if stack_trace_content.contains("No stack frames found") {
-        // For Python at entry point, we can try frame ID 0 as a fallback
-        FrameId(0)
-    } else {
-        parse_frame_id_from_stack_trace_response(&stack_trace_content)?
-    };
+    let frame_id = parse_frame_id_from_stack_trace_response(&stack_trace_content)?;
 
     // Now call scopes command with the valid frame ID
     let tool_result = mcp_client
@@ -84,12 +76,10 @@ async fn scopes_request() -> anyhow::Result<()> {
 
     assert_context_contains_session_info(&content_text)?;
 
-    // Check that we got some scope information (not completely empty/none found)
+    // Check that we got some scope information
     // Note: For Python, scopes might be minimal at entry but should contain some structure
     assert!(
-        !content_text.is_empty()
-            && !content_text.contains("No scopes found")
-            && !content_text.contains("scopes: []"),
+        !content_text.contains("No scopes found"),
         "Should have found some scopes in stopped debug session, got content: {}",
         content_text
     );

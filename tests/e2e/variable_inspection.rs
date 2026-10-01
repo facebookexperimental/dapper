@@ -125,10 +125,6 @@ async fn variable_inspection() -> anyhow::Result<()> {
         "Variables response should contain variable listing header, got: {}",
         variables_content
     );
-    assert!(
-        !variables_content.is_empty(),
-        "Variables response should not be empty"
-    );
 
     mcp_client.cancel().await?;
     Ok(())

@@ -7,6 +7,7 @@ use std::io::Write;
 use std::str::FromStr;
 
 use anyhow::Context;
+use clap::ArgGroup;
 use clap::Parser;
 use clap::Subcommand;
 use dapper_config::DapperConfig;
@@ -195,7 +196,7 @@ enum DebugCommands {
         #[arg(short, long, required = true)]
         breakpoints: Vec<BreakpointArg>,
         /// Clear existing breakpoints in the file before adding new ones
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         clear_existing: bool,
     },
     /// Set exception breakpoint filters at the debug adapter.
@@ -205,6 +206,12 @@ enum DebugCommands {
     /// repeatable; omit it together with `--clear-existing` to disable
     /// all installed exception breakpoints (`dapper debug
     /// set-exception-breakpoints --clear-existing`).
+    #[command(group(
+        ArgGroup::new("filters_or_clear")
+            .args(["filters", "clear_existing"])
+            .required(true)
+            .multiple(true)
+    ))]
     SetExceptionBreakpoints {
         /// Filter id(s) to enable. Repeat the flag for each filter, e.g.
         /// `--filter raised --filter uncaught`. Discover supported ids
@@ -214,7 +221,7 @@ enum DebugCommands {
         /// Clear existing exception filters before enabling these. Pass
         /// alone (without any `--filter`) to disable all exception
         /// breakpoints.
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         clear_existing: bool,
     },
     /// List all active debug sessions
@@ -256,7 +263,7 @@ enum DebugCommands {
         #[arg(long)]
         arguments: Option<String>,
         /// Wait for stopped/exited events after request (for pause, continue, step commands)
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         wait_for_event: bool,
         /// Timeout in seconds for event wait
         #[arg(long, default_value_t = 60)]
@@ -417,13 +424,6 @@ impl Debug {
                 filters,
                 clear_existing,
             } => {
-                // Strict empty-input validation, matching the MCP tool.
-                // The library is permissive (silent no-op), but a user
-                // typing the CLI almost certainly meant something other
-                // than "do nothing", so reject with an actionable error.
-                if filters.is_empty() && !clear_existing {
-                    anyhow::bail!("must pass at least one --filter or --clear-existing");
-                }
                 let result = client
                     .set_exception_breakpoints(&filters, clear_existing)
                     .await
@@ -529,6 +529,7 @@ mod tests {
     use std::net::TcpListener;
 
     use clap::Parser;
+    use clap::error::ErrorKind;
 
     use super::*;
 
@@ -645,9 +646,6 @@ mod tests {
 
     #[test]
     fn parse_set_exception_breakpoints_clear_existing_alone() {
-        // Empty --filter list with --clear-existing alone is the
-        // documented "clear all" path — must parse cleanly even though
-        // --filter has no `required = true`.
         let debug =
             Debug::try_parse_from(["debug", "set-exception-breakpoints", "--clear-existing"])
                 .unwrap();
@@ -663,15 +661,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_set_exception_breakpoints_clap_alone_does_not_reject_bare_invocation() {
-        // The clap parser must accept `set-exception-breakpoints` with
-        // no flags (since `--filter` isn't `required = true` and
-        // `--clear-existing` defaults to false) so the documented
-        // "clear all" idiom (`--clear-existing` alone) still parses.
-        // The actual rejection of the empty + !clear case happens at
-        // runtime in the dispatch arm — not exercised here because
-        // calling it would require spinning up the control plane.
-        let debug = Debug::try_parse_from(["debug", "set-exception-breakpoints"]).unwrap();
+    fn parse_set_exception_breakpoints_filter_with_clear_existing() {
+        let debug = Debug::try_parse_from([
+            "debug",
+            "set-exception-breakpoints",
+            "--filter",
+            "raised",
+            "--clear-existing",
+        ])
+        .unwrap();
         let DebugCommands::SetExceptionBreakpoints {
             filters,
             clear_existing,
@@ -679,8 +677,16 @@ mod tests {
         else {
             panic!("expected SetExceptionBreakpoints variant");
         };
-        assert!(filters.is_empty());
-        assert!(!clear_existing);
+        assert_eq!(filters, ["raised"]);
+        assert!(clear_existing);
+    }
+
+    #[test]
+    fn set_exception_breakpoints_rejects_bare_invocation() {
+        let Err(err) = Debug::try_parse_from(["debug", "set-exception-breakpoints"]) else {
+            panic!("passing neither --filter nor --clear-existing must fail to parse");
+        };
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

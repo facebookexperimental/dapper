@@ -9,6 +9,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use clap::ValueEnum;
 use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneServer;
 use dapper_dap_protocol::data_types::FrameId;
@@ -44,6 +45,7 @@ use super::params::MAX_STACK_DEPTH;
 use super::params::MAX_THREADS_HARD_CAP;
 use super::params::MAX_WRITE_BYTES;
 use super::*;
+use crate::toolsets::BuiltinToolset;
 use crate::toolsets::DebugTool;
 
 #[test]
@@ -873,15 +875,11 @@ fn extract_reason_trims_surrounding_whitespace() {
 #[test]
 fn always_available_tools_are_in_every_toolset() {
     let empty = Toolset::custom("empty".to_owned(), Vec::new());
-    let toolsets = [
-        crate::toolsets::BuiltinToolset::Minimal,
-        crate::toolsets::BuiltinToolset::Standard,
-        crate::toolsets::BuiltinToolset::Full,
-        crate::toolsets::BuiltinToolset::Raw,
-    ]
-    .map(Toolset::from)
-    .into_iter()
-    .chain([empty.clone()]);
+    let toolsets = BuiltinToolset::value_variants()
+        .iter()
+        .copied()
+        .map(Toolset::from)
+        .chain([empty.clone()]);
     for toolset in toolsets {
         let handler = McpHandler::new(isolated_env(), &toolset);
         for tool in ALWAYS_AVAILABLE {
@@ -906,17 +904,10 @@ fn always_available_tools_are_in_every_toolset() {
 #[test]
 fn sessions_tool_not_in_any_toolset_definition() {
     // Sessions is always-available, not part of any toolset definition
-    for builtin in &[
-        crate::toolsets::BuiltinToolset::Minimal,
-        crate::toolsets::BuiltinToolset::Standard,
-        crate::toolsets::BuiltinToolset::Full,
-        crate::toolsets::BuiltinToolset::Raw,
-    ] {
-        let tools = builtin.tools();
+    for builtin in BuiltinToolset::value_variants() {
         assert!(
-            !tools.contains(&crate::toolsets::DebugTool::Sessions),
-            "Sessions should not be in {:?} toolset definition",
-            builtin
+            !builtin.tools().contains(&DebugTool::Sessions),
+            "Sessions should not be in {builtin:?} toolset definition"
         );
     }
 }
@@ -1661,13 +1652,7 @@ async fn set_exception_breakpoints_rejects_empty_filters_without_clear() {
         Some(true),
         "expected tool error for empty filters + !clear_existing"
     );
-    let text = match result.content.first() {
-        Some(c) => match c {
-            rmcp::model::ContentBlock::Text(t) => t.text.as_str(),
-            other => panic!("expected text content, got {other:?}"),
-        },
-        None => panic!("expected at least one content block"),
-    };
+    let text = text_of(&result);
     assert!(
         text.contains("specify at least one filter") && text.contains("clear_existing: true"),
         "expected explanatory error message; got: {text}"
@@ -1948,10 +1933,7 @@ async fn thread_snapshot_response_is_bounded() {
     });
     let full_text = format!("{:#}", response);
     let result = McpHandler::finalize_thread_snapshot_response(response).await;
-    let bounded_text = match result.content.as_slice() {
-        [Content::Text(text)] => &text.text,
-        content => panic!("expected exactly one text content block, got {content:?}"),
-    };
+    let bounded_text = text_of(&result);
 
     // Recover and delete the spill file before asserting on its contents, so a
     // failing assertion cannot strand a 200 KB file in the user temp dir. The
@@ -2017,12 +1999,9 @@ async fn thread_snapshot_under_cap_response_is_unmodified() {
         Some(false),
         "bounding a snapshot must not turn it into an error result"
     );
-    let text = match result.content.as_slice() {
-        [Content::Text(text)] => &text.text,
-        content => panic!("expected exactly one text content block, got {content:?}"),
-    };
     assert_eq!(
-        *text, full_text,
+        text_of(&result),
+        full_text,
         "an under-cap snapshot must pass through verbatim, with no truncation notice"
     );
 }

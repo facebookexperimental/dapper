@@ -63,6 +63,6 @@ Config keys are **camelCase** (the schema is `dapper_session::DebugSessionConfig
 |--------|-------------|
 | `--control-port PORT` | Port for the gRPC control plane (default `0` — OS picks an ephemeral port) |
 | `--client-port PORT` | TCP port for external DAP client connections (default: stdio) |
-| `--scope-id ID` | Scope identifier for this session (e.g., `vscode-54196`) |
+| `--scope-id ID` | Scope identifier for this session (e.g., `vscode-54196`); defaults to `DAPPER_SCOPE_ID` |
 
 When `from-config` is used, an extra `--events-fd FD` flag (Unix only) redirects the progress event stream to that file descriptor instead of stdout — useful when stdout is reserved for the DAP client.

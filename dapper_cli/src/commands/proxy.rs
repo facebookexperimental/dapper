@@ -146,8 +146,8 @@ pub struct Proxy {
     /// Port for the DAP client, such as IDE, to connect to via TCP (if not specified, uses stdio)
     #[arg(long)]
     client_port: Option<u16>,
-    /// Scope identifier for this proxy session
-    #[arg(long)]
+    /// Scope identifier for this proxy session. May also be set via DAPPER_SCOPE_ID.
+    #[arg(long, env = "DAPPER_SCOPE_ID")]
     scope_id: Option<ScopeId>,
     /// The parent proxy's session id, set when this proxy is spawned as a child
     /// of another (headless `startDebugging`) session. Recorded in this
@@ -724,7 +724,8 @@ mod tests {
     fn test_scope_id_optional() {
         // Test that scope_id can be omitted
         let args = vec!["proxy", "tcp", "127.0.0.1:8080"];
-        let proxy = Proxy::try_parse_from(args).unwrap();
+        let proxy =
+            temp_env::with_var_unset("DAPPER_SCOPE_ID", || Proxy::try_parse_from(args).unwrap());
         assert_eq!(proxy.scope_id, None);
 
         match proxy.backend {
@@ -736,6 +737,28 @@ mod tests {
             }
             _ => panic!("Expected TCP backend mode"),
         }
+    }
+
+    #[test]
+    fn scope_id_falls_back_to_env_var() {
+        temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
+            let proxy = Proxy::try_parse_from(["proxy", "tcp", "127.0.0.1:8080"]).unwrap();
+            assert_eq!(proxy.scope_id, Some(ScopeId::new("env-scope")));
+
+            let proxy = Proxy::try_parse_from([
+                "proxy",
+                "--scope-id",
+                "cli-scope",
+                "tcp",
+                "127.0.0.1:8080",
+            ])
+            .unwrap();
+            assert_eq!(
+                proxy.scope_id,
+                Some(ScopeId::new("cli-scope")),
+                "an explicit --scope-id, as child proxies pass, must win over the env var"
+            );
+        });
     }
 
     #[test]

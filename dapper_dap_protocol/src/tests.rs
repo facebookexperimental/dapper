@@ -4,7 +4,10 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::collections::HashSet;
+use std::fmt::Debug;
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::capabilities::Capabilities;
@@ -750,7 +753,7 @@ fn test_parse_next_response_no_body() {
 
 fn check_newtype_roundtrip<T>(original: T, expected_val: i64)
 where
-    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    T: Serialize + DeserializeOwned + PartialEq + Debug,
 {
     let json_val = serde_json::to_value(&original).unwrap();
     assert!(json_val.is_number());
@@ -1422,7 +1425,7 @@ fn test_unknown_deserialized_from_json() {
 }
 
 #[test]
-fn test_all_string_enums_other_fallback() {
+fn test_string_enum_renamed_variants() {
     let fb: StoppedReason = serde_json::from_value(json!("function breakpoint")).unwrap();
     assert_eq!(fb, StoppedReason::FunctionBreakpoint);
     let serialized = serde_json::to_value(&fb).unwrap();
@@ -1441,6 +1444,22 @@ fn test_all_string_enums_other_fallback() {
 
     let ib: StoppedReason = serde_json::from_value(json!("instruction breakpoint")).unwrap();
     assert_eq!(ib, StoppedReason::InstructionBreakpoint);
+}
+
+fn check_other_roundtrip<T>(wire: &str, expected: T)
+where
+    T: Serialize + DeserializeOwned + PartialEq + Debug,
+{
+    let parsed: T = serde_json::from_value(json!(wire)).unwrap();
+    assert_eq!(parsed, expected);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), json!(wire));
+}
+
+#[test]
+fn test_string_enums_keep_unknown_values_in_other() {
+    check_other_roundtrip("signal", StoppedReason::Other("signal".to_owned()));
+    check_other_roundtrip("progress", OutputCategory::Other("progress".to_owned()));
+    check_other_roundtrip("sha256", ChecksumAlgorithm::Other("sha256".to_owned()));
 }
 
 #[test]

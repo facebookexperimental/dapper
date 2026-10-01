@@ -300,21 +300,11 @@ impl Debug {
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Config {} => {
-                let sessions = SessionStore::default_location()?;
-                let session = if let Some(port) = self.control_port {
-                    sessions
-                        .iter_active_sessions(self.scope_id.clone())
-                        .find(|s| s.control_plane_port.map(|p| p.get()) == Some(port.get()))
-                        .ok_or_else(|| anyhow::anyhow!("no session found on port {}", port.get()))?
-                } else {
-                    dapper_control_api::resolve_unique_session(
-                        sessions
-                            .iter_active_sessions(self.scope_id.clone())
-                            .collect(),
-                        &self.scope_id,
-                        None,
-                    )?
-                };
+                let session = find_config_session(
+                    &SessionStore::default_location()?,
+                    self.control_port,
+                    self.scope_id,
+                )?;
                 let output = serde_json::json!({
                     "debugger_args": session.debugger_args,
                     "dapper_config": config,
@@ -503,6 +493,26 @@ impl Debug {
     }
 }
 
+fn find_config_session(
+    store: &SessionStore,
+    control_port: Option<Port>,
+    scope_id: Option<ScopeId>,
+) -> anyhow::Result<SessionInfo> {
+    let Some(port) = control_port else {
+        return dapper_control_api::resolve_unique_session(
+            store.iter_active_sessions(scope_id.clone()).collect(),
+            &scope_id,
+            None,
+        );
+    };
+    // Unscoped like `DapperControlPlaneClient::for_port`: an exported
+    // `DAPPER_SCOPE_ID` must not hide the session `--control-port` names.
+    store
+        .iter_active_sessions(None)
+        .find(|s| s.control_plane_port == Some(port))
+        .with_context(|| format!("no session found on port {port}"))
+}
+
 /// Print a line to stdout, returning write errors instead of panicking the
 /// way `println!` does; `Commands::run` maps a closed pipe to exit code 32.
 fn try_println(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
@@ -522,6 +532,8 @@ fn print_rendered<T: std::fmt::Display + serde::Serialize>(
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
     use clap::Parser;
 
     use super::*;
@@ -586,6 +598,33 @@ mod tests {
         let debug = Debug::try_parse_from(["debug", "--scope-id", "my-scope", "config"]).unwrap();
         assert!(matches!(debug.command, DebugCommands::Config {}));
         assert_eq!(debug.scope_id, Some(ScopeId::new("my-scope")));
+    }
+
+    #[test]
+    fn config_session_on_control_port_ignores_scope() {
+        let dir = tempfile::tempdir().expect("create temp sessions dir");
+        let store = SessionStore::at(dir.path());
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = Port::try_new(listener.local_addr().expect("local addr").port())
+            .expect("an ephemeral port is non-zero");
+        let session = SessionInfo::generate(
+            "other-scope".into(),
+            Some(port),
+            Some(ScopeId::new("other")),
+            None,
+            None,
+        );
+        store.save(&session).expect("seed the store");
+
+        let found = find_config_session(&store, Some(port), Some(ScopeId::new("mine")))
+            .expect("--control-port names the session whatever its scope");
+        assert_eq!(found.session_id, session.session_id);
+
+        assert!(
+            find_config_session(&store, None, Some(ScopeId::new("mine"))).is_err(),
+            "auto-discovery must still filter by scope"
+        );
+        drop(listener);
     }
 
     #[test]

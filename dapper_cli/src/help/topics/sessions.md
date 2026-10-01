@@ -43,7 +43,8 @@ No active sessions found.
 `--scope-id` and `--control-port` are both optional. With neither flag set:
 
 - **Exactly one active session** → auto-discovered, used.
-- **Multiple active sessions** → command exits with a candidate list. Pin one of them.
+- **Multiple active sessions, exactly one of them a root** (the others are child sessions it spawned, e.g. for a `startDebugging` request) → the root is used. Reach a child with `--control-port` (or, over MCP, its `session_id`).
+- **Any other set of multiple active sessions** → command exits with a candidate list. Pin one of them.
 
 To pin:
 

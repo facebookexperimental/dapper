@@ -72,7 +72,7 @@ Variables for reference 2001:
 {{program}} debug eval "buffer.len()" --frame-id=1001
 ```
 
-The expression is evaluated by the active adapter (LLDB / debugpy / ...) in its native syntax. `--frame-id` selects which frame's locals are in scope; without it, the topmost frame on the current thread is used.
+The expression is evaluated by the active adapter (LLDB / debugpy / ...) in its native syntax. `--frame-id` selects which frame's locals are in scope; without it, no frame is sent and the adapter picks the context (the DAP default is the global scope), so pass it whenever the expression reads locals.
 
 ## Navigation
 

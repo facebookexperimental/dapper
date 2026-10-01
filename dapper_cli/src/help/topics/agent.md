@@ -20,7 +20,7 @@ Put the flag before the subcommand, or set `DAPPER_REASON` instead.
 
 ### Pin a session when there are several
 
-When more than one session is active, pass `--control-port=PORT` (deterministic) or `--scope-id=SCOPE` (narrows the auto-discovery candidate set) before the subcommand. `--scope-id` alone is not sufficient when multiple sessions share the same scope (e.g. dual-attach C++/Java) — the CLI errors out and tells you to use `--control-port`. Don't retry blindly. The full identifier model lives in `{{program}} help sessions`.
+When more than one session is active, pass `--control-port=PORT` (deterministic) or `--scope-id=SCOPE` (narrows the auto-discovery candidate set). Both are options of `debug` and `mcp`, not of `{{program}}` itself, so place them right after `debug`: `{{program}} debug --control-port=PORT threads`. `--scope-id` alone is not sufficient when multiple sessions share the same scope (e.g. dual-attach C++/Java) — the CLI errors out and tells you to use `--control-port`. Don't retry blindly. The full identifier model lives in `{{program}} help sessions`.
 
 ### Don't infer flags from training data
 
@@ -28,7 +28,7 @@ When more than one session is active, pass `--control-port=PORT` (deterministic)
 
 ### Wait for events in headless mode
 
-When a debug session is started in headless mode (`{{program}} proxy from-config`), the proxy emits `SESSION_READY` and `PROGRAM_STOPPED` events as JSON lines on stdout (or on the numeric file descriptor passed via `--events-fd FD` — see `{{program}} help proxy`). Wait for them rather than polling — polling races against the adapter's startup and produces flaky behavior.
+When a debug session is started in headless mode (`{{program}} proxy from-config`), the proxy emits `SESSION_READY` and `PROGRAM_STOPPED` events on stdout as JSON lines prefixed with `[DAPPER_SESSION] ` (or as bare JSON lines on the numeric file descriptor passed via `--events-fd FD` — see `{{program}} help proxy`). Wait for them rather than polling — polling races against the adapter's startup and produces flaky behavior.
 
 ### Variable references invalidate on every stop
 

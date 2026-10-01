@@ -12,7 +12,7 @@ For agent-driven debugging, start with `{{program}} help agent`. It covers the o
 | Discover what sessions exist | `{{program}} debug sessions` | `{{program}} help sessions` |
 | Inspect threads / stack / variables | `{{program}} debug threads`, `… stack-trace`, `… variables` | `{{program}} help debug` |
 | Set or change breakpoints | `{{program}} debug set-breakpoints …` | `{{program}} help breakpoints` |
-| Step / continue / pause | `{{program}} debug {step,continue,pause} <thread>` | `{{program}} help debug` |
+| Step / continue / pause | `{{program}} debug step {in,over,out} <thread>`, `… continue <thread>`, `… pause <thread>` | `{{program}} help debug` |
 | Connect an MCP-aware agent | `{{program}} mcp` | `{{program}} help mcp` |
 | Start the proxy yourself (rare) | `{{program}} proxy …` | `{{program}} help proxy` |
 

@@ -524,7 +524,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Execute the `set-variable` command in the debugger. The `set-variable` command sets the value of the specified variable to the given value. If you are setting strings make sure to add additional single quotes to quote them."
+        description = "Execute the `set-variable` command in the debugger. The `set-variable` command sets the value of the specified variable to the given value, which adapters typically evaluate as an expression in the debuggee's language: quote string values the way that language does."
     )]
     async fn debug_set_variable_command(
         &self,
@@ -712,7 +712,7 @@ Example:
     }
 
     #[tool(
-        description = "Get the debug session's launch/attach configuration and dapper settings. Returns the DAP launch/attach request arguments (debugger_args) and the active dapper configuration (output format, context settings, command defaults). This is a lightweight command that reads session metadata — it does not interact with the debugger."
+        description = "Get the debug session's launch/attach configuration and dapper settings. Returns the DAP launch/attach request arguments (debugger_args) and this MCP server's dapper configuration (output format, context settings, command defaults), not the proxy's. This is a lightweight command that reads session metadata — it does not interact with the debugger."
     )]
     async fn debug_config_command(
         &self,
@@ -772,8 +772,8 @@ Execution Control (use wait_for_event: true):
 - next: {*threadId, granularity?: "statement"|"line"|"instruction"} → step over
 - stepIn: {*threadId, targetId?, granularity?} → step into
 - stepOut: {*threadId, granularity?} → step out of current frame
-- stepBack: {*threadId, granularity?} → reverse step (rr/replay-style adapters; also exposed as debug_navigate_command navigation_type=step_back)
-- reverseContinue: {*threadId} → reverse continue (rr/replay-style adapters; also exposed as debug_navigate_command navigation_type=reverse_continue)
+- stepBack: {*threadId, granularity?} → reverse step (rr/replay-style adapters)
+- reverseContinue: {*threadId} → reverse continue (rr/replay-style adapters)
 - goto: {*threadId, *targetId} → jump to location (get targetId from gotoTargets)
 - restartFrame: {*frameId} → restart a stack frame
 

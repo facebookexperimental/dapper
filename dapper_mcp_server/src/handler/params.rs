@@ -81,19 +81,19 @@ pub struct FrameIdRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct VariablesReferenceRequest {
-    /// The variable reference to execute the command on. Variable references are obtained from both `debug_scopes_command` (or other `debug_variables_command` calls when we want to look at nested variables). Note that variable references need to be re-obtained every time the debugger stops.
+    /// The variable reference to execute the command on, taken from `debug_scopes_command` or, for nested variables, from an earlier `debug_variables_command` result. Variable references need to be re-obtained every time the debugger stops.
     #[schemars(schema_with = "integer_schema")]
     pub(super) variables_reference: VariablesReference,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetVariableRequest {
-    /// The variable reference to execute the command on. Variable references are obtained from both `debug_scopes_command` (or other `debug_variables_command` calls when we want to look at nested variables). Note that variable references need to be re-obtained every time the debugger stops.
+    /// The variable reference to execute the command on, taken from `debug_scopes_command` or, for nested variables, from an earlier `debug_variables_command` result. Variable references need to be re-obtained every time the debugger stops.
     #[schemars(schema_with = "integer_schema")]
     pub(super) variables_reference: VariablesReference,
     /// Name of the variable to set
     pub(super) name: String,
-    /// New value for the variable. Note that string values need to be quoted with single quotes.
+    /// New value for the variable. Adapters typically evaluate it as an expression in the debuggee's language, so quote string values the way that language does (e.g. `'text'` in Python).
     pub(super) value: String,
 }
 
@@ -283,7 +283,7 @@ pub struct RawDapRequestParams {
     /// Wait for stopped/exited events after request (for pause, continue, step commands)
     #[serde(default)]
     pub(super) wait_for_event: bool,
-    /// Timeout in seconds for event wait. Default: 60
+    /// Timeout in seconds for the request and, with `wait_for_event`, for the event wait. Default: 60; 0 also means 60.
     #[serde(default = "default_timeout")]
     pub(super) timeout_seconds: u64,
 }
@@ -330,7 +330,7 @@ impl ReadByteCount {
 pub struct ReadMemoryRequest {
     /// Memory reference address (e.g., "0x7fff5fbff8a0") or expression that evaluates to a memory address. Obtain memory references from `debug_evaluate_command` or variable `memoryReference` fields.
     pub(super) memory_reference: String,
-    /// Number of bytes to read. Must be > 0. Default: 256.
+    /// Number of bytes to read, from 1 up to 1048576 (1 MiB). Default: 256.
     #[serde(
         default = "default_read_count",
         deserialize_with = "deserialize_string_or_int"
@@ -360,15 +360,16 @@ pub struct ThreadSnapshotRequest {
     /// Include stack traces for each thread (default true).
     #[serde(default = "default_true")]
     pub(super) include_stacks: bool,
-    /// Maximum stack frames per thread (default 10, hard cap 512).
+    /// Maximum stack frames per thread (default 10, hard cap 512). Values below 1 are raised to 1: unlike `levels` in `debug_stack_trace_command`, 0 does not mean all frames.
     #[serde(
         default = "default_stack_depth",
         deserialize_with = "deserialize_string_or_int"
     )]
     #[schemars(schema_with = "integer_schema")]
     pub(super) stack_depth: i64,
-    /// Maximum threads to enumerate (default 50, hard cap 500). Protects against
-    /// pathological processes with tens of thousands of threads.
+    /// Maximum threads to enumerate (default 50, hard cap 500). Values below 1
+    /// are raised to 1. Protects against pathological processes with tens of
+    /// thousands of threads.
     #[serde(
         default = "default_max_threads",
         deserialize_with = "deserialize_string_or_int"

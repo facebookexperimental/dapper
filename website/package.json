@@ -31,6 +31,11 @@
     "typescript": "^5.8.2"
   },
   "resolutions": {
+    "baseline-browser-mapping": "2.11.26",
+    "colord": "2.10.0",
+    "fast-uri": "3.1.8",
+    "joi": "17.13.8",
+    "svgo": "3.3.5",
     "webpack": "5.105.2",
     "webpack-sources": "3.3.3"
   },

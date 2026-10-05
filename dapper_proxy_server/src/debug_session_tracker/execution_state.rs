@@ -26,30 +26,30 @@ use dapper_dap_protocol::requests::StepOutArguments;
 use dapper_dap_protocol::responses::ResponseBody;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingExecutionRequest {
-    pub thread_id: ThreadId,
-    pub single_thread: Option<bool>,
+pub(crate) struct PendingExecutionRequest {
+    thread_id: ThreadId,
+    single_thread: Option<bool>,
     /// A stop or exit covering this thread arrived first. DAP doesn't order a resume response
     /// before the events it causes, so such a late response must not report the thread running.
     superseded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RemainderStatus {
+enum RemainderStatus {
     Running,
     Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StopInfo {
-    pub thread_id: Option<ThreadId>,
-    pub reason: StoppedReason,
-    pub description: Option<String>,
-    pub additional_information: Option<String>,
+struct StopInfo {
+    thread_id: Option<ThreadId>,
+    reason: StoppedReason,
+    description: Option<String>,
+    additional_information: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ExecutionStatus {
+enum ExecutionStatus {
     Unknown,
     Live {
         running_threads: HashSet<ThreadId>,
@@ -61,9 +61,9 @@ pub enum ExecutionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExecutionState {
-    pub current: ExecutionStatus,
-    pub pending_execution_requests: HashMap<Seq, PendingExecutionRequest>,
+pub(crate) struct ExecutionState {
+    current: ExecutionStatus,
+    pub(crate) pending_execution_requests: HashMap<Seq, PendingExecutionRequest>,
     pending_restart_seq: Option<Seq>,
     stopped_during_restart: bool,
     version: u64,
@@ -82,7 +82,7 @@ impl Default for ExecutionState {
 }
 
 impl ExecutionState {
-    pub fn is_all_running(&self) -> bool {
+    pub(crate) fn is_all_running(&self) -> bool {
         match &self.current {
             ExecutionStatus::Live {
                 stopped_threads,
@@ -93,7 +93,8 @@ impl ExecutionState {
         }
     }
 
-    pub fn is_all_stopped(&self) -> bool {
+    #[cfg(test)]
+    pub(super) fn is_all_stopped(&self) -> bool {
         match &self.current {
             ExecutionStatus::Live {
                 running_threads,
@@ -104,7 +105,8 @@ impl ExecutionState {
         }
     }
 
-    pub fn any_thread_stopped(&self) -> bool {
+    #[cfg(test)]
+    fn any_thread_stopped(&self) -> bool {
         match &self.current {
             ExecutionStatus::Live {
                 stopped_threads,
@@ -115,7 +117,8 @@ impl ExecutionState {
         }
     }
 
-    pub fn is_thread_stopped(&self, thread_id: ThreadId) -> bool {
+    #[cfg(test)]
+    pub(super) fn is_thread_stopped(&self, thread_id: ThreadId) -> bool {
         match &self.current {
             ExecutionStatus::Live {
                 running_threads,
@@ -135,11 +138,12 @@ impl ExecutionState {
         }
     }
 
-    pub fn version(&self) -> u64 {
+    #[cfg(test)]
+    fn version(&self) -> u64 {
         self.version
     }
 
-    pub fn summary(&self) -> dapper_session::VersionedExecutionStateSummary {
+    pub(super) fn summary(&self) -> dapper_session::VersionedExecutionStateSummary {
         let status = match &self.current {
             ExecutionStatus::Unknown => dapper_session::ExecutionStatus::Unknown,
             ExecutionStatus::Exited => dapper_session::ExecutionStatus::Exited,
@@ -175,7 +179,7 @@ impl ExecutionState {
         }
     }
 
-    pub fn set_all_running(&mut self) {
+    fn set_all_running(&mut self) {
         match &mut self.current {
             ExecutionStatus::Live {
                 running_threads,
@@ -200,7 +204,7 @@ impl ExecutionState {
         self.version += 1;
     }
 
-    pub fn set_all_stopped(&mut self, stopped: &StoppedEventBody) {
+    fn set_all_stopped(&mut self, stopped: &StoppedEventBody) {
         match &mut self.current {
             ExecutionStatus::Live {
                 running_threads,

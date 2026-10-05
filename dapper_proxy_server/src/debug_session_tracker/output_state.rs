@@ -27,7 +27,7 @@ fn get_dapper_output_dir() -> PathBuf {
 /// The buffer retains at most `max_buffer_size` events, split into head (earliest)
 /// and tail (most recent) halves, matching the display pattern used in the context footer.
 #[derive(Debug)]
-pub struct OutputState {
+pub(super) struct OutputState {
     output_file_path: PathBuf,
     history_file: HistoryFile,
     disabled: bool,

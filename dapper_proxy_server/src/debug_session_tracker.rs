@@ -38,14 +38,15 @@ use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::session_type_from_args;
-pub use execution_state::ExecutionState;
+#[cfg(test)]
+use execution_state::ExecutionState;
 use tracker_inner::DebugSessionTrackerInner;
 
 use crate::dapper_event::DapperEvent;
 use crate::stop_policy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientType {
+pub(crate) enum ClientType {
     Main,
     Secondary,
 }
@@ -74,7 +75,7 @@ impl DebugSessionTracker {
     /// * `session_id` - Unique identifier for this debug session
     /// * `config` - Dapper configuration (the caller's single loaded copy)
     /// * `sessions` - Session store for session files, if one is available
-    pub fn new(
+    pub(crate) fn new(
         session_id: SessionId,
         config: DapperConfig,
         sessions: Option<SessionStore>,
@@ -95,7 +96,7 @@ impl DebugSessionTracker {
     /// Set the parent session id (the proxy that spawned this one as a child).
     /// Must be set before any client is created so all tracker clones observe
     /// it. `None` for root sessions.
-    pub fn with_parent_session_id(mut self, parent_session_id: Option<SessionId>) -> Self {
+    pub(crate) fn with_parent_session_id(mut self, parent_session_id: Option<SessionId>) -> Self {
         self.parent_session_id = parent_session_id;
         self
     }
@@ -110,7 +111,7 @@ impl DebugSessionTracker {
     }
 
     /// Track a message from a client going to the backend.
-    pub fn track_message_from_client(&self, message: &Message, client_type: ClientType) {
+    pub(crate) fn track_message_from_client(&self, message: &Message, client_type: ClientType) {
         if let Message::Request(request) = message {
             match &request.command {
                 // Only track the set breakpoints request for the main client
@@ -231,7 +232,7 @@ impl DebugSessionTracker {
         self.with_inner(|inner| inner.execution_state.track_event(event));
     }
 
-    pub fn get_breakpoints(&self, source_path: &str) -> Vec<BreakpointInfo> {
+    pub(crate) fn get_breakpoints(&self, source_path: &str) -> Vec<BreakpointInfo> {
         self.with_inner(|inner| inner.breakpoint_state.get_breakpoints(source_path))
     }
 
@@ -274,7 +275,7 @@ impl DebugSessionTracker {
     }
 
     /// Record that the backend was detected to be a dapper proxy.
-    pub(crate) fn mark_backend_is_dapper(&self) -> bool {
+    fn mark_backend_is_dapper(&self) -> bool {
         self.with_inner(|inner| {
             if inner.backend_is_dapper {
                 false
@@ -290,11 +291,13 @@ impl DebugSessionTracker {
         self.with_inner(|inner| inner.backend_is_dapper)
     }
 
-    pub fn get_execution_state(&self) -> ExecutionState {
+    #[cfg(test)]
+    pub(crate) fn get_execution_state(&self) -> ExecutionState {
         self.with_inner(|inner| inner.execution_state.clone())
     }
 
-    pub fn is_stopped(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_stopped(&self) -> bool {
         self.with_inner(|inner| inner.execution_state.is_all_stopped())
     }
 
@@ -316,14 +319,14 @@ impl DebugSessionTracker {
     }
 
     /// Replace a secondary client's filters with the adapter-accepted set.
-    pub fn update_exception_filters(&self, entries: Vec<ExceptionFilterEntry>) {
+    pub(crate) fn update_exception_filters(&self, entries: Vec<ExceptionFilterEntry>) {
         self.with_inner(|inner| {
             inner.exception_filter_state.replace(entries);
         });
     }
 
     /// Read the current installed exception filter set, sorted by filter id.
-    pub fn get_installed_exception_filters(&self) -> Vec<ExceptionFilterEntry> {
+    pub(crate) fn get_installed_exception_filters(&self) -> Vec<ExceptionFilterEntry> {
         self.with_inner(|inner| inner.exception_filter_state.get_installed().to_vec())
     }
 

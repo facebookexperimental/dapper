@@ -8,7 +8,6 @@ use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
-use std::path::Path;
 use std::process::Child;
 use std::process::ChildStdout;
 use std::process::Command;
@@ -36,12 +35,6 @@ pub struct DapClient {
 }
 
 impl DapClient {
-    pub fn new(server_path: &Path) -> Result<Self> {
-        let cmd = Command::new(server_path);
-
-        Self::new_with_command(cmd)
-    }
-
     pub fn new_with_command(mut cmd: Command) -> Result<Self> {
         let mut child = cmd
             .stdin(Stdio::piped())
@@ -96,18 +89,6 @@ impl DapClient {
         self.unread_events
             .recv()
             .context("Failed to receive an event")
-    }
-
-    pub fn read_initialized_event(&mut self) -> Result<()> {
-        let r = self.read_event()?;
-        assert_eq!(r.event, "initialized");
-        Ok(())
-    }
-
-    pub fn read_stopped_event(&mut self) -> Result<()> {
-        let r = self.read_event()?;
-        assert_eq!(r.event, "stopped");
-        Ok(())
     }
 
     pub fn kill(&mut self) -> Result<()> {

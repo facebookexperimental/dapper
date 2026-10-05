@@ -23,7 +23,7 @@ use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::TokioChildProcess;
 use tokio::process::Command;
 
-pub mod dap_client;
+mod dap_client;
 mod harness;
 
 pub use harness::AdapterCommand;

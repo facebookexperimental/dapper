@@ -1479,6 +1479,50 @@ mod tests {
         assert_eq!(bps_by_original[0].line, 10);
     }
 
+    fn breakpoint_at(line: i64, condition: Option<&str>) -> BreakpointInfo {
+        BreakpointInfo {
+            line,
+            verified: true,
+            condition: condition.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compute_breakpoint_diff_replaces_changed_breakpoint_on_same_line() {
+        let old = vec![breakpoint_at(10, None)];
+        let new = vec![breakpoint_at(10, Some("x > 1"))];
+
+        let diff = DebugSessionTracker::compute_breakpoint_diff(&old, &new);
+        assert_eq!(diff.to_remove, old);
+        assert_eq!(diff.to_add, new);
+    }
+
+    #[test]
+    fn test_compute_breakpoint_diff_removes_dropped_line() {
+        let old = vec![breakpoint_at(10, None), breakpoint_at(20, None)];
+        let new = vec![breakpoint_at(10, None)];
+
+        let diff = DebugSessionTracker::compute_breakpoint_diff(&old, &new);
+        assert!(
+            diff.to_add.is_empty(),
+            "dropping a line adds nothing: {:?}",
+            diff.to_add
+        );
+        assert_eq!(diff.to_remove, vec![breakpoint_at(20, None)]);
+    }
+
+    #[test]
+    fn test_compute_breakpoint_diff_ignores_unchanged_breakpoints() {
+        let breakpoints = vec![breakpoint_at(10, None), breakpoint_at(20, Some("x > 1"))];
+
+        let diff = DebugSessionTracker::compute_breakpoint_diff(&breakpoints, &breakpoints);
+        assert!(
+            diff.to_add.is_empty() && diff.to_remove.is_empty(),
+            "identical breakpoints must produce no events: {diff:?}"
+        );
+    }
+
     /// Drive a synthetic Initialize response through the tracker and return the
     /// `supports_step_back` value the tracker captured.
     fn capture_step_back_after_initialize(caps: Option<Capabilities>) -> Option<Option<bool>> {

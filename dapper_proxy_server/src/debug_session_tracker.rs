@@ -148,14 +148,14 @@ impl DebugSessionTracker {
     }
 
     pub(crate) fn track_execution_request_to_backend(&self, request: &Request) {
-        ExecutionState::track_request(&self.inner, request);
+        self.with_inner(|inner| inner.execution_state.track_request(request));
     }
 
     #[cfg(test)]
     pub(crate) fn track_message_to_client(&self, message: &Message) {
         self.track_message_metadata_to_client(message);
         match message {
-            Message::Response(response) => ExecutionState::track_response(&self.inner, response),
+            Message::Response(response) => self.track_execution_response_from_backend(response),
             Message::Event(event) => self.track_execution_event_from_backend(event),
             _ => {}
         }
@@ -199,7 +199,11 @@ impl DebugSessionTracker {
     }
 
     pub(crate) fn track_execution_response_from_backend(&self, response: &Response) {
-        ExecutionState::track_response(&self.inner, response);
+        self.with_inner(|inner| {
+            inner
+                .execution_state
+                .track_response(response, inner.adapter_capabilities.as_ref());
+        });
     }
 
     pub(crate) fn track_execution_event_from_backend(&self, event: &Event) {
@@ -224,7 +228,7 @@ impl DebugSessionTracker {
                 "detected backend is a dapper proxy; relay candidate"
             );
         }
-        ExecutionState::track_event(&self.inner, event);
+        self.with_inner(|inner| inner.execution_state.track_event(event));
     }
 
     pub fn get_breakpoints(&self, source_path: &str) -> Vec<BreakpointInfo> {

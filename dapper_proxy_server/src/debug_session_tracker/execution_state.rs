@@ -5,8 +5,6 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::Mutex;
-use std::sync::PoisonError;
 
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::Seq;
@@ -26,8 +24,6 @@ use dapper_dap_protocol::requests::StepBackArguments;
 use dapper_dap_protocol::requests::StepInArguments;
 use dapper_dap_protocol::requests::StepOutArguments;
 use dapper_dap_protocol::responses::ResponseBody;
-
-use super::tracker_inner::DebugSessionTrackerInner;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingExecutionRequest {
@@ -238,18 +234,12 @@ impl ExecutionState {
         self.version += 1;
     }
 
-    pub(super) fn track_request(inner: &Mutex<DebugSessionTrackerInner>, request: &Request) {
+    pub(super) fn track_request(&mut self, request: &Request) {
         match &request.command {
-            RequestCommand::Launch(_) | RequestCommand::Attach(_) => {
-                Self::with_execution_state(inner, |this| {
-                    this.set_all_running();
-                });
-            }
+            RequestCommand::Launch(_) | RequestCommand::Attach(_) => self.set_all_running(),
             RequestCommand::Restart(_) => {
-                Self::with_execution_state(inner, |this| {
-                    this.pending_restart_seq = Some(request.seq);
-                    this.stopped_during_restart = false;
-                });
+                self.pending_restart_seq = Some(request.seq);
+                self.stopped_during_restart = false;
             }
             RequestCommand::Continue(ContinueArguments {
                 thread_id,
@@ -281,153 +271,140 @@ impl ExecutionState {
                 single_thread,
                 ..
             }) => {
-                Self::with_execution_state(inner, |this| {
-                    this.pending_execution_requests.insert(
-                        request.seq,
-                        PendingExecutionRequest {
-                            thread_id: *thread_id,
-                            single_thread: *single_thread,
-                            superseded: false,
-                        },
-                    );
-                });
+                self.pending_execution_requests.insert(
+                    request.seq,
+                    PendingExecutionRequest {
+                        thread_id: *thread_id,
+                        single_thread: *single_thread,
+                        superseded: false,
+                    },
+                );
             }
-            _ => {}
+            _ => return,
         }
+        tracing::trace!(state = ?self, "Execution state changed");
     }
 
-    pub(super) fn track_response(inner: &Mutex<DebugSessionTrackerInner>, response: &Response) {
+    pub(super) fn track_response(
+        &mut self,
+        response: &Response,
+        capabilities: Option<&Capabilities>,
+    ) {
+        // Not inside the match arms: a failed response's error body parses as
+        // `ResponseBody::Unknown`, and its pending entry must still be dropped.
+        let pending = self
+            .pending_execution_requests
+            .remove(&response.request_seq);
         match &response.body {
             ResponseBody::Continue(body) => {
-                Self::with_execution_state(inner, |this| {
-                    let pending = this
-                        .pending_execution_requests
-                        .remove(&response.request_seq);
-                    if response.success
-                        && let Some(pending) = pending
-                        && !pending.superseded
-                    {
-                        let all_threads_continued = body.all_threads_continued.unwrap_or(true);
-                        if all_threads_continued {
-                            this.set_all_running();
-                        } else {
-                            this.mark_thread_running(pending.thread_id);
-                        }
-                        tracing::debug!(
-                            command = %response.command_name(),
-                            thread_id = pending.thread_id.as_i64(),
-                            state = ?this.current,
-                            "Execution state changed from response"
-                        );
+                if response.success
+                    && let Some(pending) = pending
+                    && !pending.superseded
+                {
+                    let all_threads_continued = body.all_threads_continued.unwrap_or(true);
+                    if all_threads_continued {
+                        self.set_all_running();
+                    } else {
+                        self.mark_thread_running(pending.thread_id);
                     }
-                });
+                    tracing::debug!(
+                        command = %response.command_name(),
+                        thread_id = pending.thread_id.as_i64(),
+                        state = ?self.current,
+                        "Execution state changed from response"
+                    );
+                }
             }
             ResponseBody::ReverseContinue
             | ResponseBody::Next
             | ResponseBody::StepIn
             | ResponseBody::StepOut
             | ResponseBody::StepBack => {
-                Self::with_execution_state_and_capabilities(inner, |this, capabilities| {
-                    let pending = this
-                        .pending_execution_requests
-                        .remove(&response.request_seq);
-                    if response.success
-                        && let Some(pending) = pending
-                        && !pending.superseded
-                    {
-                        let supports_single_thread = capabilities.is_some_and(|caps| {
-                            caps.supports_single_thread_execution_requests == Some(true)
-                        });
-                        let all_threads_continued =
-                            !supports_single_thread || !pending.single_thread.unwrap_or(false);
+                if response.success
+                    && let Some(pending) = pending
+                    && !pending.superseded
+                {
+                    let supports_single_thread = capabilities.is_some_and(|caps| {
+                        caps.supports_single_thread_execution_requests == Some(true)
+                    });
+                    let all_threads_continued =
+                        !supports_single_thread || !pending.single_thread.unwrap_or(false);
 
-                        if all_threads_continued {
-                            this.set_all_running();
-                        } else {
-                            this.mark_thread_running(pending.thread_id);
-                        }
-
-                        tracing::debug!(
-                            command = %response.command_name(),
-                            thread_id = pending.thread_id.as_i64(),
-                            single_thread = ?pending.single_thread,
-                            supports_single_thread,
-                            all_threads_continued = all_threads_continued,
-                            state = ?this.current,
-                            "Execution state changed from response"
-                        );
+                    if all_threads_continued {
+                        self.set_all_running();
+                    } else {
+                        self.mark_thread_running(pending.thread_id);
                     }
-                });
+
+                    tracing::debug!(
+                        command = %response.command_name(),
+                        thread_id = pending.thread_id.as_i64(),
+                        single_thread = ?pending.single_thread,
+                        supports_single_thread,
+                        all_threads_continued = all_threads_continued,
+                        state = ?self.current,
+                        "Execution state changed from response"
+                    );
+                }
             }
             ResponseBody::Restart => {
-                Self::with_execution_state(inner, |this| {
-                    if response.success {
-                        if !this.stopped_during_restart {
-                            this.set_all_running();
-                        }
-                        this.pending_execution_requests.clear();
+                if response.success {
+                    if !self.stopped_during_restart {
+                        self.set_all_running();
                     }
-                    tracing::debug!(
-                        command = "restart",
-                        success = response.success,
-                        stopped_during_restart = this.stopped_during_restart,
-                        state = ?this.current,
-                        "Execution state after restart response"
-                    );
-                    this.pending_restart_seq = None;
-                    this.stopped_during_restart = false;
-                });
+                    self.pending_execution_requests.clear();
+                }
+                tracing::debug!(
+                    command = "restart",
+                    success = response.success,
+                    stopped_during_restart = self.stopped_during_restart,
+                    state = ?self.current,
+                    "Execution state after restart response"
+                );
+                self.pending_restart_seq = None;
+                self.stopped_during_restart = false;
             }
-            _ => {
-                Self::with_execution_state(inner, |this| {
-                    this.pending_execution_requests
-                        .remove(&response.request_seq);
-                });
-            }
+            _ => return,
         }
+        tracing::trace!(state = ?self, "Execution state changed");
     }
 
-    pub(super) fn track_event(inner: &Mutex<DebugSessionTrackerInner>, event: &Event) {
+    pub(super) fn track_event(&mut self, event: &Event) {
         match &event.event {
             EventKind::Stopped(stopped) => {
-                Self::with_execution_state(inner, |this| {
-                    if this.pending_restart_seq.is_some() {
-                        this.stopped_during_restart = true;
-                    }
+                if self.pending_restart_seq.is_some() {
+                    self.stopped_during_restart = true;
+                }
 
-                    let all_stopped = stopped.all_threads_stopped.unwrap_or(false);
-                    this.supersede_pending_requests(|pending| {
-                        all_stopped || stopped.thread_id == Some(pending.thread_id)
-                    });
-                    if all_stopped {
-                        this.set_all_stopped(stopped);
-                    } else {
-                        this.mark_thread_stopped(stopped);
-                    }
+                let all_stopped = stopped.all_threads_stopped.unwrap_or(false);
+                self.supersede_pending_requests(|pending| {
+                    all_stopped || stopped.thread_id == Some(pending.thread_id)
                 });
+                if all_stopped {
+                    self.set_all_stopped(stopped);
+                } else {
+                    self.mark_thread_stopped(stopped);
+                }
             }
             EventKind::Continued(continued) => {
-                Self::with_execution_state(inner, |this| {
-                    let all_continued = continued.all_threads_continued.unwrap_or(true);
-                    if all_continued {
-                        this.set_all_running();
-                    } else {
-                        this.mark_thread_running(continued.thread_id);
-                    }
-                });
+                let all_continued = continued.all_threads_continued.unwrap_or(true);
+                if all_continued {
+                    self.set_all_running();
+                } else {
+                    self.mark_thread_running(continued.thread_id);
+                }
             }
             EventKind::Thread(thread) if thread.reason == ThreadReason::Exited => {
-                Self::with_execution_state(inner, |this| this.forget_thread(thread.thread_id));
+                self.forget_thread(thread.thread_id);
             }
             EventKind::Exited(_) | EventKind::Terminated(_) => {
-                Self::with_execution_state(inner, |this| {
-                    this.supersede_pending_requests(|_| true);
-                    this.current = ExecutionStatus::Exited;
-                    this.version += 1;
-                });
+                self.supersede_pending_requests(|_| true);
+                self.current = ExecutionStatus::Exited;
+                self.version += 1;
             }
-            _ => {}
+            _ => return,
         }
+        tracing::trace!(state = ?self, "Execution state changed");
     }
 
     fn supersede_pending_requests(&mut self, covers: impl Fn(&PendingExecutionRequest) -> bool) {
@@ -543,29 +520,6 @@ impl ExecutionState {
             self.version += 1;
         }
     }
-
-    fn with_execution_state(
-        inner: &Mutex<DebugSessionTrackerInner>,
-        f: impl FnOnce(&mut ExecutionState),
-    ) {
-        Self::with_execution_state_and_capabilities(inner, |this, _| f(this));
-    }
-
-    fn with_execution_state_and_capabilities(
-        inner: &Mutex<DebugSessionTrackerInner>,
-        f: impl FnOnce(&mut ExecutionState, Option<&Capabilities>),
-    ) {
-        // Recover from poisoning: skipping a transition would leave the
-        // tracked execution state permanently stale, while recovery risks
-        // at most one unfinished update.
-        let mut guard = inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let tracker = &mut *guard;
-        f(
-            &mut tracker.execution_state,
-            tracker.adapter_capabilities.as_ref(),
-        );
-        tracing::trace!(state = ?tracker.execution_state, "Execution state changed");
-    }
 }
 
 #[cfg(test)]
@@ -595,6 +549,7 @@ mod tests {
     use dapper_dap_protocol::responses::ResponseBody;
 
     use super::*;
+    use crate::debug_session_tracker::tracker_inner::DebugSessionTrackerInner;
 
     fn make_test_inner() -> Mutex<DebugSessionTrackerInner> {
         let session_id: dapper_session::SessionId = "test".into();
@@ -609,13 +564,17 @@ mod tests {
         let Message::Request(request) = message else {
             panic!("expected request");
         };
-        ExecutionState::track_request(inner, request);
+        inner.lock().unwrap().execution_state.track_request(request);
     }
 
     fn track_to(inner: &Mutex<DebugSessionTrackerInner>, message: &Message) {
+        let mut guard = inner.lock().unwrap();
+        let inner = &mut *guard;
         match message {
-            Message::Response(response) => ExecutionState::track_response(inner, response),
-            Message::Event(event) => ExecutionState::track_event(inner, event),
+            Message::Response(response) => inner
+                .execution_state
+                .track_response(response, inner.adapter_capabilities.as_ref()),
+            Message::Event(event) => inner.execution_state.track_event(event),
             other => panic!("expected response or event, got {:?}", other.message_type()),
         }
     }

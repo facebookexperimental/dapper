@@ -471,12 +471,12 @@ impl ExecutionState {
                     if *remainder_status == RemainderStatus::Running {
                         stopped_threads.insert(tid);
                     }
+                    Self::update_stop_info(stop_info, stopped);
                 } else {
                     tracing::warn!(
                         "Received stopped event without allThreadsStopped=true and without threadId"
                     );
                 }
-                Self::update_stop_info(stop_info, stopped);
             }
             _ => {
                 // unreachable, but we ignore the error instead of calling
@@ -494,11 +494,17 @@ impl ExecutionState {
                 running_threads,
                 stopped_threads,
                 remainder_status,
-                ..
+                stop_info,
             } => {
                 stopped_threads.remove(&thread_id);
                 if *remainder_status == RemainderStatus::Stopped {
                     running_threads.insert(thread_id);
+                } else if stopped_threads.is_empty()
+                    || stop_info
+                        .as_ref()
+                        .is_some_and(|info| info.thread_id == Some(thread_id))
+                {
+                    *stop_info = None;
                 }
                 self.version += 1;
             }
@@ -1992,6 +1998,94 @@ mod tests {
             stop_info(&inner).is_some(),
             "stop_info should be preserved when only a single thread resumes"
         );
+    }
+
+    #[test]
+    fn test_stop_info_cleared_when_last_stopped_thread_resumes() {
+        let inner = make_test_inner();
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 1.into(),
+                command: RequestCommand::Launch(LaunchRequestArguments::default()),
+            }),
+        );
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, false));
+        track_to(
+            &inner,
+            &Message::Event(Event {
+                seq: 101.into(),
+                event: EventKind::Continued(ContinuedEventBody {
+                    thread_id: ThreadId(1),
+                    all_threads_continued: Some(false),
+                    ..Default::default()
+                }),
+            }),
+        );
+
+        let summary = es(&inner).summary().state;
+        assert_eq!(summary.status, dapper_session::ExecutionStatus::Running);
+        assert_eq!(summary.stop_reason, None);
+    }
+
+    #[test]
+    fn test_stop_info_cleared_when_its_thread_resumes_while_others_stay_stopped() {
+        let inner = make_test_inner();
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 1.into(),
+                command: RequestCommand::Launch(LaunchRequestArguments::default()),
+            }),
+        );
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 1, false));
+        track_to(&inner, &stopped(StoppedReason::Step, 2, false));
+        track_to(
+            &inner,
+            &Message::Event(Event {
+                seq: 102.into(),
+                event: EventKind::Continued(ContinuedEventBody {
+                    thread_id: ThreadId(2),
+                    all_threads_continued: Some(false),
+                    ..Default::default()
+                }),
+            }),
+        );
+
+        let state = es(&inner);
+        assert!(state.is_thread_stopped(1.into()));
+        assert_eq!(
+            state.summary().state.stop_reason,
+            None,
+            "the recorded reason described thread 2, which resumed"
+        );
+    }
+
+    #[test]
+    fn test_partial_stop_without_thread_id_records_no_stop_info() {
+        let inner = make_test_inner();
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 1.into(),
+                command: RequestCommand::Launch(LaunchRequestArguments::default()),
+            }),
+        );
+        track_to(
+            &inner,
+            &Message::Event(Event {
+                seq: 100.into(),
+                event: EventKind::Stopped(StoppedEventBody {
+                    reason: StoppedReason::Breakpoint,
+                    all_threads_stopped: Some(false),
+                    ..Default::default()
+                }),
+            }),
+        );
+
+        let summary = es(&inner).summary().state;
+        assert_eq!(summary.status, dapper_session::ExecutionStatus::Running);
+        assert_eq!(summary.stop_reason, None);
     }
 
     fn version(inner: &Mutex<DebugSessionTrackerInner>) -> u64 {

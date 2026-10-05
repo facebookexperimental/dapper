@@ -213,7 +213,7 @@ impl DebugSessionTracker {
         }
         // A backend that emits a successful `controlPlaneStatus` is itself a
         // dapper proxy. Logged on first detection only.
-        if let Ok(DapperEvent::ControlPlaneStatus(status)) = DapperEvent::try_from(&event.event)
+        if let Some(DapperEvent::ControlPlaneStatus(status)) = DapperEvent::from_event(&event.event)
             && status.success
             && self.mark_backend_is_dapper()
         {

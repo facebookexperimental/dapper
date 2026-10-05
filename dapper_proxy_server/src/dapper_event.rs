@@ -5,7 +5,6 @@
 
 //! Dapper events sent from the control plane to the proxy server.
 
-use anyhow::Context;
 use dapper_dap_protocol::events::EventKind;
 use dapper_dap_protocol::events::UnknownEvent;
 use dapper_session::Port;
@@ -73,20 +72,17 @@ impl TryFrom<DapperEvent> for EventKind {
     }
 }
 
-impl TryFrom<&EventKind> for DapperEvent {
-    type Error = anyhow::Error;
-
-    /// Recognize a dapper event carried in an incoming DAP event. Fails when the
-    /// event is not the custom `"dapper"` event, has no body, or its body does
-    /// not parse as a known `DapperEvent`. Used by a proxy to detect that its
-    /// backend is itself a dapper proxy.
-    fn try_from(kind: &EventKind) -> anyhow::Result<Self> {
+impl DapperEvent {
+    /// The dapper event carried by a custom `dapper` DAP event; `None` for any
+    /// other event, or one whose body is missing or doesn't parse.
+    pub(crate) fn from_event(kind: &EventKind) -> Option<Self> {
         let EventKind::Unknown(unknown) = kind else {
-            anyhow::bail!("not a custom (unknown) DAP event");
+            return None;
         };
-        anyhow::ensure!(unknown.event == "dapper", "not a dapper event");
-        let body = unknown.body.as_ref().context("dapper event has no body")?;
-        Ok(serde_json::from_value(body.clone())?)
+        if unknown.event != "dapper" {
+            return None;
+        }
+        Self::deserialize(unknown.body.as_ref()?).ok()
     }
 }
 
@@ -134,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn try_from_event_kind_recognizes_control_plane_status_success() {
+    fn from_event_recognizes_control_plane_status_success() {
         let kind = EventKind::Unknown(UnknownEvent {
             event: "dapper".to_string(),
             body: Some(serde_json::json!({
@@ -146,7 +142,7 @@ mod tests {
             extra: Default::default(),
         });
 
-        let parsed = DapperEvent::try_from(&kind).expect("should recognize dapper event");
+        let parsed = DapperEvent::from_event(&kind).expect("should recognize dapper event");
         match parsed {
             DapperEvent::ControlPlaneStatus(status) => {
                 assert!(status.success);
@@ -157,22 +153,23 @@ mod tests {
     }
 
     #[test]
-    fn try_from_event_kind_rejects_non_dapper_events() {
-        let kind = EventKind::Unknown(UnknownEvent {
+    fn from_event_ignores_non_dapper_events() {
+        let custom = EventKind::Unknown(UnknownEvent {
             event: "output".to_string(),
             body: Some(serde_json::json!({ "category": "stdout" })),
             extra: Default::default(),
         });
-        assert!(DapperEvent::try_from(&kind).is_err());
+        assert_eq!(DapperEvent::from_event(&custom), None);
+        assert_eq!(DapperEvent::from_event(&EventKind::Initialized(None)), None);
     }
 
     #[test]
-    fn try_from_event_kind_rejects_dapper_event_without_body() {
+    fn from_event_ignores_dapper_event_without_body() {
         let kind = EventKind::Unknown(UnknownEvent {
             event: "dapper".to_string(),
             body: None,
             extra: Default::default(),
         });
-        assert!(DapperEvent::try_from(&kind).is_err());
+        assert_eq!(DapperEvent::from_event(&kind), None);
     }
 }

@@ -62,9 +62,9 @@ Five tools sit outside that envelope. `debug_dap_request`, `debug_thread_snapsho
 
 ## Per-call session targeting
 
-Unlike the CLI, an MCP server is a long-lived connection. New sessions can come and go during a single MCP session, so MCP tool calls additionally accept a `session_id` argument that overrides the server's startup-time `--control-port`/`--scope-id`. Use it when a single agent is driving multiple debuggees over the lifetime of one MCP connection.
+Unlike the CLI, an MCP server is a long-lived connection. New sessions can come and go during a single MCP session, so the tools that target a session additionally accept a `session_id` argument. An explicit `session_id` takes precedence over the server's startup-time `--control-port`, but must name a session within its `--scope-id`, if one is set. Use it when a single agent is driving multiple debuggees over the lifetime of one MCP connection.
 
-When `session_id` is omitted, the MCP server falls back to the *last* session it interacted with on this connection (if still active), and only then to the oldest active session — so a one-debuggee agent never has to think about it.
+When `session_id` is omitted, an MCP server started with `--control-port` targets that port's session, and the call fails if there is none. Otherwise it targets the *last* session it used on this connection, if still active, and then the only active session (or the root of a parent/child group); if several candidates remain, the call fails and lists them. A one-debuggee agent never has to think about it.
 
 ## Per-call reason
 

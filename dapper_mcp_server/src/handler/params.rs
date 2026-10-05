@@ -22,7 +22,7 @@ pub struct EmptyParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SessionTargeted<T> {
-    /// Id of the debug session to send the request to. If left unspecified, requests are sent to the last session this MCP server used (if still active), or the oldest active session otherwise.
+    /// Id of the debug session to send the request to, as listed by `debug_sessions_command`. If omitted: the session on the server's `--control-port` when it was started with one (the call fails if there is none); otherwise the last session this server used (if still active), then the only active session (or the root of a parent/child group), and with several candidates the call fails and lists them.
     #[serde(default)]
     #[schemars(schema_with = "optional_schema::<String>")]
     pub(super) session_id: Option<SessionId>,

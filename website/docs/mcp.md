@@ -61,4 +61,6 @@ DAPPER_SCOPE_ID=my-agent-session dapper mcp
 
 The scope helps the proxy and agent pair automatically, but `--control-port` is still the most deterministic option when several sessions are active.
 
+Tool calls that target a session can also pass a `session_id`, as listed by `debug_sessions_command`, which takes precedence over `--control-port` but must name a session within `--scope-id`, if one is set. Without one, a server started with `--control-port` uses the session on that port, failing if there is none; otherwise the last session it used, if still active, then the only active session (or the root of a parent/child group), failing with the list of candidates when that is ambiguous.
+
 For the exact toolset contents and custom tool selection flags, see [dapper mcp](./reference/mcp.md).

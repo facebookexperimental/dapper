@@ -531,10 +531,30 @@ impl fmt::Display for SessionInfo {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use super::*;
 
-    fn test_store() -> SessionStore {
-        SessionStore::at(get_user_temp_dir().join("test_sessions"))
+    struct IsolatedStore(SessionStore);
+
+    impl Deref for IsolatedStore {
+        type Target = SessionStore;
+
+        fn deref(&self) -> &SessionStore {
+            &self.0
+        }
+    }
+
+    impl Drop for IsolatedStore {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0.dir);
+        }
+    }
+
+    fn isolated_store() -> IsolatedStore {
+        IsolatedStore(SessionStore::at(
+            env::temp_dir().join(format!("dapper-session-test-{}", uuid::Uuid::new_v4())),
+        ))
     }
 
     #[test]
@@ -605,7 +625,7 @@ mod tests {
             None,
         );
 
-        let store = test_store();
+        let store = isolated_store();
         let file_path = store.save(&session_info).unwrap();
         assert!(file_path.exists());
         store.delete(&session_info).unwrap();
@@ -644,13 +664,12 @@ mod tests {
 
     #[test]
     fn test_iter_sessions() {
-        let store = test_store();
-        let test_scope: ScopeId = format!("test-scope-{}", uuid::Uuid::new_v4()).into();
+        let store = isolated_store();
 
         let session1 = SessionInfo::generate(
             "session1-id".into(),
             Port::try_new(11111),
-            Some(test_scope.clone()),
+            None,
             Some(RequestType::Launch),
             None,
         );
@@ -659,16 +678,13 @@ mod tests {
         let session2 = SessionInfo::generate(
             "session2-id".into(),
             Port::try_new(22222),
-            Some(test_scope.clone()),
+            None,
             Some(RequestType::Attach),
             None,
         );
         store.save(&session2).unwrap();
 
-        let sessions: Vec<SessionInfo> = store
-            .iter_sessions()
-            .filter(|s| s.scope_id.as_ref() == Some(&test_scope))
-            .collect();
+        let sessions: Vec<SessionInfo> = store.iter_sessions().collect();
 
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].control_plane_port.unwrap().get(), 11111);
@@ -681,18 +697,77 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn iter_sessions_keeps_a_session_file_it_cannot_read() {
-        let dir = env::temp_dir().join(format!("dapper-session-test-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let store = isolated_store();
+        fs::create_dir_all(&store.dir).unwrap();
         // Opening /proc/self/mem succeeds, but reading it at offset 0 fails with EIO.
-        let path = dir.join("unreadable.json");
+        let path = store.dir.join("unreadable.json");
         std::os::unix::fs::symlink("/proc/self/mem", &path).unwrap();
 
-        assert_eq!(SessionStore::at(&dir).iter_sessions().count(), 0);
+        assert_eq!(store.iter_sessions().count(), 0);
         assert!(
             path.symlink_metadata().is_ok(),
             "a read failure must not delete the session file"
         );
-        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn iter_sessions_deletes_an_unparsable_session_file() {
+        let store = isolated_store();
+        fs::create_dir_all(&store.dir).unwrap();
+        let path = store.dir.join("x.json");
+        fs::write(&path, "not json").unwrap();
+
+        assert_eq!(store.iter_sessions().count(), 0);
+        assert!(
+            !path.exists(),
+            "an unparsable session file should be deleted"
+        );
+    }
+
+    #[test]
+    fn iter_sessions_ignores_a_temp_file_being_written() {
+        let store = isolated_store();
+        fs::create_dir_all(&store.dir).unwrap();
+        let path = store.dir.join("x.json.tmp.1.0");
+        fs::write(&path, r#"{"session_id":"#).unwrap();
+
+        assert_eq!(store.iter_sessions().count(), 0);
+        assert!(
+            path.exists(),
+            "a temp file being written must not be deleted"
+        );
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn iter_active_sessions_deletes_stale_sessions_and_keeps_live_ones() {
+        let store = isolated_store();
+        let listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap();
+        let live = SessionInfo::generate(
+            "live".into(),
+            Port::try_new(listener.local_addr().unwrap().port()),
+            None,
+            None,
+            None,
+        );
+        let stale = SessionInfo::generate("stale".into(), None, None, None, None);
+        let live_path = store.save(&live).unwrap();
+        let stale_path = store.save(&stale).unwrap();
+
+        let active: Vec<SessionId> = store
+            .iter_active_sessions(None)
+            .map(|session| session.session_id)
+            .collect();
+        assert_eq!(active, vec![live.session_id.clone()]);
+        assert!(live_path.exists(), "a live session must survive the scan");
+        assert!(
+            !stale_path.exists(),
+            "a session without a control port should be deleted"
+        );
+
+        store.delete(&live).unwrap();
     }
 
     /// Stores at different directories are fully isolated: a session saved
@@ -700,8 +775,8 @@ mod tests {
     /// dependent crates' tests avoid touching the real per-user sessions dir.
     #[test]
     fn test_stores_are_isolated_by_directory() {
-        let store_a = SessionStore::at(get_user_temp_dir().join("isolated_sessions_a"));
-        let store_b = SessionStore::at(get_user_temp_dir().join("isolated_sessions_b"));
+        let store_a = isolated_store();
+        let store_b = isolated_store();
 
         let session = SessionInfo::generate(
             "isolated-session-id".into(),
@@ -712,6 +787,12 @@ mod tests {
         );
         store_a.save(&session).unwrap();
 
+        assert!(
+            store_a
+                .iter_sessions()
+                .any(|s| s.session_id == session.session_id),
+            "session saved in store A must be visible in store A"
+        );
         assert!(
             store_b
                 .iter_sessions()

@@ -164,8 +164,10 @@ pub fn file_logging_layer(file_path: &Path) -> Result<impl Layer<Registry>> {
         .with_writer(log_file))
 }
 
-/// Set up a panic hook to capture panics and backtraces in the logs.
+/// Set up a panic hook that logs panics and their backtraces, then runs the
+/// previous hook, so a panic still reaches stderr when the log filter drops it.
 pub fn set_panic_hook() {
+    let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let backtrace = Backtrace::force_capture();
 
@@ -190,17 +192,11 @@ pub fn set_panic_hook() {
             backtrace
         );
 
-        // Note: With set_hook, we can't call the previous hook.
-        // The default panic behavior (printing to stderr) won't occur.
-        // This is acceptable since we're logging the panic info ourselves.
+        previous_hook(info);
     }));
 }
 
-/// Initialize logging with the given directives.
-///
-/// This function sets up a global tracing subscriber with both stderr and file output.
-/// It configures the subscriber with the provided filter directives and sets up
-/// appropriate formatting for both human-readable (stderr) and structured (file) logging.
+/// Install `layers` as the global tracing subscriber and set the panic hook.
 pub fn init_logging(layers: Vec<BoxedLayer>) -> Result<()> {
     let subscriber = Registry::default().with(layers);
 
@@ -214,7 +210,35 @@ pub fn init_logging(layers: Vec<BoxedLayer>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+
     use super::*;
+
+    #[test]
+    fn panic_hook_runs_the_previous_hook() {
+        const MARKER: &str = "dapper_tracing panic hook test";
+        static PREVIOUS_HOOK_RAN: AtomicBool = AtomicBool::new(false);
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.payload().downcast_ref::<&str>() == Some(&MARKER) {
+                PREVIOUS_HOOK_RAN.store(true, Ordering::SeqCst);
+            } else {
+                // Tests run in parallel: another test's panic must still print.
+                original(info);
+            }
+        }));
+        set_panic_hook();
+
+        let result = std::panic::catch_unwind(|| std::panic::panic_any(MARKER));
+        drop(std::panic::take_hook());
+
+        assert!(result.is_err());
+        assert!(
+            PREVIOUS_HOOK_RAN.load(Ordering::SeqCst),
+            "the previous hook must still run after logging"
+        );
+    }
 
     #[test]
     fn collapses_whitespace_and_control_characters() {

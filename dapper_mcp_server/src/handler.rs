@@ -238,9 +238,12 @@ impl McpHandler {
                 .find(|s| s.control_plane_port == Some(port))
                 .ok_or_else(|| anyhow::anyhow!("no session found on port {port}"))
         } else {
-            let from_last = self.last_session().as_ref().and_then(|id| {
+            // Don't inline: the guard would then live until the end of the
+            // `from_last` statement, holding the lock across the store scan.
+            let last_session_id = self.last_session().clone();
+            let from_last = last_session_id.and_then(|id| {
                 self.sessions
-                    .find_active_session_with_id(self.scope_id.clone(), id)
+                    .find_active_session_with_id(self.scope_id.clone(), &id)
             });
 
             if let Some(session) = from_last {

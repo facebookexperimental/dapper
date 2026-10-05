@@ -6,6 +6,7 @@
 use std::fmt::Debug;
 use std::fmt::Write as _;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -135,11 +136,10 @@ fn breakpoint_spec_schema_shape() {
     assert!(!required.contains(&json!("logMessage")));
 }
 
-/// A store at a unique empty directory, so tests can never see — let
-/// alone mutate — real sessions on the developer's machine. The timestamp
-/// keeps a store a test wrote to from being inherited by a later run that
-/// recycles this pid.
-fn isolated_store() -> SessionStore {
+/// A unique empty directory, so tests can never see — let alone mutate —
+/// real sessions on the developer's machine. The timestamp keeps a store a
+/// test wrote to from being inherited by a later run that recycles this pid.
+fn isolated_store_dir() -> PathBuf {
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -147,12 +147,16 @@ fn isolated_store() -> SessionStore {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    SessionStore::at(std::env::temp_dir().join(format!(
+    std::env::temp_dir().join(format!(
         "dapper-mcp-test-sessions-{}-{}-{}",
         std::process::id(),
         started_at,
         NEXT.fetch_add(1, Ordering::Relaxed)
-    )))
+    ))
+}
+
+fn isolated_store() -> SessionStore {
+    SessionStore::at(isolated_store_dir())
 }
 
 /// A handler environment that cannot touch the developer's real sessions
@@ -394,6 +398,73 @@ fn control_port_lookup_ignores_the_scope() {
             .expect("--control-port must find its session whatever --scope-id says")
             .session_id,
         session.session_id
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_session_scans_the_store_without_holding_the_last_session_lock() {
+    use std::fs;
+    use std::fs::OpenOptions;
+    use std::process::Command;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    struct RemoveDirOnDrop(PathBuf);
+    impl Drop for RemoveDirOnDrop {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir = isolated_store_dir();
+    fs::create_dir_all(&dir).expect("create the store directory");
+    let _remove_dir = RemoveDirOnDrop(dir.clone());
+    // Opening a FIFO blocks until both ends are open, so the scan stays
+    // parked inside `resolve_session` until the write end below is dropped.
+    let fifo = dir.join("blocking.json");
+    let mkfifo = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(mkfifo.success(), "mkfifo failed: {mkfifo}");
+
+    let handler = full_toolset_handler_with(McpServerEnv {
+        sessions: SessionStore::at(&dir),
+        ..isolated_env()
+    });
+    handler.set_last_session_id(&SessionId::from("remembered"));
+    let (scanned_tx, scanned) = mpsc::channel();
+    thread::spawn({
+        let handler = handler.clone();
+        move || {
+            let _ = scanned_tx.send(handler.resolve_session(None));
+        }
+    });
+
+    let (opened_tx, opened) = mpsc::channel();
+    thread::spawn({
+        let fifo = fifo.clone();
+        move || {
+            let _ = opened_tx.send(OpenOptions::new().write(true).open(fifo));
+        }
+    });
+    let writer = opened
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the store scan never opened blocking.json")
+        .expect("open the FIFO the scan is reading");
+    let lock_was_free = handler.last_session_id.try_lock().is_ok();
+    drop(writer);
+
+    let scanned = scanned
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the store scan did not return after the FIFO was closed");
+
+    assert!(scanned.is_err(), "the store holds no session");
+    assert!(
+        lock_was_free,
+        "the store scan must not hold the last_session_id lock"
     );
 }
 

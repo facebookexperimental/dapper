@@ -12,6 +12,7 @@ use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::Seq;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::enums::StoppedReason;
+use dapper_dap_protocol::enums::ThreadReason;
 use dapper_dap_protocol::events::EventKind;
 use dapper_dap_protocol::events::StoppedEventBody;
 use dapper_dap_protocol::protocol::Event;
@@ -415,6 +416,9 @@ impl ExecutionState {
                     }
                 });
             }
+            EventKind::Thread(thread) if thread.reason == ThreadReason::Exited => {
+                Self::with_execution_state(inner, |this| this.forget_thread(thread.thread_id));
+            }
             EventKind::Exited(_) | EventKind::Terminated(_) => {
                 Self::with_execution_state(inner, |this| {
                     this.supersede_pending_requests(|_| true);
@@ -517,6 +521,29 @@ impl ExecutionState {
         }
     }
 
+    fn forget_thread(&mut self, thread_id: ThreadId) {
+        let ExecutionStatus::Live {
+            running_threads,
+            stopped_threads,
+            stop_info,
+            ..
+        } = &mut self.current
+        else {
+            return;
+        };
+        let was_running = running_threads.remove(&thread_id);
+        let was_stopped = stopped_threads.remove(&thread_id);
+        let names_thread = stop_info
+            .as_ref()
+            .is_some_and(|info| info.thread_id == Some(thread_id));
+        if names_thread {
+            *stop_info = None;
+        }
+        if was_running || was_stopped || names_thread {
+            self.version += 1;
+        }
+    }
+
     fn with_execution_state(
         inner: &Mutex<DebugSessionTrackerInner>,
         f: impl FnOnce(&mut ExecutionState),
@@ -554,6 +581,7 @@ mod tests {
     use dapper_dap_protocol::events::EventKind;
     use dapper_dap_protocol::events::ExitedEventBody;
     use dapper_dap_protocol::events::StoppedEventBody;
+    use dapper_dap_protocol::events::ThreadEventBody;
     use dapper_dap_protocol::protocol::Event;
     use dapper_dap_protocol::protocol::Message;
     use dapper_dap_protocol::protocol::Request;
@@ -2059,6 +2087,44 @@ mod tests {
             None,
             "the recorded reason described thread 2, which resumed"
         );
+    }
+
+    #[test]
+    fn test_thread_exit_forgets_the_thread() {
+        let thread_exited = |thread_id| {
+            Message::Event(Event {
+                seq: 101.into(),
+                event: EventKind::Thread(ThreadEventBody {
+                    reason: ThreadReason::Exited,
+                    thread_id: ThreadId(thread_id),
+                    ..Default::default()
+                }),
+            })
+        };
+        let inner = make_test_inner();
+        track_from(
+            &inner,
+            &Message::Request(Request {
+                seq: 1.into(),
+                command: RequestCommand::Launch(LaunchRequestArguments::default()),
+            }),
+        );
+        track_to(&inner, &stopped(StoppedReason::Breakpoint, 5, false));
+        let version_before = version(&inner);
+
+        track_to(&inner, &thread_exited(7));
+        assert!(es(&inner).is_thread_stopped(5.into()));
+        assert!(stop_info(&inner).is_some());
+        assert_eq!(
+            version(&inner),
+            version_before,
+            "an untracked thread exiting is not a state change"
+        );
+
+        track_to(&inner, &thread_exited(5));
+        let summary = es(&inner).summary().state;
+        assert_eq!(summary.status, dapper_session::ExecutionStatus::Running);
+        assert_eq!(summary.stop_reason, None);
     }
 
     #[test]

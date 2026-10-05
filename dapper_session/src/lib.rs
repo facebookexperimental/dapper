@@ -6,6 +6,7 @@
 #![warn(clippy::all)]
 
 use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::fs::{self};
@@ -275,10 +276,14 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// The standard per-user location: `DAPPER_SESSIONS_DIR` if set,
-    /// otherwise under the user data directory.
+    /// The standard per-user location: `DAPPER_SESSIONS_DIR` if set and
+    /// non-empty, otherwise under the user data directory.
     pub fn default_location() -> anyhow::Result<Self> {
-        if let Ok(env_dir) = env::var("DAPPER_SESSIONS_DIR") {
+        Self::default_location_from(env::var_os("DAPPER_SESSIONS_DIR"))
+    }
+
+    fn default_location_from(sessions_dir_env: Option<OsString>) -> anyhow::Result<Self> {
+        if let Some(env_dir) = sessions_dir_env.filter(|dir| !dir.is_empty()) {
             return Ok(Self::at(env_dir));
         }
 
@@ -573,6 +578,21 @@ mod tests {
             Some(serde_json::json!({"type": "hhvm"})),
         );
         assert_eq!(session_info.session_type.as_deref(), Some("hhvm"));
+    }
+
+    #[test]
+    fn empty_sessions_dir_env_falls_back_to_the_data_dir() {
+        let fallback = SessionStore::default_location_from(None)
+            .expect("the data directory should resolve in tests");
+        let empty = SessionStore::default_location_from(Some(OsString::new()))
+            .expect("an empty DAPPER_SESSIONS_DIR should fall back to the data directory");
+        assert_eq!(
+            empty.dir, fallback.dir,
+            "an empty value must resolve like an unset one"
+        );
+
+        let set = SessionStore::default_location_from(Some("/tmp/dapper-sessions".into())).unwrap();
+        assert_eq!(set.dir, PathBuf::from("/tmp/dapper-sessions"));
     }
 
     #[test]

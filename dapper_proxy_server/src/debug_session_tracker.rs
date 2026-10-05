@@ -434,6 +434,7 @@ impl DebugSessionTracker {
         // the lock before any filesystem I/O.
         let (
             session,
+            scope_id,
             execution_state,
             breakpoints,
             installed_exception_filters,
@@ -478,6 +479,7 @@ impl DebugSessionTracker {
 
             (
                 session,
+                inner.scope_id.clone(),
                 execution_state,
                 breakpoints,
                 installed_exception_filters,
@@ -488,16 +490,10 @@ impl DebugSessionTracker {
 
         // Filesystem I/O happens here, outside the lock.
         let other_sessions = match (&self.sessions, ctx.show_sessions) {
-            (Some(store), true) => {
-                let scope_id = store
-                    .find_active_session_with_id(None, &self.session_id)
-                    .and_then(|s| s.scope_id);
-
-                store
-                    .iter_active_sessions(scope_id)
-                    .filter(|s| s.session_id != self.session_id)
-                    .collect()
-            }
+            (Some(store), true) => store
+                .iter_active_sessions(scope_id)
+                .filter(|s| s.session_id != self.session_id)
+                .collect(),
             _ => vec![],
         };
 
@@ -567,6 +563,8 @@ impl DebugSessionTracker {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+
     use dapper_dap_protocol::data_types::Breakpoint as DapBreakpoint;
     use dapper_dap_protocol::data_types::Seq;
     use dapper_dap_protocol::data_types::Source as DapSource;
@@ -1818,6 +1816,43 @@ mod tests {
             .expect("response_context should be Some");
         assert_eq!(ctx.installed_exception_filters.len(), 1);
         assert_eq!(ctx.installed_exception_filters[0].filter, "uncaught");
+    }
+
+    #[test]
+    fn test_response_context_hides_other_scopes_before_session_file_exists() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let store_dir =
+            dapper_session::get_user_temp_dir().join(format!("tracker_scope_test_{unique}"));
+        let store = SessionStore::at(store_dir.clone());
+        let tracker = DebugSessionTracker::new(
+            format!("mine-{unique}").into(),
+            DapperConfig::default(),
+            Some(store.clone()),
+        );
+        tracker.register_control_plane(None, Some("mine".into()));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let foreign = SessionInfo::generate(
+            format!("foreign-{unique}").into(),
+            Port::try_new(listener.local_addr().unwrap().port()),
+            Some("other".into()),
+            None,
+            None,
+        );
+        store.save(&foreign).unwrap();
+
+        let other_sessions = tracker
+            .response_context()
+            .expect("response_context should be Some")
+            .other_sessions;
+        std::fs::remove_dir_all(&store_dir).unwrap();
+        assert!(
+            other_sessions.is_empty(),
+            "a session from another scope leaked into the footer: {other_sessions:?}"
+        );
     }
 
     #[test]

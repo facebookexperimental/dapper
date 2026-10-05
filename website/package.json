@@ -32,6 +32,7 @@
   },
   "resolutions": {
     "baseline-browser-mapping": "2.11.26",
+    "brace-expansion": "1.1.21",
     "colord": "2.10.0",
     "fast-uri": "3.1.8",
     "joi": "17.13.8",

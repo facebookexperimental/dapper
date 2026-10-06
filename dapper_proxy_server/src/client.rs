@@ -33,6 +33,7 @@ use dapper_dap_protocol::responses::EvaluateResponseBody;
 use dapper_dap_protocol::responses::ResponseBody;
 use dapper_dap_protocol::responses::ResponseBodyMismatch;
 use dapper_dap_protocol::responses::ScopesResponseBody;
+use dapper_dap_protocol::responses::SetBreakpointsResponseBody;
 use dapper_dap_protocol::responses::SetVariableResponseBody;
 use dapper_dap_protocol::responses::StackTraceResponseBody;
 use dapper_dap_protocol::responses::ThreadsResponseBody;
@@ -547,16 +548,7 @@ impl ProxyClient {
             ..Default::default()
         }));
 
-        let (response, _) = self.round_trip(request).await?;
-
-        let ResponseBody::SetBreakpoints(bp_body) = &response.body else {
-            let error_msg = format!(
-                "Response body does not contain expected setBreakpoints data.\nRaw JSON response:\n{}",
-                serde_json::to_string_pretty(&response)
-                    .unwrap_or_else(|_| "Failed to serialize response".to_string())
-            );
-            return Err(anyhow::anyhow!(error_msg));
-        };
+        let bp_body: SetBreakpointsResponseBody = self.round_trip_body(request).await?;
 
         let resolved_breakpoints = crate::debug_session_tracker::breakpoints_with_fallback(
             &bp_body.breakpoints,
@@ -1024,7 +1016,6 @@ mod tests {
     use dapper_dap_protocol::data_types::ThreadId;
     use dapper_dap_protocol::enums::StoppedReason;
     use dapper_dap_protocol::events::StoppedEventBody;
-    use dapper_dap_protocol::responses::SetBreakpointsResponseBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
 
     use super::*;
@@ -1706,6 +1697,28 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Unexpected response body for setVariable: got `next`"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_breakpoints_errors_on_mismatched_body() {
+        let (client, rx) = make_client_with_caps(None);
+        spawn_mismatched_body_mock(rx);
+
+        let err = client
+            .set_breakpoints(
+                "/test.rs",
+                false,
+                &[SourceBreakpoint {
+                    line: 10,
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Unexpected response body for setBreakpoints: got `next`"
         );
     }
 

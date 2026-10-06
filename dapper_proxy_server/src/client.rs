@@ -719,11 +719,7 @@ impl ProxyClient {
             Self::DEFAULT_REQUEST_TIMEOUT_SECS
         });
 
-        let request = dap::Request::new(RequestCommand::Unknown(UnknownCommand {
-            command: command.to_owned(),
-            arguments,
-            extra: Default::default(),
-        }));
+        let request = dap::Request::new(helpers::raw_request_command(command, arguments));
 
         let (response, mut messages) = tokio::time::timeout(timeout, self.round_trip(request))
             .await
@@ -842,6 +838,23 @@ pub(crate) mod helpers {
         } else {
             0
         }
+    }
+
+    pub(crate) fn raw_request_command(
+        command: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> RequestCommand {
+        let request = match &arguments {
+            Some(arguments) => serde_json::json!({ "command": command, "arguments": arguments }),
+            None => serde_json::json!({ "command": command }),
+        };
+        serde_json::from_value(request).unwrap_or_else(|_| {
+            RequestCommand::Unknown(UnknownCommand {
+                command: command.to_owned(),
+                arguments,
+                extra: Default::default(),
+            })
+        })
     }
 
     pub(crate) fn select_frames(total: usize, effective_levels: i64) -> (usize, bool) {
@@ -1031,6 +1044,31 @@ mod tests {
             i64::MAX,
             "the probe frame must not overflow"
         );
+    }
+
+    #[test]
+    fn raw_request_command_is_typed_only_when_it_parses() {
+        let RequestCommand::Continue(args) =
+            helpers::raw_request_command("continue", Some(serde_json::json!({"threadId": 1})))
+        else {
+            panic!("a well-formed continue should parse as `RequestCommand::Continue`");
+        };
+        assert_eq!(args.thread_id, ThreadId(1));
+
+        for (command, arguments) in [
+            ("customCommand", Some(serde_json::json!({"a": 1}))),
+            ("continue", Some(serde_json::json!({"threadId": "main"}))),
+        ] {
+            assert_eq!(
+                helpers::raw_request_command(command, arguments.clone()),
+                RequestCommand::Unknown(UnknownCommand {
+                    command: command.to_owned(),
+                    arguments,
+                    extra: Default::default(),
+                }),
+                "`{command}` should be sent verbatim"
+            );
+        }
     }
 
     #[test]

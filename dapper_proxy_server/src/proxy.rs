@@ -801,6 +801,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_continue_request_updates_execution_state() {
+        let mut tp = TestProxy::new();
+        tp.mock_backend.send(make_stopped_event()).await.unwrap();
+        tp.main_client.recv().await.unwrap().unwrap();
+
+        let proxy_client = tp.proxy_client.clone();
+        let raw = tokio::spawn(async move {
+            proxy_client
+                .send_raw_dap_request(
+                    "continue",
+                    Some(serde_json::json!({"threadId": 1})),
+                    false,
+                    0,
+                )
+                .await
+        });
+        let request_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
+            Message::Request(request) => request.seq,
+            other => panic!("expected Request, got {:?}", other.message_type()),
+        };
+        tp.mock_backend
+            .send(
+                Response {
+                    seq: Seq(0),
+                    request_seq,
+                    success: true,
+                    message: None,
+                    body: ResponseBody::Continue(ContinueResponseBody {
+                        all_threads_continued: Some(true),
+                        ..Default::default()
+                    }),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        raw.await.unwrap().expect("the raw continue should succeed");
+
+        assert!(
+            tp.proxy_client
+                .debug_session_tracker()
+                .get_execution_state()
+                .is_all_running()
+        );
+    }
+
+    #[tokio::test]
     async fn launch_is_stamped_with_the_session_id_in_both_directions() {
         let mut tp = TestProxy::new();
 

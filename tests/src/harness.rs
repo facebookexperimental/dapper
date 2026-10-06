@@ -31,6 +31,8 @@ use tokio::process::Command as TokioCommand;
 use crate::dap_client::DapClient as GeneralDapClient;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+// Above dapper's own 60s `continue` and request timeouts, so dapper reports those itself.
+const DEBUG_COMMAND_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Temp file used to capture adapter diagnostics for panicking tests.
 pub struct AdapterLog {
@@ -549,9 +551,14 @@ pub async fn run_debug_command_with_binary(
     command.env("DAPPER_DISABLE_SCUBA", "1");
     command.kill_on_drop(true);
 
-    let output = command
-        .output()
+    let output = tokio::time::timeout(DEBUG_COMMAND_TIMEOUT, command.output())
         .await
+        .with_context(|| {
+            format!(
+                "`dapper debug {}` did not finish within {DEBUG_COMMAND_TIMEOUT:?}",
+                args.join(" ")
+            )
+        })?
         .context("failed to run Dapper debug command")?;
 
     Ok(DebugCliOutput {
@@ -613,6 +620,7 @@ mod tests {
     use serde_json::json;
 
     use super::DapClient;
+    use super::run_debug_command_with_binary;
 
     fn client_running(command: Command) -> DapClient {
         DapClient::spawn(command).expect("should spawn the stand-in server")
@@ -752,6 +760,36 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "`launch` request 1 failed: program not found"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn run_debug_command_gives_up_on_a_cli_that_never_exits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("should create a temp dir");
+        let hung_dapper = dir.path().join("dapper");
+        tokio::fs::write(&hung_dapper, "#!/bin/sh\nexec sleep 600\n")
+            .await
+            .expect("should write the stand-in dapper");
+        tokio::fs::set_permissions(&hung_dapper, std::fs::Permissions::from_mode(0o755))
+            .await
+            .expect("should make the stand-in executable");
+
+        let Err(error) = run_debug_command_with_binary(
+            hung_dapper.to_str().expect("temp paths should be UTF-8"),
+            None,
+            &["threads"],
+        )
+        .await
+        else {
+            panic!("a CLI that never exits should time out");
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "`dapper debug threads` did not finish within 90s"
         );
     }
 }

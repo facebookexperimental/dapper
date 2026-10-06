@@ -593,6 +593,7 @@ pub async fn spawn_proxy_from_config(
         .env("LLDBDAP_LOG", adapter_log.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()
         .context("failed to spawn Dapper proxy")?;
 

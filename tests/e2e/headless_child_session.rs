@@ -37,6 +37,7 @@ use dapper_session::config::StdioSpawnConfig;
 use serde_json::json;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
+use tokio::task::JoinSet;
 
 #[tokio::test]
 async fn headless_start_debugging_spawns_child_session() -> anyhow::Result<()> {
@@ -83,10 +84,12 @@ async fn headless_start_debugging_spawns_child_session() -> anyhow::Result<()> {
 
     // Drain the parent's stdout for the whole test so it never blocks on a full
     // pipe, capturing its own control-plane port so we can tell the spawned
-    // child apart from the parent in the session listing.
+    // child apart from the parent in the session listing. The `JoinSet` aborts
+    // the drain when the test returns, on every path.
     let stdout = child.stdout.take().context("parent proxy has no stdout")?;
     let (port_tx, port_rx) = tokio::sync::oneshot::channel();
-    let drain = tokio::spawn(async move {
+    let mut drain = JoinSet::new();
+    drain.spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         let mut port_tx = Some(port_tx);
         while let Ok(Some(line)) = reader.next_line().await {
@@ -100,153 +103,138 @@ async fn headless_start_debugging_spawns_child_session() -> anyhow::Result<()> {
         }
     });
 
-    // Run the rest capturing the result so the parent proxy is torn down no
-    // matter where we exit. `spawn_proxy_from_config` does not set
-    // `kill_on_drop`, so an early `?`/`ensure!` return would otherwise leak the
-    // parent — and, via the child's `PR_SET_PDEATHSIG` on it, the spawned child
-    // and its adapter too — which is flaky on a slow CI host.
-    let result: anyhow::Result<()> = async {
-        let parent_port = tokio::time::timeout(Duration::from_secs(60), port_rx)
-            .await
-            .context("timed out waiting for parent DAPPER_READY")?
-            .context("parent stdout drain ended before DAPPER_READY")?
-            .get();
+    let parent_port = tokio::time::timeout(Duration::from_secs(60), port_rx)
+        .await
+        .context("timed out waiting for parent DAPPER_READY")?
+        .context("parent stdout drain ended before DAPPER_READY")?
+        .get();
 
-        // Poll the scope's session listing until the spawned child appears (a
-        // second session whose control port differs from the parent's). The
-        // scope is unique per test, so any non-parent session is the spawned
-        // child.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let child_port = loop {
-            anyhow::ensure!(
-                Instant::now() < deadline,
-                "timed out waiting for the child session to appear in scope {}",
-                scope_id.as_str()
-            );
+    // Poll the scope's session listing until the spawned child appears (a
+    // second session whose control port differs from the parent's). The
+    // scope is unique per test, so any non-parent session is the spawned
+    // child.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let child_port = loop {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "timed out waiting for the child session to appear in scope {}",
+            scope_id.as_str()
+        );
 
-            let result = run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
-            if result.success {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&result.stdout).with_context(|| {
-                        format!("sessions --json not valid JSON: {}", result.stdout)
-                    })?;
-                if let Some(sessions) = parsed["result"]["sessions"].as_array() {
-                    if let Some(found) = sessions.iter().find_map(|s| {
-                        let port = s["controlPlanePort"].as_u64()?;
-                        (port != parent_port as u64).then_some(port)
-                    }) {
-                        break found as u16;
-                    }
+        let result = run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
+        if result.success {
+            let parsed: serde_json::Value = serde_json::from_str(&result.stdout)
+                .with_context(|| format!("sessions --json not valid JSON: {}", result.stdout))?;
+            if let Some(sessions) = parsed["result"]["sessions"].as_array() {
+                if let Some(found) = sessions.iter().find_map(|s| {
+                    let port = s["controlPlanePort"].as_u64()?;
+                    (port != parent_port as u64).then_some(port)
+                }) {
+                    break found as u16;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-
-        // The child records its parent: the session listing must show the child
-        // with `parentSessionId` equal to the (root) parent's `sessionId`, and
-        // the parent itself must report no `parentSessionId`.
-        let listing = run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
-        anyhow::ensure!(
-            listing.success,
-            "sessions --json failed, stderr: {}",
-            listing.stderr
-        );
-        let listing: serde_json::Value = serde_json::from_str(&listing.stdout)
-            .with_context(|| format!("sessions --json not valid JSON: {}", listing.stdout))?;
-        let sessions = listing["result"]["sessions"]
-            .as_array()
-            .context("sessions response missing sessions array")?;
-        let parent = sessions
-            .iter()
-            .find(|s| s["controlPlanePort"].as_u64() == Some(parent_port as u64))
-            .context("parent session not found in listing")?;
-        let child_session = sessions
-            .iter()
-            .find(|s| s["controlPlanePort"].as_u64() == Some(child_port as u64))
-            .context("child session not found in listing")?;
-        anyhow::ensure!(
-            parent.get("parentSessionId").is_none(),
-            "root parent must not report a parentSessionId, got: {parent}"
-        );
-        anyhow::ensure!(
-            child_session["parentSessionId"] == parent["sessionId"],
-            "child parentSessionId {:?} should equal parent sessionId {:?}",
-            child_session.get("parentSessionId"),
-            parent.get("sessionId")
-        );
-
-        // The child is independently drivable over its own control port: it is a
-        // leaf fake adapter stopped at entry, so `threads` returns its thread.
-        let child_port_str = child_port.to_string();
-        let threads = run_debug_command(
-            Some(scope_id.clone()),
-            &["--control-port", &child_port_str, "threads", "--json"],
-        )
-        .await?;
-        anyhow::ensure!(
-            threads.success,
-            "driving the child session failed, stderr: {}",
-            threads.stderr
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&threads.stdout)
-            .with_context(|| format!("child threads --json not valid JSON: {}", threads.stdout))?;
-        let thread_ids = parsed["result"]["threads"]
-            .as_array()
-            .context("child threads response missing threads array")?;
-        anyhow::ensure!(
-            !thread_ids.is_empty(),
-            "child session should report at least one thread"
-        );
-        // Gracefully stop the parent via the control plane. Its `stop` hook runs
-        // the children-before-parent teardown cascade — `ChildTeardown::teardown`
-        // SIGTERMs the child proxy's process group — so the child shuts down and
-        // removes its `SessionInfo`. Asserting the child session disappears from
-        // the scope proves the teardown cascade ran end-to-end (not just the
-        // `PR_SET_PDEATHSIG` backstop).
-        let parent_port_str = parent_port.to_string();
-        let stop = run_debug_command(
-            Some(scope_id.clone()),
-            &["--control-port", &parent_port_str, "stop"],
-        )
-        .await?;
-        anyhow::ensure!(
-            stop.success,
-            "stopping the parent failed, stderr: {}",
-            stop.stderr
-        );
-
-        let teardown_deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            anyhow::ensure!(
-                Instant::now() < teardown_deadline,
-                "child session (port {child_port}) did not disappear after the parent was stopped"
-            );
-            let listing =
-                run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
-            if listing.success {
-                let parsed: serde_json::Value = serde_json::from_str(&listing.stdout)
-                    .with_context(|| {
-                        format!("sessions --json not valid JSON: {}", listing.stdout)
-                    })?;
-                let child_present = parsed["result"]["sessions"].as_array().is_some_and(|s| {
-                    s.iter()
-                        .any(|x| x["controlPlanePort"].as_u64() == Some(child_port as u64))
-                });
-                if !child_present {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
 
-        Ok(())
+    // The child records its parent: the session listing must show the child
+    // with `parentSessionId` equal to the (root) parent's `sessionId`, and
+    // the parent itself must report no `parentSessionId`.
+    let listing = run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
+    anyhow::ensure!(
+        listing.success,
+        "sessions --json failed, stderr: {}",
+        listing.stderr
+    );
+    let listing: serde_json::Value = serde_json::from_str(&listing.stdout)
+        .with_context(|| format!("sessions --json not valid JSON: {}", listing.stdout))?;
+    let sessions = listing["result"]["sessions"]
+        .as_array()
+        .context("sessions response missing sessions array")?;
+    let parent = sessions
+        .iter()
+        .find(|s| s["controlPlanePort"].as_u64() == Some(parent_port as u64))
+        .context("parent session not found in listing")?;
+    let child_session = sessions
+        .iter()
+        .find(|s| s["controlPlanePort"].as_u64() == Some(child_port as u64))
+        .context("child session not found in listing")?;
+    anyhow::ensure!(
+        parent.get("parentSessionId").is_none(),
+        "root parent must not report a parentSessionId, got: {parent}"
+    );
+    anyhow::ensure!(
+        child_session["parentSessionId"] == parent["sessionId"],
+        "child parentSessionId {:?} should equal parent sessionId {:?}",
+        child_session.get("parentSessionId"),
+        parent.get("sessionId")
+    );
+
+    // The child is independently drivable over its own control port: it is a
+    // leaf fake adapter stopped at entry, so `threads` returns its thread.
+    let child_port_str = child_port.to_string();
+    let threads = run_debug_command(
+        Some(scope_id.clone()),
+        &["--control-port", &child_port_str, "threads", "--json"],
+    )
+    .await?;
+    anyhow::ensure!(
+        threads.success,
+        "driving the child session failed, stderr: {}",
+        threads.stderr
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&threads.stdout)
+        .with_context(|| format!("child threads --json not valid JSON: {}", threads.stdout))?;
+    let thread_ids = parsed["result"]["threads"]
+        .as_array()
+        .context("child threads response missing threads array")?;
+    anyhow::ensure!(
+        !thread_ids.is_empty(),
+        "child session should report at least one thread"
+    );
+    // Gracefully stop the parent via the control plane. Its `stop` hook runs
+    // the children-before-parent teardown cascade — `ChildTeardown::teardown`
+    // SIGTERMs the child proxy's process group — so the child shuts down and
+    // removes its `SessionInfo`. Asserting the child session disappears from
+    // the scope proves the teardown cascade ran end-to-end (not just the
+    // `PR_SET_PDEATHSIG` backstop).
+    let parent_port_str = parent_port.to_string();
+    let stop = run_debug_command(
+        Some(scope_id.clone()),
+        &["--control-port", &parent_port_str, "stop"],
+    )
+    .await?;
+    anyhow::ensure!(
+        stop.success,
+        "stopping the parent failed, stderr: {}",
+        stop.stderr
+    );
+
+    let teardown_deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        anyhow::ensure!(
+            Instant::now() < teardown_deadline,
+            "child session (port {child_port}) did not disappear after the parent was stopped"
+        );
+        let listing = run_debug_command(Some(scope_id.clone()), &["sessions", "--json"]).await?;
+        if listing.success {
+            let parsed: serde_json::Value = serde_json::from_str(&listing.stdout)
+                .with_context(|| format!("sessions --json not valid JSON: {}", listing.stdout))?;
+            let child_present = parsed["result"]["sessions"].as_array().is_some_and(|s| {
+                s.iter()
+                    .any(|x| x["controlPlanePort"].as_u64() == Some(child_port as u64))
+            });
+            if !child_present {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    .await;
 
-    // The graceful stop above is the normal teardown path; this is a safety net
-    // for early-return cases (an assertion failed before the stop), so the parent
-    // — and, via PR_SET_PDEATHSIG, the child — never leak on a slow host.
-    child.kill().await.ok();
-    drain.abort();
-    result
+    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .context("the parent proxy did not exit after stop")??;
+    anyhow::ensure!(status.success(), "the parent proxy exited with {status}");
+
+    Ok(())
 }

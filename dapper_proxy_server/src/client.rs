@@ -1529,32 +1529,8 @@ mod tests {
             supports_single_thread_execution_requests: Some(true),
             ..Default::default()
         };
-        let (client, mut rx) = make_client_with_caps(Some(caps));
-
-        // Spawn a mock server that replies with a successful Next response.
-        tokio::spawn(async move {
-            if let Some(req) = rx.recv().await {
-                let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
-                let messages = msg_tx.subscribe();
-
-                let dap::Message::Request(dap_req) = &req.message else {
-                    panic!("expected a debugger request");
-                };
-                let response = dap::Response {
-                    seq: Seq(2),
-                    request_seq: dap_req.seq,
-                    success: true,
-                    message: None,
-                    body: ResponseBody::Next,
-                };
-                msg_tx.send(Arc::new(response.into())).unwrap();
-
-                let _ = req.result.send(ListenerPayload {
-                    seq: dap_req.seq,
-                    messages,
-                });
-            }
-        });
+        let (client, rx) = make_client_with_caps(Some(caps));
+        spawn_next_response_mock(rx);
 
         let result = client
             .navigate(NavigationType::StepOver, ThreadId(1), Some(true))
@@ -1563,10 +1539,9 @@ mod tests {
         assert!(result.is_ok(), "navigate should succeed, got: {result:?}");
     }
 
-    /// Spawn a mock backend that answers the next request with a
-    /// `success: true` response carrying a deliberately mismatched body
-    /// (`Next`), so `round_trip_body`'s conversion fails.
-    fn spawn_mismatched_body_mock(mut rx: mpsc::UnboundedReceiver<ProxyRequest>) {
+    /// Answers the next request with a successful `next` response, then drops
+    /// its broadcast sender.
+    fn spawn_next_response_mock(mut rx: mpsc::UnboundedReceiver<ProxyRequest>) {
         tokio::spawn(async move {
             if let Some(req) = rx.recv().await {
                 let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
@@ -1596,14 +1571,14 @@ mod tests {
     async fn waiting_for_an_event_on_a_closed_stream_is_an_error() {
         // The mock drops its broadcast sender right after answering.
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
         client
             .navigate(NavigationType::Continue, ThreadId(1), None)
             .await
             .expect_err("navigate should fail instead of reporting a timeout");
 
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
         client
             .send_raw_dap_request("continue", None, true, 0)
             .await
@@ -1613,7 +1588,7 @@ mod tests {
     #[tokio::test]
     async fn test_threads_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client.threads().await.unwrap_err();
         assert_eq!(
@@ -1637,7 +1612,7 @@ mod tests {
     #[tokio::test]
     async fn test_stack_trace_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client
             .stack_trace(ThreadId(1), None, None)
@@ -1652,7 +1627,7 @@ mod tests {
     #[tokio::test]
     async fn test_scopes_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client.scopes(FrameId(1)).await.unwrap_err();
         assert_eq!(
@@ -1664,7 +1639,7 @@ mod tests {
     #[tokio::test]
     async fn test_variables_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client.variables(VariablesReference(1)).await.unwrap_err();
         assert_eq!(
@@ -1676,7 +1651,7 @@ mod tests {
     #[tokio::test]
     async fn test_repl_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client.repl("x".to_owned(), None).await.unwrap_err();
         assert_eq!(
@@ -1688,7 +1663,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_variable_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client
             .set_variable(VariablesReference(1), "x", "1")
@@ -1703,7 +1678,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_breakpoints_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
-        spawn_mismatched_body_mock(rx);
+        spawn_next_response_mock(rx);
 
         let err = client
             .set_breakpoints(
@@ -1727,31 +1702,8 @@ mod tests {
         // Capabilities don't advertise singleThread, but single_thread is
         // None so the gate should be skipped entirely.
         let caps = Capabilities::default();
-        let (client, mut rx) = make_client_with_caps(Some(caps));
-
-        tokio::spawn(async move {
-            if let Some(req) = rx.recv().await {
-                let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
-                let messages = msg_tx.subscribe();
-
-                let dap::Message::Request(dap_req) = &req.message else {
-                    panic!("expected a debugger request");
-                };
-                let response = dap::Response {
-                    seq: Seq(2),
-                    request_seq: dap_req.seq,
-                    success: true,
-                    message: None,
-                    body: ResponseBody::Next,
-                };
-                msg_tx.send(Arc::new(response.into())).unwrap();
-
-                let _ = req.result.send(ListenerPayload {
-                    seq: dap_req.seq,
-                    messages,
-                });
-            }
-        });
+        let (client, rx) = make_client_with_caps(Some(caps));
+        spawn_next_response_mock(rx);
 
         let result = client
             .navigate(NavigationType::StepOver, ThreadId(1), None)

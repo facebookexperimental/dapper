@@ -73,27 +73,15 @@ impl BreakpointState {
     ) -> bool {
         if let Some(request) = self.pending_requests.remove(&request_seq) {
             let breakpoints = breakpoints_with_fallback(response_breakpoints, &request.specs);
-            if let Some(resolved) = resolved_source_path(response_breakpoints) {
-                tracing::debug!(
-                    request_seq = request_seq.as_i64(),
-                    source_path = %resolved,
-                    breakpoint_count = breakpoints.len(),
-                    "Updating breakpoints from response (resolved path)"
-                );
-                self.update_breakpoints(resolved, breakpoints);
-                if resolved != request.source_path {
-                    self.path_aliases
-                        .insert(request.source_path, resolved.to_string());
-                }
-            } else {
-                tracing::debug!(
-                    request_seq = request_seq.as_i64(),
-                    source_path = %request.source_path,
-                    breakpoint_count = breakpoints.len(),
-                    "Updating breakpoints from response"
-                );
-                self.update_breakpoints(&request.source_path, breakpoints);
-            }
+            let resolved = resolved_source_path(response_breakpoints);
+            tracing::debug!(
+                request_seq = request_seq.as_i64(),
+                source_path = %request.source_path,
+                resolved_source_path = ?resolved,
+                breakpoint_count = breakpoints.len(),
+                "Updating breakpoints from response"
+            );
+            self.replace_source(&request.source_path, resolved, breakpoints);
             true
         } else {
             tracing::warn!(
@@ -104,8 +92,46 @@ impl BreakpointState {
         }
     }
 
+    /// Replace all of a source's breakpoints, as a `setBreakpoints` response does,
+    /// keyed by the adapter's resolved path (`resolved`, else a recorded alias).
+    pub(super) fn replace_source(
+        &mut self,
+        requested: &str,
+        resolved: Option<&str>,
+        breakpoints: Vec<BreakpointInfo>,
+    ) {
+        let previous = self.path_aliases.remove(requested);
+        let key = resolved
+            .filter(|path| !path.is_empty())
+            .or(previous.as_deref())
+            .unwrap_or(requested)
+            .to_owned();
+        if let Some(previous) = previous.filter(|previous| *previous != key) {
+            self.remove_unless_aliased(&previous);
+        }
+        if key != requested {
+            // Dropped even if another source aliases it: a surviving direct
+            // entry would shadow this source's alias in `get_breakpoints`.
+            self.breakpoints.remove(requested);
+        }
+        if breakpoints.is_empty() {
+            self.remove_unless_aliased(&key);
+        } else {
+            if key != requested {
+                self.record_path_alias(requested, &key);
+            }
+            self.update_breakpoints(&key, breakpoints);
+        }
+    }
+
+    fn remove_unless_aliased(&mut self, key: &str) {
+        if !self.path_aliases.values().any(|target| target == key) {
+            self.breakpoints.remove(key);
+        }
+    }
+
     /// Update breakpoints for a source file directly (for explicit source path)
-    pub fn update_breakpoints(&mut self, source_path: &str, breakpoints: Vec<BreakpointInfo>) {
+    fn update_breakpoints(&mut self, source_path: &str, breakpoints: Vec<BreakpointInfo>) {
         self.breakpoints
             .insert(source_path.to_string(), breakpoints);
     }
@@ -124,7 +150,7 @@ impl BreakpointState {
         Vec::new()
     }
 
-    pub(super) fn record_path_alias(&mut self, original_path: &str, resolved_path: &str) {
+    fn record_path_alias(&mut self, original_path: &str, resolved_path: &str) {
         self.path_aliases
             .insert(original_path.to_string(), resolved_path.to_string());
     }
@@ -306,11 +332,14 @@ pub(crate) fn breakpoints_with_fallback(
 }
 
 /// Extract the resolved source path from response breakpoints if any breakpoint
-/// includes a `source.path`. Returns `None` if no breakpoint has source info.
+/// includes a non-empty `source.path`. Returns `None` if none does.
 pub(crate) fn resolved_source_path(response_breakpoints: &[Breakpoint]) -> Option<&str> {
-    response_breakpoints
-        .iter()
-        .find_map(|bp| bp.source.as_ref().and_then(|s| s.path.as_deref()))
+    response_breakpoints.iter().find_map(|bp| {
+        bp.source
+            .as_ref()
+            .and_then(|s| s.path.as_deref())
+            .filter(|path| !path.is_empty())
+    })
 }
 
 #[cfg(test)]
@@ -889,6 +918,174 @@ mod tests {
             "alias fallback should find breakpoints via original path"
         );
         assert_eq!(bps_by_original[0].line, 10);
+    }
+
+    #[test]
+    fn test_clearing_a_resolved_source_leaves_no_breakpoints() {
+        let mut state = BreakpointState::new();
+        state.track_request(
+            Seq(1),
+            "/requested/path.rs".into(),
+            vec![SourceBreakpoint {
+                line: 10,
+                ..Default::default()
+            }],
+        );
+        state.update_breakpoints_from_response(
+            Seq(1),
+            &[Breakpoint {
+                id: Some(BreakpointId(1)),
+                verified: true,
+                line: Some(10),
+                source: Some(Source {
+                    path: Some("/resolved/path.rs".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        );
+
+        state.track_request(Seq(2), "/requested/path.rs".into(), vec![]);
+        state.update_breakpoints_from_response(Seq(2), &[]);
+
+        assert!(
+            state.breakpoints.is_empty(),
+            "the clear should remove the resolved path's breakpoints: {:?}",
+            state.breakpoints
+        );
+        assert!(state.path_aliases.is_empty());
+    }
+
+    #[test]
+    fn test_replace_source_moves_a_direct_entry_to_the_resolved_path() {
+        let breakpoint = |line| BreakpointInfo {
+            line,
+            verified: true,
+            ..Default::default()
+        };
+        let mut state = BreakpointState::new();
+        state.replace_source("/requested/path.rs", None, vec![breakpoint(10)]);
+
+        state.replace_source(
+            "/requested/path.rs",
+            Some("/resolved/path.rs"),
+            vec![breakpoint(10), breakpoint(20)],
+        );
+
+        assert_eq!(
+            state.breakpoints.keys().collect::<Vec<_>>(),
+            ["/resolved/path.rs"]
+        );
+        assert_eq!(state.get_breakpoints("/requested/path.rs").len(), 2);
+    }
+
+    fn resolved_breakpoint(line: i64) -> BreakpointInfo {
+        BreakpointInfo {
+            line,
+            verified: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_replace_source_drops_the_old_entry_when_resolution_changes() {
+        let mut state = BreakpointState::new();
+        state.replace_source(
+            "/requested.rs",
+            Some("/first.rs"),
+            vec![resolved_breakpoint(10)],
+        );
+        state.replace_source(
+            "/requested.rs",
+            Some("/second.rs"),
+            vec![resolved_breakpoint(20)],
+        );
+
+        assert_eq!(state.breakpoints.keys().collect::<Vec<_>>(), ["/second.rs"]);
+        assert_eq!(state.get_breakpoints("/requested.rs")[0].line, 20);
+    }
+
+    #[test]
+    fn test_replace_source_drops_the_alias_when_resolution_returns_to_the_requested_path() {
+        let mut state = BreakpointState::new();
+        state.replace_source(
+            "/requested.rs",
+            Some("/resolved.rs"),
+            vec![resolved_breakpoint(10)],
+        );
+        state.replace_source(
+            "/requested.rs",
+            Some("/requested.rs"),
+            vec![resolved_breakpoint(20)],
+        );
+
+        assert_eq!(
+            state.breakpoints.keys().collect::<Vec<_>>(),
+            ["/requested.rs"]
+        );
+        assert!(state.path_aliases.is_empty());
+    }
+
+    #[test]
+    fn test_replace_source_keeps_a_target_another_source_still_aliases() {
+        let mut state = BreakpointState::new();
+        state.replace_source("/a.rs", Some("/shared.rs"), vec![resolved_breakpoint(10)]);
+        state.replace_source("/b.rs", Some("/shared.rs"), vec![resolved_breakpoint(10)]);
+        state.replace_source(
+            "/a.rs",
+            Some("/elsewhere.rs"),
+            vec![resolved_breakpoint(20)],
+        );
+
+        assert_eq!(state.get_breakpoints("/b.rs")[0].line, 10);
+        assert_eq!(state.get_breakpoints("/a.rs")[0].line, 20);
+    }
+
+    #[test]
+    fn test_clearing_a_source_keeps_a_target_another_source_still_aliases() {
+        let mut state = BreakpointState::new();
+        state.replace_source("/a.rs", Some("/shared.rs"), vec![resolved_breakpoint(10)]);
+        state.replace_source("/b.rs", Some("/shared.rs"), vec![resolved_breakpoint(10)]);
+        state.replace_source("/a.rs", None, vec![]);
+
+        assert_eq!(
+            state.get_breakpoints("/b.rs")[0].line,
+            10,
+            "/b.rs still resolves to /shared.rs"
+        );
+        assert!(
+            state.get_breakpoints("/a.rs").is_empty(),
+            "/a.rs was cleared"
+        );
+    }
+
+    #[test]
+    fn test_empty_source_path_is_not_a_resolution() {
+        let with_path = |path: &str| Breakpoint {
+            source: Some(Source {
+                path: Some(path.to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolved_source_path(&[with_path("")]),
+            None,
+            "an empty path resolves nothing"
+        );
+        assert_eq!(
+            resolved_source_path(&[with_path(""), with_path("/real.rs")]),
+            Some("/real.rs"),
+            "an empty path must not hide a later breakpoint's path"
+        );
+
+        let mut state = BreakpointState::new();
+        state.replace_source("/requested.rs", Some(""), vec![resolved_breakpoint(10)]);
+        assert_eq!(
+            state.breakpoints.keys().collect::<Vec<_>>(),
+            ["/requested.rs"],
+            "an empty resolution keys the source by its requested path"
+        );
     }
 
     #[test]

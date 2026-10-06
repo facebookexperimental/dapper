@@ -375,28 +375,25 @@ impl DebugSessionTracker {
 
     /// Track breakpoints when source path is explicitly known.
     /// This is used by the MCP set_breakpoints command where the source path is known upfront.
-    /// `requested_source_path` is the original path from the caller; `effective_source_path`
-    /// is the resolved path from the debug adapter response (may be the same).
+    /// `requested_source_path` is the original path from the caller; `resolved_source_path`
+    /// is the path the debug adapter response reported, if any.
     /// Returns a diff of breakpoints to add and remove.
     pub fn track_breakpoints_with_source(
         &self,
         requested_source_path: &str,
-        effective_source_path: &str,
+        resolved_source_path: Option<&str>,
         new_breakpoints: Vec<BreakpointInfo>,
     ) -> BreakpointDiff {
         self.with_inner(|inner| {
             let old_breakpoints = inner
                 .breakpoint_state
-                .get_breakpoints(effective_source_path);
+                .get_breakpoints(requested_source_path);
             let diff = Self::compute_breakpoint_diff(&old_breakpoints, &new_breakpoints);
-            inner
-                .breakpoint_state
-                .update_breakpoints(effective_source_path, new_breakpoints);
-            if requested_source_path != effective_source_path {
-                inner
-                    .breakpoint_state
-                    .record_path_alias(requested_source_path, effective_source_path);
-            }
+            inner.breakpoint_state.replace_source(
+                requested_source_path,
+                resolved_source_path,
+                new_breakpoints,
+            );
             diff
         })
     }
@@ -1146,7 +1143,7 @@ mod tests {
         let resolved =
             breakpoint_state::breakpoints_with_fallback(&response_breakpoints, &requested_specs);
 
-        let diff = tracker.track_breakpoints_with_source(source_path, source_path, resolved);
+        let diff = tracker.track_breakpoints_with_source(source_path, None, resolved);
         assert_eq!(diff.to_add.len(), 2);
         assert_eq!(diff.to_remove.len(), 0);
 
@@ -1453,6 +1450,52 @@ mod tests {
     }
 
     #[test]
+    fn test_track_breakpoints_with_source_follows_a_resolution_back_to_the_requested_path() {
+        let tracker = test_tracker();
+        let breakpoint = |line| BreakpointInfo {
+            line,
+            verified: true,
+            id: Some(line.into()),
+            ..Default::default()
+        };
+        tracker.track_breakpoints_with_source(
+            "/requested.py",
+            Some("/resolved.py"),
+            vec![breakpoint(10)],
+        );
+
+        let diff = tracker.track_breakpoints_with_source(
+            "/requested.py",
+            Some("/requested.py"),
+            vec![breakpoint(20)],
+        );
+
+        assert_eq!(diff.to_remove[0].line, 10, "the old entry is diffed away");
+        assert_eq!(tracker.get_breakpoints("/requested.py")[0].line, 20);
+        assert!(tracker.get_breakpoints("/resolved.py").is_empty());
+    }
+
+    #[test]
+    fn test_track_breakpoints_with_source_keeps_the_resolution_when_the_response_has_no_source() {
+        let tracker = test_tracker();
+        let breakpoint = |line| BreakpointInfo {
+            line,
+            verified: true,
+            ..Default::default()
+        };
+        tracker.track_breakpoints_with_source(
+            "/requested.py",
+            Some("/resolved.py"),
+            vec![breakpoint(10)],
+        );
+
+        tracker.track_breakpoints_with_source("/requested.py", None, vec![breakpoint(20)]);
+
+        assert_eq!(tracker.get_breakpoints("/resolved.py")[0].line, 20);
+        assert_eq!(tracker.get_breakpoints("/requested.py")[0].line, 20);
+    }
+
+    #[test]
     fn test_track_breakpoints_with_source_alias_fallback() {
         let tracker = test_tracker();
         let original_path = "/home/user/main.py";
@@ -1467,7 +1510,7 @@ mod tests {
             ..Default::default()
         }];
 
-        tracker.track_breakpoints_with_source(original_path, resolved_path, breakpoints);
+        tracker.track_breakpoints_with_source(original_path, Some(resolved_path), breakpoints);
 
         let bps_by_resolved = tracker.get_breakpoints(resolved_path);
         assert_eq!(bps_by_resolved.len(), 1);

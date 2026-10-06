@@ -563,9 +563,9 @@ impl ProxyClient {
             &merged_specs,
         );
 
-        let effective_source_path =
-            crate::debug_session_tracker::resolved_source_path(&bp_body.breakpoints)
-                .unwrap_or(source_path);
+        let resolved_source_path =
+            crate::debug_session_tracker::resolved_source_path(&bp_body.breakpoints);
+        let effective_source_path = resolved_source_path.unwrap_or(source_path);
 
         let effective_source_name = Path::new(effective_source_path)
             .file_name()
@@ -577,7 +577,7 @@ impl ProxyClient {
 
         let diff = self.debug_session_tracker.track_breakpoints_with_source(
             source_path,
-            effective_source_path,
+            resolved_source_path,
             resolved_breakpoints.clone(),
         );
 

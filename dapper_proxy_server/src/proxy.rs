@@ -656,21 +656,28 @@ mod tests {
         req.into()
     }
 
-    fn make_threads_response(request_seq: Seq) -> Message {
-        let resp = Response {
-            seq: Seq(1), // Overwritten by the proxy; value here is arbitrary
+    fn ok_response(request_seq: Seq, body: ResponseBody) -> Message {
+        Response {
+            seq: Seq(0), // Overwritten by the proxy; value here is arbitrary
             request_seq,
             success: true,
             message: None,
-            body: ResponseBody::Threads(ThreadsResponseBody {
+            body,
+        }
+        .into()
+    }
+
+    fn make_threads_response(request_seq: Seq) -> Message {
+        ok_response(
+            request_seq,
+            ResponseBody::Threads(ThreadsResponseBody {
                 threads: vec![Thread {
                     id: ThreadId(1),
                     name: "main".to_string(),
                 }],
                 ..Default::default()
             }),
-        };
-        resp.into()
+        )
     }
 
     fn make_stopped_event() -> Message {
@@ -753,16 +760,7 @@ mod tests {
         let forwarded_seq = tp.expect_backend_request().await.seq;
 
         tp.mock_backend
-            .send(
-                Response {
-                    seq: Seq(0),
-                    request_seq: forwarded_seq,
-                    success: true,
-                    message: None,
-                    body: response_body,
-                }
-                .into(),
-            )
+            .send(ok_response(forwarded_seq, response_body))
             .await
             .unwrap();
         crate::client::helpers::wait_for_response(forwarded_seq, &mut messages)
@@ -824,19 +822,13 @@ mod tests {
         });
         let request_seq = tp.expect_backend_request().await.seq;
         tp.mock_backend
-            .send(
-                Response {
-                    seq: Seq(0),
-                    request_seq,
-                    success: true,
-                    message: None,
-                    body: ResponseBody::Continue(ContinueResponseBody {
-                        all_threads_continued: Some(true),
-                        ..Default::default()
-                    }),
-                }
-                .into(),
-            )
+            .send(ok_response(
+                request_seq,
+                ResponseBody::Continue(ContinueResponseBody {
+                    all_threads_continued: Some(true),
+                    ..Default::default()
+                }),
+            ))
             .await
             .unwrap();
         raw.await.unwrap().expect("the raw continue should succeed");
@@ -867,16 +859,7 @@ mod tests {
         );
 
         tp.mock_backend
-            .send(
-                Response {
-                    seq: Seq(0),
-                    request_seq: request.seq,
-                    success: true,
-                    message: None,
-                    body: ResponseBody::Launch,
-                }
-                .into(),
-            )
+            .send(ok_response(request.seq, ResponseBody::Launch))
             .await
             .unwrap();
 
@@ -941,19 +924,13 @@ mod tests {
         tp.main_client.recv().await.unwrap().unwrap();
 
         tp.mock_backend
-            .send(
-                Response {
-                    seq: Seq(0),
-                    request_seq: secondary_seq,
-                    success: true,
-                    message: None,
-                    body: ResponseBody::Continue(ContinueResponseBody {
-                        all_threads_continued: Some(true),
-                        ..Default::default()
-                    }),
-                }
-                .into(),
-            )
+            .send(ok_response(
+                secondary_seq,
+                ResponseBody::Continue(ContinueResponseBody {
+                    all_threads_continued: Some(true),
+                    ..Default::default()
+                }),
+            ))
             .await
             .unwrap();
         crate::client::helpers::wait_for_response(secondary_seq, &mut secondary_messages)
@@ -1711,39 +1688,6 @@ mod tests {
         req.into()
     }
 
-    fn make_initialize_response_with_caps(request_seq: Seq, caps: Capabilities) -> Message {
-        Response {
-            seq: Seq(0), // Overwritten by the proxy
-            request_seq,
-            success: true,
-            message: None,
-            body: ResponseBody::Initialize(Some(caps)),
-        }
-        .into()
-    }
-
-    fn make_step_back_response(request_seq: Seq) -> Message {
-        Response {
-            seq: Seq(0),
-            request_seq,
-            success: true,
-            message: None,
-            body: ResponseBody::StepBack,
-        }
-        .into()
-    }
-
-    fn make_reverse_continue_response(request_seq: Seq) -> Message {
-        Response {
-            seq: Seq(0),
-            request_seq,
-            success: true,
-            message: None,
-            body: ResponseBody::ReverseContinue,
-        }
-        .into()
-    }
-
     /// Drive a complete `initialize` request/response round-trip through the
     /// proxy so its tracker absorbs `caps`. The proxy only stores capabilities
     /// when an `Initialize` response flows backend→main_client through the
@@ -1759,7 +1703,10 @@ mod tests {
             .unwrap();
         let mapped_seq = tp.expect_backend_request().await.seq;
         tp.mock_backend
-            .send(make_initialize_response_with_caps(mapped_seq, caps))
+            .send(ok_response(
+                mapped_seq,
+                ResponseBody::Initialize(Some(caps)),
+            ))
             .await
             .unwrap();
         // Drain the response so the channel is empty for the test that follows.
@@ -1793,7 +1740,7 @@ mod tests {
             other => panic!("expected StepBack command, got {:?}", other),
         }
         tp.mock_backend
-            .send(make_step_back_response(req.seq))
+            .send(ok_response(req.seq, ResponseBody::StepBack))
             .await
             .unwrap();
 
@@ -1869,7 +1816,7 @@ mod tests {
             other => panic!("expected ReverseContinue command, got {:?}", other),
         }
         tp.mock_backend
-            .send(make_reverse_continue_response(req.seq))
+            .send(ok_response(req.seq, ResponseBody::ReverseContinue))
             .await
             .unwrap();
 

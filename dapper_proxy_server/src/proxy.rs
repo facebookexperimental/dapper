@@ -421,7 +421,9 @@ impl ProxyServer {
                     }
                 }
                 _ => {
-                    debug_session_tracker.track_message_metadata_to_client(&message);
+                    if source == MessageSource::Backend {
+                        debug_session_tracker.track_message_metadata_to_client(&message);
+                    }
                     main_client.send(message).await?;
                 }
             }
@@ -546,9 +548,13 @@ async fn recv_owned(
 #[cfg(test)]
 mod tests {
     use dapper_dap_protocol::capabilities::Capabilities;
+    use dapper_dap_protocol::data_types::Breakpoint;
+    use dapper_dap_protocol::data_types::BreakpointId;
     use dapper_dap_protocol::data_types::Thread;
     use dapper_dap_protocol::data_types::ThreadId;
+    use dapper_dap_protocol::enums::BreakpointEventReason;
     use dapper_dap_protocol::enums::StoppedReason;
+    use dapper_dap_protocol::events::BreakpointEventBody;
     use dapper_dap_protocol::events::EventKind;
     use dapper_dap_protocol::events::StoppedEventBody;
     use dapper_dap_protocol::protocol::Event;
@@ -572,6 +578,7 @@ mod tests {
     use crate::client::ClientId;
     use crate::dapper_event::ControlPlaneStatus;
     use crate::dapper_event::DapperEvent;
+    use crate::debug_session_tracker::BreakpointInfo;
     use crate::transport::DuplexChannel;
 
     /// A helper that creates a ProxyServer wired to in-memory channels,
@@ -1320,6 +1327,48 @@ mod tests {
             }
             other => panic!("Expected Event, got {:?}", other.message_type()),
         }
+    }
+
+    #[tokio::test]
+    async fn injected_breakpoint_event_does_not_update_the_tracker() {
+        let mut tp = TestProxy::new();
+        tp.proxy_client
+            .debug_session_tracker()
+            .track_breakpoints_with_source(
+                "/test.rs",
+                None,
+                vec![BreakpointInfo {
+                    line: 10,
+                    verified: true,
+                    id: Some(BreakpointId(1)),
+                    condition: Some("x > 5".to_string()),
+                    ..Default::default()
+                }],
+            );
+
+        tp.proxy_client
+            .event_channel()
+            .send_event(EventKind::Breakpoint(BreakpointEventBody {
+                reason: BreakpointEventReason::Removed,
+                breakpoint: Breakpoint {
+                    id: Some(BreakpointId(1)),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .unwrap();
+        let forwarded = tp.main_client.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(&forwarded, Message::Event(e) if matches!(e.event, EventKind::Breakpoint(_))),
+            "the injected event should still reach the main client, got {forwarded:?}"
+        );
+
+        let breakpoints = tp
+            .proxy_client
+            .debug_session_tracker()
+            .get_breakpoints("/test.rs");
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0].condition.as_deref(), Some("x > 5"));
     }
 
     #[tokio::test]

@@ -212,25 +212,6 @@ impl DapClient {
         Ok(response)
     }
 
-    pub fn send(&mut self, message: String) -> Result<()> {
-        let request_seq = serde_json::from_str::<serde_json::Value>(&message)
-            .ok()
-            .filter(|message| message["type"] == "request")
-            .and_then(|message| message["seq"].as_i64());
-        if let Some(seq) = request_seq {
-            anyhow::ensure!(
-                !self.unanswered.contains(&seq),
-                "request {seq} is already awaiting a response"
-            );
-        }
-        self.inner_client.send(message)?;
-        if let Some(seq) = request_seq {
-            self.last_seq = self.last_seq.max(seq);
-            self.unanswered.insert(seq);
-        }
-        Ok(())
-    }
-
     /// Sends a request and returns the `seq` to pass to `wait_for_response`.
     pub fn send_request(
         &mut self,
@@ -323,19 +304,6 @@ impl DapClient {
         // debugpy withholds the `launch` response until `configurationDone` arrives.
         self.wait_for_response(launch_seq)?;
 
-        Ok(())
-    }
-
-    pub fn try_consume_pending_responses(&mut self) -> Result<()> {
-        self.unanswered
-            .retain(|seq| !self.unclaimed_responses.contains_key(seq));
-        self.unclaimed_responses.clear();
-        while let Ok(response) = self
-            .inner_client
-            .read_response_timeout(Duration::from_millis(100))
-        {
-            self.unanswered.remove(&response.request_seq);
-        }
         Ok(())
     }
 

@@ -13,18 +13,13 @@ use serde_json::json;
 fn send_launch_request(client: &mut DapClient) -> anyhow::Result<()> {
     let debuggee = std::env::var("DAPPER_TEST_DEBUGGEE")
         .context("DAPPER_TEST_DEBUGGEE must name the test debuggee")?;
-    client.send(
-        json!({
-            "type": "request",
-            "command": "launch",
-            "arguments": {
-                "noDebug": false,
-                "program": debuggee,
-                "args": [],
-            },
-            "seq": 2,
-        })
-        .to_string(),
+    client.send_request(
+        "launch",
+        Some(json!({
+            "noDebug": false,
+            "program": debuggee,
+            "args": [],
+        })),
     )?;
 
     client.wait_for_event("initialized")?;

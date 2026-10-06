@@ -15,8 +15,7 @@ use rmcp::serde_json;
 
 #[tokio::test]
 async fn variable_inspection() -> anyhow::Result<()> {
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("variable-inspection")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("variable-inspection")?;
 
     let mcp_client = create_mcp_client(Some(scope_id)).await?;
 

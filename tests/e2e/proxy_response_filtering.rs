@@ -14,16 +14,12 @@ use rmcp::model::CallToolRequestParams;
 async fn client_only_receives_own_responses() -> anyhow::Result<()> {
     let (scope_id, mut dap_client) = setup_stopped_debug_session("proxy-filtering")?;
 
-    // Consume any pending responses from the launch/initialization sequence
-    // Python and LLDB have different response timing, so we drain the queue first
-    dap_client.try_consume_pending_responses()?;
-
     let mcp_client = create_mcp_client(Some(scope_id)).await?;
 
     // Test scenario:
     // 1. MCP sends a threads request (seq assigned by backend, not tracked by client)
-    // 2. Client sends a threads request (seq 100, tracked by client)
-    // 3. Client should only receive response for seq 100, not the MCP request's response
+    // 2. Client sends a threads request (seq tracked by client)
+    // 3. Client should only receive its own response, not the MCP request's response
 
     // First, send a threads request from the MCP tool
     // The response to this should NOT be forwarded to the DAP client
@@ -37,19 +33,18 @@ async fn client_only_receives_own_responses() -> anyhow::Result<()> {
         "MCP threads command should succeed"
     );
 
-    // Now send a threads request from the DAP client with seq 100
+    // Now send a threads request from the DAP client
     // This SHOULD get a response because the client sent it
-    let threads_req = r#"{"type": "request", "command": "threads", "seq": 100}"#.to_string();
-    dap_client.send(threads_req)?;
+    let threads_seq = dap_client.send_request("threads", None)?;
 
-    // Read the response - it should be for the client's request (seq 100)
+    // Read the response - it should be for the client's request
     // and NOT for the MCP request
     let response = dap_client.read_response()?;
 
     // Verify this is a response to the client's threads request
     assert_eq!(
-        response.request_seq, 100,
-        "Client should receive response for its own request (seq 100), but got seq {}",
+        response.request_seq, threads_seq,
+        "Client should receive response for its own request (seq {threads_seq}), but got seq {}",
         response.request_seq
     );
 

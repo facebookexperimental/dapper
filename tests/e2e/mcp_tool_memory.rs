@@ -17,8 +17,7 @@ use rmcp::serde_json;
 
 #[tokio::test]
 async fn read_write_memory() -> anyhow::Result<()> {
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("mcp-memory")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-memory")?;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 

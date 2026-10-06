@@ -37,8 +37,7 @@ fn evaluate_params(expression: &str) -> CallToolRequestParams {
 #[tokio::test]
 async fn evaluate_expression() -> anyhow::Result<()> {
     let adapter_profile = real_adapter_profile()?;
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("mcp-evaluate")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-evaluate")?;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -112,8 +111,7 @@ async fn evaluate_expression() -> anyhow::Result<()> {
 #[tokio::test]
 async fn evaluate_and_stop_json_output() -> anyhow::Result<()> {
     let adapter_profile = real_adapter_profile()?;
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("mcp-evaluate-json")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-evaluate-json")?;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -166,8 +164,7 @@ async fn evaluate_and_stop_json_output() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn evaluate_expression_with_frame_id() -> anyhow::Result<()> {
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("mcp-evaluate-frame")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-evaluate-frame")?;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 

@@ -55,17 +55,14 @@ fn proxy_from_config_launches_adapter() -> anyhow::Result<()> {
     assert_eq!(body["category"].as_str(), Some("controlPlaneStatus"));
     assert!(body.get("sessionId").is_some());
 
-    let launch_request = json!({
-        "type": "request",
-        "command": "launch",
-        "arguments": {
+    client.send_request(
+        "launch",
+        Some(json!({
             "noDebug": false,
             "program": debuggee,
             "args": [],
-        },
-        "seq": 2
-    });
-    client.send(launch_request.to_string())?;
+        })),
+    )?;
 
     client.wait_for_event("initialized")?;
 

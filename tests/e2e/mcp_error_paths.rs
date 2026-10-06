@@ -14,8 +14,7 @@ use rmcp::serde_json;
 
 #[tokio::test]
 async fn mcp_error_paths() -> anyhow::Result<()> {
-    let (scope_id, mut dap_client) = setup_stopped_debug_session("mcp-error-paths")?;
-    dap_client.try_consume_pending_responses()?;
+    let (scope_id, _dap_client) = setup_stopped_debug_session("mcp-error-paths")?;
 
     let mcp_client = create_mcp_client(Some(scope_id)).await?;
 

@@ -97,38 +97,22 @@ async fn advance_to_default_stop(
     scope_id: &ScopeId,
     dap_client: &mut DapClient,
 ) -> anyhow::Result<()> {
-    // Seq numbers reserved for this helper. The launch sequence uses seqs 1, 2,
-    // and 3 (initialize, launch, configurationDone); 100/101 are far above to
-    // avoid colliding with anything the surrounding setup might send.
-    const SET_BREAKPOINTS_SEQ: i64 = 100;
-    const CONTINUE_SEQ: i64 = 101;
-
     let source_path = test_source_path()?;
     let bp_line = find_breakpoint_line_by_marker(&source_path, "breakpoint default_stop").await?;
 
-    let set_bp_req = serde_json::json!({
-        "type": "request",
-        "seq": SET_BREAKPOINTS_SEQ,
-        "command": "setBreakpoints",
-        "arguments": {
+    let set_breakpoints_seq = dap_client.send_request(
+        "setBreakpoints",
+        Some(serde_json::json!({
             "source": {"path": source_path},
             "breakpoints": [{"line": bp_line}],
-        },
-    })
-    .to_string();
-    dap_client.send(set_bp_req)?;
-    dap_client.read_response()?;
+        })),
+    )?;
+    dap_client.wait_for_response(set_breakpoints_seq)?;
 
     let thread_id = get_thread_ids(scope_id).await?[0];
-    let continue_req = serde_json::json!({
-        "type": "request",
-        "seq": CONTINUE_SEQ,
-        "command": "continue",
-        "arguments": {"threadId": thread_id},
-    })
-    .to_string();
-    dap_client.send(continue_req)?;
-    dap_client.read_response()?;
+    let continue_seq =
+        dap_client.send_request("continue", Some(serde_json::json!({"threadId": thread_id})))?;
+    dap_client.wait_for_response(continue_seq)?;
     dap_client.wait_for_event("stopped")?;
 
     Ok(())

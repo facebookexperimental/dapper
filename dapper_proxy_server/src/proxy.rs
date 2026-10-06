@@ -547,6 +547,8 @@ async fn recv_owned(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use dapper_dap_protocol::capabilities::Capabilities;
     use dapper_dap_protocol::data_types::Breakpoint;
     use dapper_dap_protocol::data_types::BreakpointId;
@@ -605,6 +607,13 @@ mod tests {
                 mock_backend,
                 proxy_client,
                 handle,
+            }
+        }
+
+        async fn expect_backend_request(&mut self) -> Request {
+            match self.mock_backend.recv().await.unwrap().unwrap() {
+                Message::Request(request) => request,
+                other => panic!("expected Request, got {:?}", other.message_type()),
             }
         }
     }
@@ -741,11 +750,7 @@ mod tests {
         let request = Request::new(command);
         let ListenerPayload { mut messages, .. } =
             tp.proxy_client.send_message(request.into()).await.unwrap();
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_seq = match forwarded {
-            Message::Request(request) => request.seq,
-            other => panic!("expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_seq = tp.expect_backend_request().await.seq;
 
         tp.mock_backend
             .send(
@@ -817,10 +822,7 @@ mod tests {
                 )
                 .await
         });
-        let request_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
-            Message::Request(request) => request.seq,
-            other => panic!("expected Request, got {:?}", other.message_type()),
-        };
+        let request_seq = tp.expect_backend_request().await.seq;
         tp.mock_backend
             .send(
                 Response {
@@ -854,26 +856,21 @@ mod tests {
         let launch = Request::new(RequestCommand::Launch(LaunchRequestArguments::default()));
         tp.main_client.send(launch.into()).await.unwrap();
 
-        let backend_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
-            Message::Request(request) => {
-                let RequestCommand::Launch(args) = &request.command else {
-                    panic!("expected a launch request, got {:?}", request.command);
-                };
-                assert_eq!(
-                    args.extra.get(session_stamp::SESSION_ID_FIELD),
-                    Some(&serde_json::json!("test-session")),
-                    "the adapter should see the session the request came from"
-                );
-                request.seq
-            }
-            other => panic!("expected Request, got {:?}", other.message_type()),
+        let request = tp.expect_backend_request().await;
+        let RequestCommand::Launch(args) = &request.command else {
+            panic!("expected a launch request, got {:?}", request.command);
         };
+        assert_eq!(
+            args.extra.get(session_stamp::SESSION_ID_FIELD),
+            Some(&serde_json::json!("test-session")),
+            "the adapter should see the session the request came from"
+        );
 
         tp.mock_backend
             .send(
                 Response {
                     seq: Seq(0),
-                    request_seq: backend_seq,
+                    request_seq: request.seq,
                     success: true,
                     message: None,
                     body: ResponseBody::Launch,
@@ -918,10 +915,7 @@ mod tests {
             .send_message(secondary_request.into())
             .await
             .unwrap();
-        let secondary_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
-            Message::Request(request) => request.seq,
-            other => panic!("expected Request, got {:?}", other.message_type()),
-        };
+        let secondary_seq = tp.expect_backend_request().await.seq;
 
         let mut main_request = Request::new(RequestCommand::Continue(ContinueArguments {
             thread_id: ThreadId(2),
@@ -929,10 +923,7 @@ mod tests {
         }));
         main_request.seq = secondary_seq;
         tp.main_client.send(main_request.into()).await.unwrap();
-        let main_backend_seq = match tp.mock_backend.recv().await.unwrap().unwrap() {
-            Message::Request(request) => request.seq,
-            other => panic!("expected Request, got {:?}", other.message_type()),
-        };
+        let main_backend_seq = tp.expect_backend_request().await.seq;
 
         tp.mock_backend
             .send(
@@ -996,11 +987,7 @@ mod tests {
         tp.main_client.send(make_threads_request(10)).await.unwrap();
 
         // Mock backend receives the forwarded request (seq is remapped)
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_req = match forwarded {
-            Message::Request(r) => r,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_req = tp.expect_backend_request().await;
         // The backend sees a remapped seq (starting from 1)
         assert_ne!(forwarded_req.seq, Seq(10), "seq should be remapped");
 
@@ -1102,11 +1089,7 @@ mod tests {
         tp.main_client.send(make_threads_request(5)).await.unwrap();
 
         // 2. Mock backend observes the forwarded request with a remapped seq.
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_req = match forwarded {
-            Message::Request(r) => r,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_req = tp.expect_backend_request().await;
         let backend_threads_seq = forwarded_req.seq;
         assert_ne!(
             backend_threads_seq,
@@ -1123,11 +1106,7 @@ mod tests {
         // 4. Mock backend observes the forwarded cancel. Its outer seq is
         //    remapped (standard request flow) and its inner request_id is
         //    rewritten to the backend seq of the original threads request.
-        let forwarded_cancel = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_cancel_req = match forwarded_cancel {
-            Message::Request(r) => r,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_cancel_req = tp.expect_backend_request().await;
         assert_ne!(
             forwarded_cancel_req.seq,
             Seq(6),
@@ -1154,11 +1133,7 @@ mod tests {
         // 1. Standard request → response round-trip. After this, the (5 → backend_seq)
         //    mapping has been consumed by `unmap` when the response was forwarded.
         tp.main_client.send(make_threads_request(5)).await.unwrap();
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let backend_threads_seq = match &forwarded {
-            Message::Request(r) => r.seq,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let backend_threads_seq = tp.expect_backend_request().await.seq;
         tp.mock_backend
             .send(make_threads_response(backend_threads_seq))
             .await
@@ -1175,11 +1150,7 @@ mod tests {
             .await
             .unwrap();
 
-        let forwarded_cancel = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_cancel_req = match forwarded_cancel {
-            Message::Request(r) => r,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_cancel_req = tp.expect_backend_request().await;
         match &forwarded_cancel_req.command {
             RequestCommand::Cancel(Some(args)) => {
                 assert_eq!(
@@ -1204,11 +1175,7 @@ mod tests {
             .await
             .unwrap();
 
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_req = match forwarded {
-            Message::Request(r) => r,
-            other => panic!("Expected Request, got {:?}", other.message_type()),
-        };
+        let forwarded_req = tp.expect_backend_request().await;
         // The outer seq is remapped (standard request flow).
         assert_ne!(forwarded_req.seq, Seq(self_referencing_seq));
         // No earlier request used that client seq, so the lookup misses.
@@ -1232,8 +1199,7 @@ mod tests {
         let listener_payload = tp.proxy_client.send_message(req.into()).await.unwrap();
 
         // Mock backend receives the forwarded request
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let forwarded_seq = forwarded.seq();
+        let forwarded_seq = tp.expect_backend_request().await.seq;
 
         // Mock backend sends a response
         tp.mock_backend
@@ -1288,17 +1254,16 @@ mod tests {
         let mut messages = listener_payload.messages;
 
         // Drain the forwarded request from the mock backend
-        let _ = tp.mock_backend.recv().await.unwrap().unwrap();
+        tp.expect_backend_request().await;
 
         // Mock backend sends a Stopped event
         tp.mock_backend.send(make_stopped_event()).await.unwrap();
 
         // The broadcast listener receives the event
-        let broadcast_msg =
-            tokio::time::timeout(std::time::Duration::from_millis(100), messages.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        let broadcast_msg = tokio::time::timeout(Duration::from_secs(10), messages.recv())
+            .await
+            .expect("the listener should receive the event within 10s")
+            .unwrap();
 
         assert!(
             matches!(broadcast_msg.as_ref(), Message::Event(e) if matches!(e.event, EventKind::Stopped(_))),
@@ -1792,14 +1757,7 @@ mod tests {
             .send(make_initialize_request(1))
             .await
             .unwrap();
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let mapped_seq = match forwarded {
-            Message::Request(r) => r.seq,
-            other => panic!(
-                "expected initialize Request, got {:?}",
-                other.message_type()
-            ),
-        };
+        let mapped_seq = tp.expect_backend_request().await.seq;
         tp.mock_backend
             .send(make_initialize_response_with_caps(mapped_seq, caps))
             .await
@@ -1829,11 +1787,7 @@ mod tests {
                 .await
         });
 
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let req = match forwarded {
-            Message::Request(r) => r,
-            other => panic!("expected stepBack Request, got {:?}", other.message_type()),
-        };
+        let req = tp.expect_backend_request().await;
         match &req.command {
             RequestCommand::StepBack(args) => assert_eq!(args.thread_id, ThreadId(1)),
             other => panic!("expected StepBack command, got {:?}", other),
@@ -1909,14 +1863,7 @@ mod tests {
                 .await
         });
 
-        let forwarded = tp.mock_backend.recv().await.unwrap().unwrap();
-        let req = match forwarded {
-            Message::Request(r) => r,
-            other => panic!(
-                "expected reverseContinue Request, got {:?}",
-                other.message_type()
-            ),
-        };
+        let req = tp.expect_backend_request().await;
         match &req.command {
             RequestCommand::ReverseContinue(_) => {}
             other => panic!("expected ReverseContinue command, got {:?}", other),

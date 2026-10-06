@@ -98,7 +98,7 @@ async fn advance_to_default_stop(
     dap_client: &mut DapClient,
 ) -> anyhow::Result<()> {
     // Seq numbers reserved for this helper. The launch sequence uses seqs 1, 2,
-    // and 6 (initialize, launch, configurationDone); 100/101 are far above to
+    // and 3 (initialize, launch, configurationDone); 100/101 are far above to
     // avoid colliding with anything the surrounding setup might send.
     const SET_BREAKPOINTS_SEQ: i64 = 100;
     const CONTINUE_SEQ: i64 = 101;

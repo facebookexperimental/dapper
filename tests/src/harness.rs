@@ -3,26 +3,34 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use dapper_proxy_server::ProgressEvent;
 use dapper_session::ScopeId;
 use dapper_session::config::DebugSessionConfig;
 use debugserver_types::Event;
+use debugserver_types::Response;
 use tempfile::NamedTempFile;
 use tokio::process::Child;
 use tokio::process::Command as TokioCommand;
 
 use crate::dap_client::DapClient as GeneralDapClient;
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Temp file used to capture adapter diagnostics for panicking tests.
 pub struct AdapterLog {
@@ -83,6 +91,9 @@ impl Drop for AdapterLog {
 /// A DAP client connected to a Dapper proxy subprocess.
 pub struct DapClient {
     inner_client: GeneralDapClient,
+    last_seq: i64,
+    unanswered: HashSet<i64>,
+    unclaimed_responses: BTreeMap<i64, Response>,
     _adapter_log: AdapterLog,
 }
 
@@ -139,15 +150,7 @@ impl DapClient {
         command.args(adapter.arguments);
         command.args(adapter_args);
 
-        let adapter_log = AdapterLog::new()?;
-        command.env("LLDBDAP_LOG", adapter_log.path());
-
-        let inner_client = GeneralDapClient::new_with_command(command)?;
-
-        Ok(Self {
-            inner_client,
-            _adapter_log: adapter_log,
-        })
+        Self::spawn(command)
     }
 
     pub fn new_from_config(
@@ -162,21 +165,33 @@ impl DapClient {
         }
         command.arg("from-config").arg(config_path.as_ref());
 
+        Self::spawn(command)
+    }
+
+    fn spawn(mut command: Command) -> Result<Self> {
         let adapter_log = AdapterLog::new()?;
         command.env("LLDBDAP_LOG", adapter_log.path());
 
-        let inner_client = GeneralDapClient::new_with_command(command)?;
-
         Ok(Self {
-            inner_client,
+            inner_client: GeneralDapClient::new_with_command(command)?,
+            last_seq: 0,
+            unanswered: HashSet::new(),
+            unclaimed_responses: BTreeMap::new(),
             _adapter_log: adapter_log,
         })
     }
 
     pub fn initialize(&mut self) -> Result<()> {
-        let initialize = r#"{"type": "request", "command": "initialize", "arguments": {"adapterID": "dapper-test", "pathFormat": "path", "linesStartAt1": true, "columnsStartAt1": true}, "seq": 1}"#.to_string();
-        self.inner_client.send(initialize)?;
-        self.inner_client.read_response()?;
+        let seq = self.send_request(
+            "initialize",
+            Some(serde_json::json!({
+                "adapterID": "dapper-test",
+                "pathFormat": "path",
+                "linesStartAt1": true,
+                "columnsStartAt1": true,
+            })),
+        )?;
+        self.wait_for_response(seq)?;
         Ok(())
     }
 
@@ -184,36 +199,143 @@ impl DapClient {
         self.inner_client.read_event()
     }
 
-    pub fn read_response(&mut self) -> Result<debugserver_types::Response> {
-        self.inner_client.read_response()
+    /// Returns the next response unchecked, for tests that assert on it; use
+    /// `wait_for_response` to get a request's own response.
+    pub fn read_response(&mut self) -> Result<Response> {
+        anyhow::ensure!(
+            self.unclaimed_responses.is_empty(),
+            "read_response would skip the responses buffered for requests {:?}",
+            self.unclaimed_responses.keys().collect::<Vec<_>>()
+        );
+        let response = self.inner_client.read_response()?;
+        self.unanswered.remove(&response.request_seq);
+        Ok(response)
     }
 
     pub fn send(&mut self, message: String) -> Result<()> {
-        self.inner_client.send(message)
+        let request_seq = serde_json::from_str::<serde_json::Value>(&message)
+            .ok()
+            .filter(|message| message["type"] == "request")
+            .and_then(|message| message["seq"].as_i64());
+        if let Some(seq) = request_seq {
+            anyhow::ensure!(
+                !self.unanswered.contains(&seq),
+                "request {seq} is already awaiting a response"
+            );
+        }
+        self.inner_client.send(message)?;
+        if let Some(seq) = request_seq {
+            self.last_seq = self.last_seq.max(seq);
+            self.unanswered.insert(seq);
+        }
+        Ok(())
+    }
+
+    /// Sends a request and returns the `seq` to pass to `wait_for_response`.
+    pub fn send_request(
+        &mut self,
+        command: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<i64> {
+        let seq = self.last_seq + 1;
+        let mut request = serde_json::json!({
+            "type": "request",
+            "seq": seq,
+            "command": command,
+        });
+        if let Some(arguments) = arguments {
+            request["arguments"] = arguments;
+        }
+        self.inner_client.send(request.to_string())?;
+        self.last_seq = seq;
+        self.unanswered.insert(seq);
+        Ok(seq)
+    }
+
+    /// Waits for the successful response to request `seq`. Responses to other
+    /// requests that arrive first are kept for their own `wait_for_response`.
+    pub fn wait_for_response(&mut self, seq: i64) -> Result<Response> {
+        anyhow::ensure!(
+            self.unanswered.contains(&seq),
+            "request {seq} was never sent or was already answered"
+        );
+        let deadline = Instant::now() + DEFAULT_TIMEOUT;
+        let awaited = format!("the response to request {seq}");
+        let response = loop {
+            if let Some(response) = self.unclaimed_responses.remove(&seq) {
+                break response;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(receive_error(
+                    RecvTimeoutError::Timeout,
+                    DEFAULT_TIMEOUT,
+                    &awaited,
+                ));
+            }
+            let response = self
+                .inner_client
+                .read_response_timeout(remaining)
+                .map_err(|error| receive_error(error, DEFAULT_TIMEOUT, &awaited))?;
+            let request_seq = response.request_seq;
+            anyhow::ensure!(
+                self.unanswered.contains(&request_seq),
+                "received a response to request {request_seq}, which was never sent or was already answered"
+            );
+            anyhow::ensure!(
+                !self.unclaimed_responses.contains_key(&request_seq),
+                "received a second response to request {request_seq}"
+            );
+            self.unclaimed_responses.insert(request_seq, response);
+        };
+        self.unanswered.remove(&seq);
+        if !response.success {
+            return Err(request_failure(seq, &response));
+        }
+        Ok(response)
+    }
+
+    /// The failure of request `seq`, if a failed response to it has arrived.
+    /// Only for error paths: responses to other requests are discarded.
+    fn received_failure(&mut self, seq: i64) -> Option<anyhow::Error> {
+        if let Some(response) = self.unclaimed_responses.get(&seq) {
+            return (!response.success).then(|| request_failure(seq, response));
+        }
+        while let Ok(response) = self
+            .inner_client
+            .read_response_timeout(Duration::from_secs(1))
+        {
+            if response.request_seq == seq {
+                return (!response.success).then(|| request_failure(seq, &response));
+            }
+        }
+        None
     }
 
     pub fn launch(&mut self, launch_arguments: serde_json::Value) -> Result<()> {
-        let launch_request = format!(
-            r#"{{"type": "request", "command": "launch", "arguments": {}, "seq": 2}}"#,
-            launch_arguments
-        );
-        self.inner_client.send(launch_request)?;
-        self.wait_for_event("initialized")?;
+        let launch_seq = self.send_request("launch", Some(launch_arguments))?;
+        if let Err(error) = self.wait_for_event("initialized") {
+            return Err(self.received_failure(launch_seq).unwrap_or(error));
+        }
 
-        let configuration_done =
-            r#"{"type": "request", "command": "configurationDone", "seq": 6}"#.to_string();
-        self.inner_client.send(configuration_done)?;
-        self.inner_client.read_response()?;
+        let configuration_done_seq = self.send_request("configurationDone", None)?;
+        self.wait_for_response(configuration_done_seq)?;
+        // debugpy withholds the `launch` response until `configurationDone` arrives.
+        self.wait_for_response(launch_seq)?;
 
         Ok(())
     }
 
     pub fn try_consume_pending_responses(&mut self) -> Result<()> {
-        while self
+        self.unanswered
+            .retain(|seq| !self.unclaimed_responses.contains_key(seq));
+        self.unclaimed_responses.clear();
+        while let Ok(response) = self
             .inner_client
             .read_response_timeout(Duration::from_millis(100))
-            .is_ok()
-        {}
+        {
+            self.unanswered.remove(&response.request_seq);
+        }
         Ok(())
     }
 
@@ -241,6 +363,21 @@ impl DapClient {
 
     pub fn kill(&mut self) -> Result<()> {
         self.inner_client.kill()
+    }
+}
+
+fn request_failure(seq: i64, response: &Response) -> anyhow::Error {
+    anyhow!(
+        "`{}` request {seq} failed: {}",
+        response.command,
+        response.message.as_deref().unwrap_or("no error message")
+    )
+}
+
+fn receive_error(error: RecvTimeoutError, timeout: Duration, awaited: &str) -> anyhow::Error {
+    match error {
+        RecvTimeoutError::Timeout => anyhow!("timed out after {timeout:?} waiting for {awaited}"),
+        RecvTimeoutError::Disconnected => anyhow!("dapper closed stdout before {awaited}"),
     }
 }
 
@@ -497,4 +634,155 @@ pub async fn spawn_proxy_from_config(
 pub(crate) fn dapper_executable() -> Result<String> {
     std::env::var("DAPPER_TEST_EXECUTABLE")
         .context("DAPPER_TEST_EXECUTABLE must name the Dapper binary")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::DapClient;
+
+    fn client_running(command: Command) -> DapClient {
+        DapClient::spawn(command).expect("should spawn the stand-in server")
+    }
+
+    fn client_replaying(messages: &[Value]) -> DapClient {
+        let framed: String = messages
+            .iter()
+            .map(|message| {
+                let body = message.to_string();
+                format!("Content-Length: {}\r\n\r\n{body}", body.len())
+            })
+            .collect();
+        let mut printf = Command::new("printf");
+        printf.arg("%s").arg(framed);
+        let mut client = client_running(printf);
+        client.unanswered = messages
+            .iter()
+            .filter_map(|message| message["request_seq"].as_i64())
+            .collect();
+        client.last_seq = client.unanswered.iter().copied().max().unwrap_or(0);
+        client
+    }
+
+    fn response(request_seq: i64, command: &str) -> Value {
+        json!({
+            "type": "response",
+            "seq": 0,
+            "request_seq": request_seq,
+            "command": command,
+            "success": true,
+        })
+    }
+
+    #[test]
+    fn wait_for_response_matches_request_seq_in_any_order() {
+        let mut client =
+            client_replaying(&[response(2, "configurationDone"), response(1, "launch")]);
+
+        let launch = client
+            .wait_for_response(1)
+            .expect("the launch response should arrive");
+        let configuration_done = client
+            .wait_for_response(2)
+            .expect("the configurationDone response should be kept until claimed");
+
+        assert_eq!(launch.command, "launch");
+        assert_eq!(configuration_done.command, "configurationDone");
+    }
+
+    #[test]
+    fn wait_for_response_rejects_a_seq_that_was_never_sent() {
+        let mut client = client_replaying(&[response(1, "launch")]);
+
+        let error = client
+            .wait_for_response(2)
+            .expect_err("request 2 was never sent");
+
+        assert_eq!(
+            error.to_string(),
+            "request 2 was never sent or was already answered"
+        );
+    }
+
+    #[test]
+    fn wait_for_response_rejects_a_second_response_to_a_buffered_request() {
+        let mut client = client_replaying(&[
+            response(2, "threads"),
+            response(2, "scopes"),
+            response(1, "launch"),
+        ]);
+
+        let error = client
+            .wait_for_response(1)
+            .expect_err("the repeated response to request 2 should fail the wait");
+
+        assert_eq!(error.to_string(), "received a second response to request 2");
+        assert_eq!(
+            client.unclaimed_responses[&2].command, "threads",
+            "the first response to request 2 must stay buffered"
+        );
+    }
+
+    #[test]
+    fn wait_for_response_rejects_a_second_response_to_an_answered_request() {
+        let mut client = client_replaying(&[
+            response(1, "launch"),
+            response(1, "launch"),
+            response(2, "threads"),
+        ]);
+        client
+            .wait_for_response(1)
+            .expect("the first launch response should arrive");
+
+        let error = client
+            .wait_for_response(2)
+            .expect_err("the repeated launch response should fail the wait");
+
+        assert_eq!(
+            error.to_string(),
+            "received a response to request 1, which was never sent or was already answered"
+        );
+    }
+
+    #[test]
+    fn received_failure_reports_a_failed_response_that_already_arrived() {
+        let mut failed = response(1, "launch");
+        failed["success"] = json!(false);
+        failed["message"] = json!("program not found");
+
+        let error = client_replaying(&[response(2, "threads"), failed])
+            .received_failure(1)
+            .expect("the failed launch response should be reported");
+        assert_eq!(
+            error.to_string(),
+            "`launch` request 1 failed: program not found"
+        );
+        assert!(
+            client_replaying(&[response(1, "launch")])
+                .received_failure(1)
+                .is_none(),
+            "a successful response is not a failure"
+        );
+    }
+
+    #[test]
+    fn wait_for_response_fails_on_an_unsuccessful_response() {
+        let mut failed = response(1, "launch");
+        failed["success"] = json!(false);
+        failed["message"] = json!("program not found");
+        let mut client = client_replaying(&[failed]);
+
+        let error = client
+            .wait_for_response(1)
+            .expect_err("an unsuccessful response should fail the wait");
+
+        assert_eq!(
+            error.to_string(),
+            "`launch` request 1 failed: program not found"
+        );
+    }
 }

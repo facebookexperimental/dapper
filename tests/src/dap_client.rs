@@ -14,6 +14,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
@@ -79,10 +80,11 @@ impl DapClient {
             .context("Failed to receive a response")
     }
 
-    pub fn read_response_timeout(&mut self, timeout: Duration) -> Result<Response> {
-        self.unread_responses
-            .recv_timeout(timeout)
-            .context("Timeout waiting for response")
+    pub fn read_response_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Response, RecvTimeoutError> {
+        self.unread_responses.recv_timeout(timeout)
     }
 
     pub fn read_event(&mut self) -> Result<Event> {

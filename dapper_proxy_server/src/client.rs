@@ -296,7 +296,7 @@ impl ProxyClient {
         let body: ScopesResponseBody = self.round_trip_body(request).await?;
         let scopes = body.scopes;
 
-        let locals = if self.config.scopes.expand_locals {
+        let (locals, locals_reference) = if self.config.scopes.expand_locals {
             let locals_scope = scopes
                 .iter()
                 .find(|s| s.is_locals() && s.variables_reference.has_children());
@@ -306,16 +306,18 @@ impl ProxyClient {
                     .variables(scope.variables_reference)
                     .await
                     .ok()
-                    .map(|r| r.variables),
-                None => None,
+                    .map(|r| (r.variables, r.variables_reference))
+                    .unzip(),
+                None => (None, None),
             }
         } else {
-            None
+            (None, None)
         };
 
         Ok(dapper_session::ScopesResult {
             scopes,
             locals,
+            locals_reference,
             frame_id,
             ..Default::default()
         })

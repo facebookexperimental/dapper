@@ -41,6 +41,8 @@ struct ScopesResult {
     scopes: Vec<ScopeResult>,
     #[serde(rename = "locals")]
     _locals: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
+    #[serde(rename = "localsReference")]
+    locals_reference: Option<i64>,
     #[serde(rename = "frameId")]
     frame_id: i64,
 }
@@ -82,6 +84,15 @@ async fn debug_cli_scopes_json() -> anyhow::Result<()> {
             .all(|scope| !scope.name.is_empty() && scope.variables_reference >= 0),
         "each scope should have a name and nonnegative variables reference"
     );
+    if let Some(reference) = scopes_result.locals_reference {
+        assert!(
+            scopes_result
+                .scopes
+                .iter()
+                .any(|scope| scope.variables_reference == reference),
+            "localsReference {reference} should name one of the returned scopes"
+        );
+    }
 
     dap_client.kill()?;
     Ok(())

@@ -239,10 +239,32 @@ pub struct ScopesResult {
     pub scopes: Vec<Scope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locals: Option<Vec<Variable>>,
+    /// The scope `locals` was read from. Older proxies omit it; they always
+    /// expanded the first locals scope that has children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locals_reference: Option<VariablesReference>,
     #[serde(default)]
     pub frame_id: FrameId,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
     pub extra: IndexMap<String, Value>,
+}
+
+impl ScopesResult {
+    /// The scope whose variables `locals` holds. Adapters such as js-debug hint
+    /// several scopes (Block, Local, Closure) as locals, and `locals` belongs
+    /// under exactly one of them.
+    fn expanded_scope_index(&self) -> Option<usize> {
+        match self.locals_reference {
+            Some(reference) => self
+                .scopes
+                .iter()
+                .position(|scope| scope.variables_reference == reference),
+            None => self
+                .scopes
+                .iter()
+                .position(|scope| scope.is_locals() && scope.variables_reference.has_children()),
+        }
+    }
 }
 
 impl fmt::Display for ScopesResult {
@@ -254,10 +276,11 @@ impl fmt::Display for ScopesResult {
             return Ok(());
         }
 
-        for scope in &self.scopes {
+        let expanded = self.expanded_scope_index();
+        for (index, scope) in self.scopes.iter().enumerate() {
             writeln!(f, "  {}", scope)?;
 
-            if !scope.is_locals() {
+            if Some(index) != expanded {
                 continue;
             }
 
@@ -1060,6 +1083,68 @@ mod tests {
         assert!(output.contains("(no variables)"));
     }
 
+    /// js-debug's shape: a block scope and the function scope, both hinted as
+    /// locals. The function scope was expanded.
+    fn js_block_and_local_scopes(locals_reference: Option<VariablesReference>) -> ScopesResult {
+        ScopesResult {
+            scopes: vec![
+                Scope {
+                    name: "Block".to_string(),
+                    presentation_hint: Some(ScopePresentationHint::Locals),
+                    variables_reference: VariablesReference(1),
+                    ..Default::default()
+                },
+                Scope {
+                    name: "Local".to_string(),
+                    presentation_hint: Some(ScopePresentationHint::Locals),
+                    variables_reference: VariablesReference(2),
+                    ..Default::default()
+                },
+            ],
+            locals: Some(vec![Variable {
+                name: "total".to_string(),
+                value: "0".to_string(),
+                ..Default::default()
+            }]),
+            locals_reference,
+            frame_id: FrameId(0),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn expanded_locals_render_only_under_their_scope() {
+        let output = js_block_and_local_scopes(Some(VariablesReference(2))).to_string();
+
+        assert_eq!(
+            output,
+            "Scopes for frame 0:\n  Scope: Block (ref: 1, expensive: false)\n  Scope: Local (ref: 2, expensive: false)\n    total: 0\n",
+            "the variables must appear once, under the scope they were read from"
+        );
+    }
+
+    #[test]
+    fn without_a_reference_locals_render_under_the_first_expandable_locals_scope() {
+        let output = js_block_and_local_scopes(None).to_string();
+
+        assert_eq!(
+            output.matches("total: 0").count(),
+            1,
+            "an older proxy's locals must not be repeated under every locals scope: {output}"
+        );
+        assert!(
+            output.contains("Scope: Block (ref: 1, expensive: false)\n    total: 0\n"),
+            "older proxies expanded the first locals scope with children: {output}"
+        );
+    }
+
+    #[test]
+    fn a_reference_matching_no_scope_renders_no_locals() {
+        let output = js_block_and_local_scopes(Some(VariablesReference(99))).to_string();
+
+        assert!(!output.contains("total"), "{output}");
+    }
+
     fn make_frame(id: i64, name: &str) -> StackFrame {
         StackFrame {
             id: FrameId(id),
@@ -1428,10 +1513,15 @@ mod tests {
                 var_type: Some("int".to_string()),
                 ..Default::default()
             }]),
+            locals_reference: Some(VariablesReference(10)),
             ..Default::default()
         };
 
         let json = serde_json::to_string(&original).expect("serialize");
+        assert!(
+            json.contains(r#""localsReference":10"#),
+            "the expanded scope is part of the JSON contract: {json}"
+        );
         let deserialized: ScopesResult = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, deserialized);
     }

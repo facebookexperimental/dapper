@@ -54,6 +54,11 @@ pub enum WaitedEvent {
 }
 
 impl RawDapResult {
+    /// Whether the request waited for a stop or exit event that never came.
+    pub fn timed_out(&self) -> bool {
+        matches!(self.event, Some(WaitedEvent::TimedOut { .. }))
+    }
+
     fn to_json_value(&self) -> serde_json::Value {
         let body_value = extract_response_body(&self.body);
 
@@ -520,6 +525,13 @@ pub struct NavigationResult {
     pub navigation_type: NavigationType,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
     pub extra: IndexMap<String, Value>,
+}
+
+impl NavigationResult {
+    /// Whether the navigation waited for a stop that never came.
+    pub fn timed_out(&self) -> bool {
+        matches!(self.result, NavigateResult::TimedOut { .. })
+    }
 }
 
 impl fmt::Display for NavigationResult {
@@ -989,6 +1001,46 @@ mod tests {
         assert_eq!(
             result.to_string(),
             "Variables for reference 5:\n  a: hello\n  b: {} (MyStruct) [ref: 99]\n"
+        );
+    }
+
+    #[test]
+    fn navigation_timed_out_only_for_a_timed_out_result() {
+        let navigation = |result| NavigationResult {
+            result,
+            navigation_type: NavigationType::Continue,
+            extra: Default::default(),
+        };
+
+        assert!(
+            navigation(NavigateResult::TimedOut {
+                timeout_seconds: Some(60)
+            })
+            .timed_out()
+        );
+        assert!(
+            !navigation(NavigateResult::Terminated).timed_out(),
+            "a navigation that ended did not time out"
+        );
+    }
+
+    #[test]
+    fn raw_dap_result_timed_out_only_when_its_event_wait_timed_out() {
+        let raw = |event| RawDapResult {
+            body: ResponseBody::Pause,
+            event,
+            extra: Default::default(),
+        };
+
+        assert!(
+            raw(Some(WaitedEvent::TimedOut {
+                timeout_seconds: 60
+            }))
+            .timed_out()
+        );
+        assert!(
+            !raw(None).timed_out(),
+            "a request that did not wait for an event did not time out"
         );
     }
 

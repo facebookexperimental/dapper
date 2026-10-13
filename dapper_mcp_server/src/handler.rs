@@ -54,6 +54,8 @@ use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
 use rmcp::tool;
 use rmcp::tool_router;
+use tracing::Instrument as _;
+use tracing::Span;
 
 use crate::toolsets::ALWAYS_AVAILABLE;
 use crate::toolsets::Toolset;
@@ -122,6 +124,38 @@ pub struct McpHandler {
 /// Shorthand for a successful text tool result.
 fn ok_text(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text.into())])
+}
+
+/// Outcome flags a tool records on the span `call_tool` opens around it, for
+/// facts its rendered result does not carry in a form telemetry can read: a
+/// timeout renders as a successful result ("program still running after 60
+/// seconds"), and a truncated response as a successful result with a notice at
+/// the end. The tracing layers attach the span's fields to the `tool_call`
+/// event logged inside it.
+///
+/// A flag is only ever recorded as `true`, and an unset one is absent rather
+/// than `false`: the Scuba layer keeps every value recorded on a span field and
+/// lets the first one win, so a `false` recorded when the span opens would mask
+/// a later `true`.
+const TIMED_OUT: &str = "timed_out";
+const TRUNCATED: &str = "truncated";
+
+/// The span `call_tool` runs each tool in; it declares the outcome flags.
+fn tool_call_span() -> Span {
+    tracing::info_span!(
+        "mcp_tool_call",
+        timed_out = tracing::field::Empty,
+        truncated = tracing::field::Empty,
+    )
+}
+
+/// Set an outcome flag on the current tool call when `raised`. Only ever
+/// records `true`, see [`TIMED_OUT`]. Outside a `call_tool` span, as when a
+/// tool body runs directly in a test, it records nothing.
+fn flag_tool_call(flag: &str, raised: bool) {
+    if raised {
+        Span::current().record(flag, true);
+    }
 }
 
 /// Shorthand for a failed text tool result in `output_format`.
@@ -369,6 +403,10 @@ impl McpHandler {
     /// temp file off the async runtime.
     async fn bounded_dap_text(text: String) -> String {
         let rendered = RenderedResponse::from_text(text);
+        flag_tool_call(
+            TRUNCATED,
+            matches!(rendered, RenderedResponse::Truncated { .. }),
+        );
         tokio::task::spawn_blocking(move || rendered.spill_to_temp_and_render())
             .await
             .expect("response spill task should not panic")
@@ -458,7 +496,13 @@ impl McpHandler {
         self.run_rendered(
             session_id.as_ref(),
             &format!("Error executing navigate {} command", navigation_type),
-            async |c| c.navigate(navigation_type, thread_id, single_thread).await,
+            async |c| {
+                let result = c.navigate(navigation_type, thread_id, single_thread).await;
+                if let Ok(navigation) = &result {
+                    flag_tool_call(TIMED_OUT, navigation.result.timed_out());
+                }
+                result
+            },
         )
         .await
     }
@@ -846,7 +890,10 @@ Response is JSON from the debug adapter."#
                 .send_dap_request(&command, arguments, wait_for_event, timeout_seconds)
                 .await
             {
-                Ok(result) => ok_text(Self::bounded_dap_text(result.to_string()).await),
+                Ok(result) => {
+                    flag_tool_call(TIMED_OUT, result.timed_out());
+                    ok_text(Self::bounded_dap_text(result.to_string()).await)
+                }
                 Err(e) => self.err(format!("DAP request '{}' failed: {:#}", command, e)),
             },
         )
@@ -1090,7 +1137,10 @@ impl ServerHandler for McpHandler {
             .unwrap_or_default();
 
         let tcc = ToolCallContext::new(self, request, context);
-        let result = self.tool_router.call(tcc).await;
+        let span = tool_call_span();
+        let started = Instant::now();
+        let result = self.tool_router.call(tcc).instrument(span.clone()).await;
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Read the proxy session ID from the cached client (set by get_client
         // during tool execution). This lets us correlate MCP tool calls back to
@@ -1102,14 +1152,16 @@ impl ServerHandler for McpHandler {
             .unwrap_or("");
 
         // No `%`/`?` on `tool_reason`: a sigil formats the `Option` itself and
-        // logs "None" where the bare value omits the field.
-        match &result {
+        // logs "None" where the bare value omits the field. Logged inside the
+        // tool's span so the outcome flags it recorded are attached.
+        span.in_scope(|| match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
                 tracing::warn!(
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
+                    duration_ms,
                     "tool_call_error"
                 );
             }
@@ -1119,6 +1171,7 @@ impl ServerHandler for McpHandler {
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
+                    duration_ms,
                     error = %e,
                     "tool_call_failed"
                 );
@@ -1129,10 +1182,11 @@ impl ServerHandler for McpHandler {
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
                     proxy_session_id,
+                    duration_ms,
                     "tool_call"
                 );
             }
-        }
+        });
 
         result
     }

@@ -20,6 +20,7 @@ use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
 use dapper_session::CapabilitiesResult;
+use dapper_session::NavigateResult;
 use dapper_session::NavigationResult;
 use dapper_session::NavigationType;
 use dapper_session::RawDapResult;
@@ -31,13 +32,18 @@ use dapper_session::StackTraceResult;
 use dapper_session::StatusResult;
 use dapper_session::ThreadsResult;
 use dapper_session::VariablesResult;
+use dapper_session::WaitedEvent;
 use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
 use serde_json::to_value;
 use tokio::sync::watch;
 use tracing::field::Field;
+use tracing::span::Attributes;
+use tracing::span::Id;
+use tracing::span::Record;
 use tracing_subscriber::layer::Context;
+use tracing_subscriber::registry::LookupSpan;
 
 use super::format::parse_address;
 use super::params::BreakpointSpec;
@@ -793,7 +799,8 @@ async fn sessions_tool_accepts_omitted_arguments() {
 
 // -- reason: extraction for telemetry --
 
-/// Collects rendered event fields for assertion.
+/// Collects rendered event fields for assertion, followed by the fields of
+/// every span the event was logged in, as the Scuba layer attaches them.
 #[derive(Clone, Default)]
 struct CapturedEvents(Arc<Mutex<Vec<String>>>);
 
@@ -806,17 +813,45 @@ impl CapturedEvents {
     }
 }
 
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
-    fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-        struct Visitor<'a>(&'a mut String);
-        impl tracing::field::Visit for Visitor<'_> {
-            fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
-                let _ = write!(self.0, "{}={:?} ", field.name(), value);
+struct FieldRenderer<'a>(&'a mut String);
+
+impl tracing::field::Visit for FieldRenderer<'_> {
+    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+        let _ = write!(self.0, "{}={:?} ", field.name(), value);
+    }
+}
+
+/// A span's fields rendered so far, kept in the span's extensions.
+struct RenderedSpanFields(String);
+
+impl<S> tracing_subscriber::Layer<S> for CapturedEvents
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        let mut rendered = String::new();
+        attrs.record(&mut FieldRenderer(&mut rendered));
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(RenderedSpanFields(rendered));
+        }
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        if let Some(span) = ctx.span(id)
+            && let Some(fields) = span.extensions_mut().get_mut::<RenderedSpanFields>()
+        {
+            values.record(&mut FieldRenderer(&mut fields.0));
+        }
+    }
+
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        let mut rendered = String::new();
+        event.record(&mut FieldRenderer(&mut rendered));
+        for span in ctx.event_scope(event).into_iter().flatten() {
+            if let Some(fields) = span.extensions().get::<RenderedSpanFields>() {
+                rendered.push_str(&fields.0);
             }
         }
-
-        let mut rendered = String::new();
-        event.record(&mut Visitor(&mut rendered));
         self.0
             .lock()
             .expect("capture mutex is never poisoned in tests")
@@ -906,6 +941,157 @@ async fn tool_call_event_omits_an_absent_reason() {
         !event.contains("tool_reason"),
         "an absent reason must not emit the field at all; got {event}"
     );
+}
+
+// -- tool_call telemetry: duration and outcome flags --
+
+/// The rendered value of `field` in a captured event, e.g. `duration_ms=3`.
+fn event_field<'a>(event: &'a str, field: &str) -> Option<&'a str> {
+    event
+        .split_whitespace()
+        .find_map(|pair| pair.strip_prefix(field)?.strip_prefix('='))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_tool_call_event_carries_a_duration_and_no_unearned_flags() {
+    for (tool, event_name) in [
+        ("debug_sessions_command", "tool_call"),
+        ("debug_threads_command", "tool_call_error"),
+        ("debug_no_such_tool", "tool_call_failed"),
+    ] {
+        let events = events_from_call(full_toolset_handler(), tool, json!({})).await;
+        let event = find_event(&events, event_name);
+
+        assert!(
+            event_field(event, "duration_ms").is_some_and(|ms| ms.parse::<u64>().is_ok()),
+            "{event_name} must log an integer duration_ms; got {event}"
+        );
+        assert_eq!(
+            event_field(event, "timed_out"),
+            None,
+            "{event_name}: nothing waited, so the flag stays unset; got {event}"
+        );
+        assert_eq!(
+            event_field(event, "truncated"),
+            None,
+            "{event_name}: a short response leaves the flag unset; got {event}"
+        );
+    }
+}
+
+async fn navigate_event(result: NavigateResult) -> String {
+    let fake = FakeSession::start(FakeControlPlane {
+        navigate_result: Some(result),
+        ..Default::default()
+    })
+    .await;
+    let events = events_from_call(
+        fake.handler(),
+        "debug_navigate_command",
+        json!({"thread_id": 1, "navigation_type": "continue"}),
+    )
+    .await;
+    find_event(&events, "tool_call").to_owned()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_navigation_that_times_out_is_logged_as_timed_out() {
+    let event = navigate_event(NavigateResult::TimedOut {
+        timeout_seconds: Some(60),
+    })
+    .await;
+
+    assert_eq!(
+        event_field(&event, "timed_out"),
+        Some("true"),
+        "a continue that never stopped renders as a success, so the flag is the only signal; got {event}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_navigation_that_stops_is_not_logged_as_timed_out() {
+    let event = navigate_event(NavigateResult::Terminated).await;
+
+    assert_eq!(event_field(&event, "timed_out"), None, "got {event}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_raw_dap_request_whose_event_wait_times_out_is_logged_as_timed_out() {
+    let fake = FakeSession::start(FakeControlPlane {
+        dap_result: Some(RawDapResult {
+            body: ResponseBody::Pause,
+            event: Some(WaitedEvent::TimedOut {
+                timeout_seconds: 60,
+            }),
+            extra: Default::default(),
+        }),
+        ..Default::default()
+    })
+    .await;
+
+    let events = events_from_call(
+        fake.raw_handler(),
+        "debug_dap_request",
+        json!({"command": "pause", "arguments": {"threadId": 1}, "wait_for_event": true}),
+    )
+    .await;
+
+    let event = find_event(&events, "tool_call");
+    assert_eq!(event_field(event, "timed_out"), Some("true"), "got {event}");
+}
+
+/// The outcome flags `body` records on a tool-call span, as read off an event
+/// logged inside that span once `body` has run.
+async fn flags_recorded_by<F: Future>(body: F) -> (F::Output, String) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let captured = CapturedEvents::default();
+    let guard =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
+    let span = tool_call_span();
+    let output = body.instrument(span.clone()).await;
+    span.in_scope(|| tracing::info!("probe"));
+    drop(guard);
+
+    let events = captured.events();
+    (output, find_event(&events, "probe").to_owned())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounding_an_oversized_response_flags_truncation() {
+    // Mirrors the private dapper_control_api::rendered_response::MAX_RESPONSE_SIZE.
+    const MAX_RESPONSE_SIZE: usize = 100_000;
+
+    let (bounded, event) = flags_recorded_by(McpHandler::bounded_dap_text(
+        "x".repeat(2 * MAX_RESPONSE_SIZE),
+    ))
+    .await;
+    if let Some((_, path)) = bounded.rsplit_once("Full response saved to: ")
+        && let Some(path) = path.strip_suffix(']')
+    {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    assert_eq!(
+        event_field(&event, "truncated"),
+        Some("true"),
+        "got {event}"
+    );
+    assert_eq!(event_field(&event, "timed_out"), None, "got {event}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounding_a_short_response_flags_nothing() {
+    let (_, event) = flags_recorded_by(McpHandler::bounded_dap_text("short".to_owned())).await;
+
+    assert_eq!(event_field(&event, "truncated"), None, "got {event}");
+}
+
+#[test]
+fn flagging_outside_a_tool_call_records_nothing() {
+    // Tool bodies also run outside `call_tool` (directly, in tests); with no
+    // tool-call span current, the record must be a silent no-op.
+    flag_tool_call(TIMED_OUT, true);
 }
 
 #[test]
@@ -1299,6 +1485,10 @@ struct FakeControlPlane {
     /// each only after the one before it has been answered.
     stack_answer_order: Vec<ThreadId>,
     stacks_answered: watch::Sender<usize>,
+    /// What `navigate` answers; unfaked when `None`.
+    navigate_result: Option<NavigateResult>,
+    /// What `send_dap_request` answers; unfaked when `None`.
+    dap_result: Option<RawDapResult>,
 }
 
 impl FakeControlPlane {
@@ -1372,11 +1562,21 @@ impl DapperControlPlane for FakeControlPlane {
 
     async fn navigate(
         &self,
-        _: NavigationType,
+        navigation_type: NavigationType,
         _: ThreadId,
         _: Option<bool>,
     ) -> anyhow::Result<ControlPlaneResult<NavigationResult>> {
-        unfaked()
+        let Some(result) = self.navigate_result.clone() else {
+            return unfaked();
+        };
+        Ok(ControlPlaneResult {
+            result: NavigationResult {
+                result,
+                navigation_type,
+                extra: Default::default(),
+            },
+            context: None,
+        })
     }
 
     async fn set_variable(
@@ -1412,7 +1612,10 @@ impl DapperControlPlane for FakeControlPlane {
         _: bool,
         _: u64,
     ) -> anyhow::Result<RawDapResult> {
-        unfaked()
+        match &self.dap_result {
+            Some(result) => Ok(result.clone()),
+            None => unfaked(),
+        }
     }
 
     async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
@@ -1446,10 +1649,20 @@ impl FakeSession {
     }
 
     fn handler(&self) -> McpHandler {
-        full_toolset_handler_with(McpServerEnv {
+        full_toolset_handler_with(self.env())
+    }
+
+    /// `debug_dap_request` exists only in the raw toolset.
+    fn raw_handler(&self) -> McpHandler {
+        let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Raw);
+        McpHandler::new(self.env(), &toolset)
+    }
+
+    fn env(&self) -> McpServerEnv {
+        McpServerEnv {
             sessions: self.store.clone(),
             ..isolated_env()
-        })
+        }
     }
 }
 

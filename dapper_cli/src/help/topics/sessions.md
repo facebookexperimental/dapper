@@ -1,6 +1,6 @@
 # Sessions: scope-id, control-port, session-id
 
-A *session* is one running debug-adapter instance proxied by Dapper. Multiple sessions can coexist (e.g. dual-attach C++/Java debugging two debuggees concurrently). Routing a CLI command to the right session is what `--scope-id` and `--control-port` are for. (MCP additionally supports per-call `session_id` — see `{{program}} help mcp`.)
+A *session* is one running debug-adapter instance proxied by Dapper. Multiple sessions can coexist (e.g. dual-attach C++/Java debugging two debuggees concurrently). Route a CLI command with `--session-id`, `--scope-id`, or `--control-port`; MCP tool calls use the same session identifier through their `session_id` argument.
 
 ## The three identifiers
 
@@ -8,7 +8,7 @@ A *session* is one running debug-adapter instance proxied by Dapper. Multiple se
 |---|---|---|---|
 | **scope-id** | client / IDE / agent | the lifetime of the calling scope | grouping sessions together |
 | **control-port** | proxy at startup | the proxy process | deterministic, single-session targeting |
-| **session-id** | proxy at startup | the session | per-call MCP targeting; identification in the listing |
+| **session-id** | proxy at startup | the session | deterministic CLI and per-call MCP targeting; identification in the listing |
 
 ## Discovery
 
@@ -43,11 +43,12 @@ No active sessions found.
 `--scope-id` and `--control-port` are both optional. With neither flag set:
 
 - **Exactly one active session** → auto-discovered, used.
-- **Multiple active sessions, exactly one of them a root** (the others are child sessions it spawned, e.g. for a `startDebugging` request) → the root is used. Reach a child with `--control-port` (or, over MCP, its `session_id`).
+- **Multiple active sessions, exactly one of them a root** (the others are child sessions it spawned, e.g. for a `startDebugging` request) → the root is used. Reach a child with `--session-id` or `--control-port`.
 - **Any other set of multiple active sessions** → command exits with a candidate list. Pin one of them.
 
 To pin:
 
+- `--session-id=ID` is **always deterministic** and remains stable for the session lifetime. Combine it with `--scope-id` to require that the session belongs to the expected scope.
 - `--control-port=PORT` is **always deterministic** — it names exactly one session.
 - `--scope-id=SCOPE` (or `DAPPER_SCOPE_ID` env var) **only narrows the candidate set**. If multiple sessions share the same scope (the dual-attach case), `--scope-id` alone is insufficient and the CLI errors out with a message pointing you at `--control-port`.
 
@@ -60,6 +61,9 @@ If your agent has a stable session identifier of its own, export it as `DAPPER_S
 ```bash
 # List everything that's running
 {{program}} debug sessions
+
+# Pin by session id (always works)
+{{program}} debug --session-id=a1b2c3d4-e5f6-7890-abcd-ef0123456789 threads
 
 # Pin by control-port (always works)
 {{program}} debug --control-port=12345 threads

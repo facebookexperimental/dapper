@@ -6,7 +6,7 @@ Start an MCP (Model Context Protocol) server on stdin/stdout that exposes debugg
 {{program}} mcp
 ```
 
-For session targeting (`--scope-id`, `--control-port`, ambiguity rules) see `{{program}} help sessions`.
+For session targeting (`--session-id`, `--scope-id`, `--control-port`, ambiguity rules) see `{{program}} help sessions`.
 
 ## Toolsets
 
@@ -20,7 +20,7 @@ For session targeting (`--scope-id`, `--control-port`, ambiguity rules) see `{{p
 
 The `raw` toolset is the escape hatch for DAP commands that the typed tools don't expose. Prefer `standard`/`full` so the agent sees self-describing tool schemas; reach for `raw` only when you genuinely need an adapter-specific request.
 
-The MCP handler also exposes these tools **regardless of `--toolset` or `--enable-tool`**: {{always_available_tools}}. Agents should still prefer the `--scope-id` / `--control-port` plumbing over enumerating sessions in an MCP loop.
+The MCP handler also exposes these tools **regardless of `--toolset` or `--enable-tool`**: {{always_available_tools}}. Agents should still prefer the `--session-id` / `--scope-id` / `--control-port` startup plumbing over enumerating sessions in an MCP loop.
 
 ## Custom tool selection
 
@@ -62,9 +62,9 @@ Five tools sit outside that envelope. `debug_dap_request`, `debug_thread_snapsho
 
 ## Per-call session targeting
 
-Unlike the CLI, an MCP server is a long-lived connection. New sessions can come and go during a single MCP session, so the tools that target a session additionally accept a `session_id` argument. An explicit `session_id` takes precedence over the server's startup-time `--control-port`, but must name a session within its `--scope-id`, if one is set. Use it when a single agent is driving multiple debuggees over the lifetime of one MCP connection.
+An MCP server is a long-lived connection. New sessions can come and go during a single MCP session, so the tools that target a session accept the same `session_id` per call in addition to the server's startup-time `--session-id`. An explicit per-call `session_id` takes precedence over startup `--session-id` or `--control-port`, but must name a session within the server's `--scope-id`, if one is set. Use it when a single agent is driving multiple debuggees over the lifetime of one MCP connection.
 
-When `session_id` is omitted, an MCP server started with `--control-port` targets that port's session, and the call fails if there is none. Otherwise it targets the *last* session it used on this connection, if still active, and then the only active session (or the root of a parent/child group); if several candidates remain, the call fails and lists them. A one-debuggee agent never has to think about it.
+When per-call `session_id` is omitted, an MCP server started with `--session-id` or `--control-port` targets that session, and the call fails if it is gone. Otherwise it targets the *last* session it used on this connection, if still active, and then the only active session (or the root of a parent/child group); if several candidates remain, the call fails and lists them. A one-debuggee agent never has to think about it.
 
 ## Per-call reason
 

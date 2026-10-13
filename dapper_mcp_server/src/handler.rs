@@ -94,8 +94,11 @@ struct CachedClient {
 
 /// Everything an `McpHandler` needs from its environment.
 pub struct McpServerEnv {
+    /// Session selected at server startup for calls that pass no per-call
+    /// `session_id`. Re-resolved by id and `scope_id` on every request.
+    pub startup_session_id: Option<SessionId>,
     /// Control plane port of the session targeted by calls that pass no
-    /// `session_id`.
+    /// `session_id` when no startup session id was selected.
     pub control_port: Option<Port>,
     /// Scope filter for session discovery.
     pub scope_id: Option<ScopeId>,
@@ -107,6 +110,7 @@ pub struct McpServerEnv {
 
 #[derive(Clone)]
 pub struct McpHandler {
+    startup_session_id: Option<SessionId>,
     control_port: Option<Port>,
     scope_id: Option<ScopeId>,
     /// Where to discover active sessions.
@@ -205,6 +209,7 @@ impl McpHandler {
         });
 
         Self {
+            startup_session_id: env.startup_session_id,
             control_port: env.control_port,
             scope_id: env.scope_id,
             sessions: env.sessions,
@@ -253,7 +258,7 @@ impl McpHandler {
 
     /// Resolve the target session from an optional explicit session ID.
     fn resolve_session(&self, session_id: Option<&SessionId>) -> anyhow::Result<SessionInfo> {
-        if let Some(id) = session_id {
+        if let Some(id) = session_id.or(self.startup_session_id.as_ref()) {
             let session = self
                 .sessions
                 .find_active_session_with_id(self.scope_id.clone(), id)
@@ -321,13 +326,11 @@ impl McpHandler {
 
         // Fast path: resolve the target session id cheaply (no FS scan) and
         // return the cached client if it matches. Skipped when a fixed
-        // `control_port` is configured, since that path resolves by port and the
-        // cached client is not keyed by port here.
-        if self.control_port.is_none() {
-            let want_id: Option<SessionId> = match session_id {
-                Some(id) => Some(id.clone()),
-                None => self.last_session().clone(),
-            };
+        // `control_port` is configured, since that path resolves by port, and
+        // when a startup `session_id` is configured, since that identity and
+        // its scope must be re-resolved from the store on every request.
+        if self.control_port.is_none() && self.startup_session_id.is_none() {
+            let want_id = session_id.cloned().or_else(|| self.last_session().clone());
             if let Some(want) = want_id {
                 // Pull the matching client + a snapshot of its session out from
                 // under the lock, then probe liveness *after* releasing it — the

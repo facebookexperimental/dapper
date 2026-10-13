@@ -24,6 +24,7 @@ use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_session::NavigationType;
 use dapper_session::Port;
 use dapper_session::ScopeId;
+use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::SessionsResult;
@@ -251,7 +252,8 @@ enum DebugCommands {
     ///   # Continue and wait for stopped event
     ///   dapper debug dap continue --arguments '{"threadId": 1}' --wait-for-event
     ///
-    ///   # To pin a specific session, use the parent flags before the subcommand:
+    ///   # To pin a specific session, use parent flags before the subcommand:
+    ///   dapper debug --session-id=SESSION dap threads
     ///   dapper debug --control-port=PORT --scope-id=SCOPE dap threads
     #[command(verbatim_doc_comment)]
     Dap {
@@ -282,13 +284,7 @@ pub struct Debug {
 
 impl Debug {
     pub async fn run(self, config: DapperConfig) -> anyhow::Result<()> {
-        let client = match self.target.control_port {
-            Some(port) => DapperControlPlaneClient::for_port(port),
-            None => DapperControlPlaneClient::discover(
-                SessionStore::default_location()?,
-                self.target.scope_id.clone(),
-            ),
-        };
+        let client = client_for_target(&self.target)?;
 
         match self.command {
             DebugCommands::Status {} => {
@@ -303,6 +299,7 @@ impl Debug {
                 let session = find_config_session(
                     &SessionStore::default_location()?,
                     self.target.control_port,
+                    self.target.session_id.as_ref(),
                     self.target.scope_id,
                 )?;
                 let output = serde_json::json!({
@@ -430,9 +427,16 @@ impl Debug {
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Sessions {} => {
-                let sessions: Vec<SessionInfo> = SessionStore::default_location()?
-                    .iter_active_sessions(self.target.scope_id.clone())
-                    .collect();
+                let store = SessionStore::default_location()?;
+                let sessions: Vec<SessionInfo> = match self.target.session_id.as_ref() {
+                    Some(session_id) => store
+                        .find_active_session_with_id(self.target.scope_id.clone(), session_id)
+                        .into_iter()
+                        .collect(),
+                    None => store
+                        .iter_active_sessions(self.target.scope_id.clone())
+                        .collect(),
+                };
 
                 let sessions_result = SessionsResult {
                     sessions,
@@ -486,24 +490,53 @@ impl Debug {
     }
 }
 
+fn client_for_target(target: &SessionTarget) -> anyhow::Result<DapperControlPlaneClient> {
+    if let Some(port) = target.control_port {
+        return Ok(DapperControlPlaneClient::for_port(port));
+    }
+
+    let store = SessionStore::default_location()?;
+    let Some(session_id) = target.session_id.as_ref() else {
+        return Ok(DapperControlPlaneClient::discover(
+            store,
+            target.scope_id.clone(),
+        ));
+    };
+    let session = store
+        .find_active_session_with_id(target.scope_id.clone(), session_id)
+        .with_context(|| format!("no active session found with id {session_id}"))?;
+    let port = session
+        .control_plane_port
+        .with_context(|| format!("session {session_id} has no control plane port"))?;
+    Ok(DapperControlPlaneClient::for_port(port))
+}
+
 fn find_config_session(
     store: &SessionStore,
     control_port: Option<Port>,
+    session_id: Option<&SessionId>,
     scope_id: Option<ScopeId>,
 ) -> anyhow::Result<SessionInfo> {
-    let Some(port) = control_port else {
-        return dapper_control_api::resolve_unique_session(
-            store.iter_active_sessions(scope_id.clone()).collect(),
-            &scope_id,
-            None,
-        );
-    };
-    // Unscoped like `DapperControlPlaneClient::for_port`: an exported
-    // `DAPPER_SCOPE_ID` must not hide the session `--control-port` names.
-    store
-        .iter_active_sessions(None)
-        .find(|s| s.control_plane_port == Some(port))
-        .with_context(|| format!("no session found on port {port}"))
+    if let Some(port) = control_port {
+        // Unscoped like `DapperControlPlaneClient::for_port`: an exported
+        // `DAPPER_SCOPE_ID` must not hide the session `--control-port` names.
+        return store
+            .iter_active_sessions(None)
+            .find(|session| session.control_plane_port == Some(port))
+            .with_context(|| format!("no session found on port {port}"));
+    }
+
+    if let Some(session_id) = session_id {
+        return store
+            .find_active_session_with_id(scope_id, session_id)
+            .with_context(|| format!("no active session found with id {session_id}"));
+    }
+
+    dapper_control_api::resolve_unique_session(
+        store.iter_active_sessions(scope_id.clone()).collect(),
+        &scope_id,
+        None,
+    )
 }
 
 /// Print a line to stdout, returning write errors instead of panicking the
@@ -540,6 +573,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_session_id_from_cli_arg() {
+        let debug = Debug::try_parse_from(["debug", "--session-id", "session-123", "threads"])
+            .expect("session id should parse");
+        assert_eq!(debug.target.session_id, Some(SessionId::new("session-123")));
+    }
+
+    #[test]
+    fn session_id_conflicts_with_control_port() {
+        let Err(error) = Debug::try_parse_from([
+            "debug",
+            "--session-id",
+            "session-123",
+            "--control-port",
+            "12345",
+            "threads",
+        ]) else {
+            panic!("two deterministic targets must be rejected");
+        };
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn parse_scope_id_from_env_var() {
         temp_env::with_var("DAPPER_SCOPE_ID", Some("env-scope"), || {
             let debug = Debug::try_parse_from(["debug", "threads"]).unwrap();
@@ -561,6 +616,7 @@ mod tests {
         temp_env::with_var_unset("DAPPER_SCOPE_ID", || {
             let debug = Debug::try_parse_from(["debug", "threads"]).unwrap();
             assert_eq!(debug.target.scope_id, None);
+            assert_eq!(debug.target.session_id, None);
             assert_eq!(debug.target.control_port, None);
         });
     }
@@ -595,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn config_session_on_control_port_ignores_scope() {
+    fn config_session_targeting_by_control_port_and_session_id() {
         let dir = tempfile::tempdir().expect("create temp sessions dir");
         let store = SessionStore::at(dir.path());
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
@@ -610,12 +666,31 @@ mod tests {
         );
         store.save(&session).expect("seed the store");
 
-        let found = find_config_session(&store, Some(port), Some(ScopeId::new("mine")))
+        let found = find_config_session(&store, Some(port), None, Some(ScopeId::new("mine")))
             .expect("--control-port names the session whatever its scope");
         assert_eq!(found.session_id, session.session_id);
 
+        let found_by_session = find_config_session(
+            &store,
+            None,
+            Some(&session.session_id),
+            Some(ScopeId::new("other")),
+        )
+        .expect("--session-id should select the matching session in scope");
+        assert_eq!(found_by_session.session_id, session.session_id);
         assert!(
-            find_config_session(&store, None, Some(ScopeId::new("mine"))).is_err(),
+            find_config_session(
+                &store,
+                None,
+                Some(&session.session_id),
+                Some(ScopeId::new("mine")),
+            )
+            .is_err(),
+            "--scope-id must constrain --session-id"
+        );
+
+        assert!(
+            find_config_session(&store, None, None, Some(ScopeId::new("mine"))).is_err(),
             "auto-discovery must still filter by scope"
         );
         drop(listener);

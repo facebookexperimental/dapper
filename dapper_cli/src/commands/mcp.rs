@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use anyhow::Context;
 use clap::Parser;
 use clap::builder::TypedValueParser;
 use dapper_config::DapperConfig;
@@ -45,10 +46,17 @@ impl Mcp {
             self.toolset.into()
         };
 
+        let sessions = SessionStore::default_location()?;
+        if let Some(session_id) = self.target.session_id.as_ref() {
+            sessions
+                .find_active_session_with_id(self.target.scope_id.clone(), session_id)
+                .with_context(|| format!("no active session found with id {session_id}"))?;
+        }
         let env = McpServerEnv {
+            startup_session_id: self.target.session_id,
             control_port: self.target.control_port,
             scope_id: self.target.scope_id,
-            sessions: SessionStore::default_location()?,
+            sessions,
             config,
         };
         dapper_mcp_server::serve(env, toolset).await

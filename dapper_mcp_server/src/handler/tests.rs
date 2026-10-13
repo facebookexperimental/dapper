@@ -169,6 +169,7 @@ fn isolated_store() -> SessionStore {
 /// or configuration.
 fn isolated_env() -> McpServerEnv {
     McpServerEnv {
+        startup_session_id: None,
         control_port: None,
         scope_id: None,
         sessions: isolated_store(),
@@ -405,6 +406,68 @@ fn control_port_lookup_ignores_the_scope() {
             .session_id,
         session.session_id
     );
+}
+
+#[test]
+fn startup_session_id_fails_instead_of_retargeting_a_reused_port() {
+    let original_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = original_listener.local_addr().unwrap();
+    let port = Port::try_new(address.port()).unwrap();
+    let expected_scope = ScopeId::new("expected-scope");
+    let mut original = SessionInfo::generate(
+        "original-session".into(),
+        Some(port),
+        Some(expected_scope.clone()),
+        None,
+        None,
+    );
+    let env = McpServerEnv {
+        startup_session_id: Some(original.session_id.clone()),
+        scope_id: Some(expected_scope),
+        ..isolated_env()
+    };
+    let store = env.sessions.clone();
+    store.save(&original).expect("seed the original session");
+    let handler = full_toolset_handler_with(env);
+
+    handler
+        .get_client(None)
+        .expect("the startup session is initially active");
+
+    drop(original_listener);
+    store
+        .delete(&original)
+        .expect("remove the exited session record");
+    original.pid = u32::MAX;
+    store
+        .save(&original)
+        .expect("persist that the original session exited");
+
+    let replacement_listener = TcpListener::bind(address).expect("reuse the released port");
+    let replacement = SessionInfo::generate(
+        "replacement-session".into(),
+        Some(port),
+        Some(ScopeId::new("different-scope")),
+        None,
+        None,
+    );
+    store
+        .save(&replacement)
+        .expect("seed a different session on the reused port");
+
+    let Err(error) = handler.get_client(None) else {
+        panic!("a missing startup session must not retarget by port");
+    };
+    assert!(
+        error.to_string().contains("original-session"),
+        "the error must identify the missing startup session: {error:#}"
+    );
+
+    store.delete(&original).expect("clean up original session");
+    store
+        .delete(&replacement)
+        .expect("clean up replacement session");
+    drop(replacement_listener);
 }
 
 #[cfg(unix)]

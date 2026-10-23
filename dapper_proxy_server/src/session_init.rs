@@ -38,6 +38,7 @@ use dapper_session::config::ChildSessionConfig;
 use dapper_session::config::DebugSessionConfig;
 use dapper_session::config::can_resolve_for_parent_backend;
 use dapper_session::config::resolve_child_session;
+use dapper_tracing::events;
 // Re-exported for `ProxyClient::set_exception_breakpoints` in `client.rs`, so it
 // builds the same capability-gated request as the headless install path.
 pub(crate) use requests::build_set_exception_breakpoints_request;
@@ -72,6 +73,15 @@ const DEFAULT_INIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// a breakpoint while the client reasons about its next step, can legitimately
 /// stay quiet for a long time — so it only trips on a genuinely wedged adapter.
 const DEFAULT_RECEIVE_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+/// The adapter finished the handshake but then sent no DAP message within the
+/// receive idle timeout. A distinct type so callers can tell a wedged session
+/// from a failed handshake without parsing the message.
+#[derive(Debug, thiserror::Error)]
+#[error("Timed out after {timeout:?} waiting for a DAP message; the debug session appears hung")]
+pub struct SessionHungError {
+    pub timeout: Duration,
+}
 
 /// Status of an initialization stage.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -698,15 +708,19 @@ impl SessionInitializer {
             return Err(e);
         }
 
+        let elapsed = self.elapsed();
         self.event_writer.emit(&ProgressEvent::SessionInit {
             status: Status::Completed,
             message: "DAP initialization complete".into(),
-            elapsed: self.elapsed(),
+            elapsed,
         });
-        self.event_writer.emit(&ProgressEvent::SessionReady {
-            elapsed: self.elapsed(),
-        });
-        info!("DAP initialization complete, continuing to receive messages");
+        self.event_writer
+            .emit(&ProgressEvent::SessionReady { elapsed });
+        let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        info!(
+            dapper_event = events::DAP_INIT_SUCCESS,
+            duration_ms, "DAP initialization complete, continuing to receive messages"
+        );
 
         self.receive_messages_until_closed(&mut channel).await?;
 
@@ -1090,27 +1104,21 @@ impl SessionInitializer {
         channel: &mut DuplexChannel,
     ) -> anyhow::Result<()> {
         while !self.debuggee_ended {
-            let received = match tokio::time::timeout(
-                self.receive_idle_timeout,
-                self.recv_message(channel),
-            )
-            .await
-            {
-                Ok(received) => received,
-                Err(_) => {
-                    // No DAP message arrived within the idle window: the adapter
-                    // is wedged. Fail with a real error instead of hanging so a
-                    // genuine hang surfaces as a failure rather than looking
-                    // identical to a silent session that will never make progress.
-                    error!(
-                        "No DAP message received in {:?}; treating the session as hung",
-                        self.receive_idle_timeout
-                    );
-                    anyhow::bail!(
-                        "Timed out after {:?} waiting for a DAP message; the debug session appears hung",
-                        self.receive_idle_timeout
-                    );
+            let Ok(received) =
+                tokio::time::timeout(self.receive_idle_timeout, self.recv_message(channel)).await
+            else {
+                // No DAP message arrived within the idle window: the adapter
+                // is wedged. Fail with a real error instead of hanging so a
+                // genuine hang surfaces as a failure rather than looking
+                // identical to a silent session that will never make progress.
+                error!(
+                    "No DAP message received in {:?}; treating the session as hung",
+                    self.receive_idle_timeout
+                );
+                return Err(SessionHungError {
+                    timeout: self.receive_idle_timeout,
                 }
+                .into());
             };
 
             match received {
@@ -1679,6 +1687,10 @@ mod tests {
 
         backend_handle.abort();
         let err = result.expect_err("expected the hung receive loop to fail with an error");
+        assert!(
+            err.is::<SessionHungError>(),
+            "a hung session must fail with SessionHungError so callers can classify it; got: {err:#}"
+        );
         let msg = format!("{err:#}");
         assert!(
             msg.contains("hung") || msg.contains("Timed out"),

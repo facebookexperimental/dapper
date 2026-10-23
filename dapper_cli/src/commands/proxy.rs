@@ -19,6 +19,7 @@ use dapper_proxy_server::ClientId;
 use dapper_proxy_server::DuplexChannel;
 use dapper_proxy_server::EventWriter;
 use dapper_proxy_server::ProxyServer;
+use dapper_proxy_server::SessionHungError;
 use dapper_proxy_server::SessionInitializer;
 use dapper_session::Port;
 use dapper_session::ScopeId;
@@ -30,6 +31,7 @@ use dapper_session::config::StdioSpawnConfig;
 use dapper_session::config::TcpSpawnConfig;
 #[cfg(unix)]
 use dapper_session::config::UdsSpawnConfig;
+use dapper_tracing::events;
 use tokio::task::JoinError;
 
 use crate::invocation::Reentry;
@@ -414,6 +416,9 @@ impl Proxy {
 }
 
 /// Logs how the headless initializer ended and returns the process exit code.
+///
+/// A failure carries `dapper_event` and `session_failure_kind` so telemetry can
+/// tell a failed handshake from a session that went silent after it.
 fn initializer_exit_code(result: Result<anyhow::Result<()>, JoinError>) -> i32 {
     match result {
         Ok(Ok(())) => {
@@ -421,11 +426,26 @@ fn initializer_exit_code(result: Result<anyhow::Result<()>, JoinError>) -> i32 {
             0
         }
         Ok(Err(e)) => {
-            tracing::error!("DAP initialization failed, shutting down proxy: {e:#}");
+            // Only the post-handshake receive loop fails with `SessionHungError`;
+            // any other error comes from the handshake itself.
+            let session_failure_kind = if e.is::<SessionHungError>() {
+                events::FAILURE_HUNG
+            } else {
+                events::FAILURE_HANDSHAKE
+            };
+            tracing::error!(
+                dapper_event = events::DAP_SESSION_FAILED,
+                session_failure_kind,
+                "DAP initialization failed, shutting down proxy: {e:#}"
+            );
             1
         }
         Err(e) => {
-            tracing::error!("DAP initializer task panicked, shutting down proxy: {e}");
+            tracing::error!(
+                dapper_event = events::DAP_SESSION_FAILED,
+                session_failure_kind = events::FAILURE_PANICKED,
+                "DAP initializer task panicked, shutting down proxy: {e}"
+            );
             1
         }
     }
@@ -948,6 +968,73 @@ mod tests {
         })
         .await;
         assert_eq!(initializer_exit_code(panicked.map(Ok)), 1);
+    }
+
+    fn captured_initializer_exit(result: Result<anyhow::Result<()>, JoinError>) -> CapturedEvents {
+        let captured = CapturedEvents::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(captured.clone()));
+        initializer_exit_code(result);
+        captured
+    }
+
+    #[test]
+    fn a_failed_handshake_is_classified_as_handshake() {
+        let captured =
+            captured_initializer_exit(Ok(Err(anyhow::anyhow!("initialize request failed"))));
+
+        assert!(
+            captured.contains(&[
+                "dapper_event=\"dap_session_failed\"",
+                "session_failure_kind=\"handshake\"",
+            ]),
+            "a non-hung initializer error comes from the handshake"
+        );
+    }
+
+    #[test]
+    fn a_hung_session_is_classified_as_hung_through_context() {
+        let hung = anyhow::Error::new(SessionHungError {
+            timeout: Duration::from_secs(3600),
+        })
+        .context("receive loop failed");
+        let captured = captured_initializer_exit(Ok(Err(hung)));
+
+        assert!(
+            captured.contains(&[
+                "dapper_event=\"dap_session_failed\"",
+                "session_failure_kind=\"hung\"",
+            ]),
+            "SessionHungError must be recognized even when wrapped in context"
+        );
+        assert!(
+            !captured.contains(&["session_failure_kind=\"handshake\""]),
+            "a hung session must not also count as a failed handshake"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_panicked_initializer_is_classified_as_panicked() {
+        let panicked = tokio::spawn(async {
+            panic!("initializer bug");
+        })
+        .await;
+        let captured = captured_initializer_exit(panicked.map(Ok));
+
+        assert!(captured.contains(&[
+            "dapper_event=\"dap_session_failed\"",
+            "session_failure_kind=\"panicked\"",
+        ]));
+    }
+
+    #[test]
+    fn a_clean_exit_emits_no_failure_event() {
+        let captured = captured_initializer_exit(Ok(Ok(())));
+
+        assert!(
+            !captured.contains(&["dapper_event="]),
+            "a session that ends cleanly is not an outcome failure"
+        );
     }
 
     #[test]

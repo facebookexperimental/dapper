@@ -33,6 +33,7 @@ use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::SessionsResult;
+use dapper_tracing::events;
 use dapper_tracing::normalize_reason;
 use rmcp::ErrorData;
 use rmcp::ServerHandler;
@@ -1156,10 +1157,13 @@ impl ServerHandler for McpHandler {
 
         // No `%`/`?` on `tool_reason`: a sigil formats the `Option` itself and
         // logs "None" where the bare value omits the field. Logged inside the
-        // tool's span so the outcome flags it recorded are attached.
+        // tool's span so the outcome flags it recorded are attached. The
+        // `dapper_event` field is what telemetry selects on, so the messages
+        // can change without breaking it.
         span.in_scope(|| match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
                 tracing::warn!(
+                    dapper_event = events::TOOL_CALL_ERROR,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
@@ -1170,6 +1174,7 @@ impl ServerHandler for McpHandler {
             }
             Err(e) => {
                 tracing::error!(
+                    dapper_event = events::TOOL_CALL_FAILED,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
@@ -1181,6 +1186,7 @@ impl ServerHandler for McpHandler {
             }
             Ok(_) => {
                 tracing::info!(
+                    dapper_event = events::TOOL_CALL_SUCCESS,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),

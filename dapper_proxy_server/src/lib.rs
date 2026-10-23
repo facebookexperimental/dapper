@@ -25,5 +25,6 @@ pub use proxy::ProxyServer;
 pub use session_init::ChildSpawnRequest;
 pub use session_init::EventWriter;
 pub use session_init::ProgressEvent;
+pub use session_init::SessionHungError;
 pub use session_init::SessionInitializer;
 pub use transport::DuplexChannel;

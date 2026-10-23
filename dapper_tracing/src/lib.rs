@@ -5,6 +5,8 @@
 
 #![warn(clippy::all)]
 
+pub mod events;
+
 use std::backtrace::Backtrace;
 use std::fs::OpenOptions;
 use std::io::IsTerminal;

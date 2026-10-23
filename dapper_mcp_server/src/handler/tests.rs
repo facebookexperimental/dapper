@@ -1006,6 +1006,38 @@ async fn tool_call_event_omits_an_absent_reason() {
     );
 }
 
+/// Telemetry selects outcome events by `dapper_event`, not by message, so each
+/// arm must carry its own stable name.
+#[tokio::test(flavor = "current_thread")]
+async fn each_tool_call_outcome_carries_its_dapper_event() {
+    let cases = [
+        (
+            "debug_sessions_command",
+            "tool_call",
+            events::TOOL_CALL_SUCCESS,
+        ),
+        (
+            "debug_threads_command",
+            "tool_call_error",
+            events::TOOL_CALL_ERROR,
+        ),
+        (
+            "debug_no_such_tool",
+            "tool_call_failed",
+            events::TOOL_CALL_FAILED,
+        ),
+    ];
+    for (tool, message, dapper_event) in cases {
+        let captured = events_from_call(full_toolset_handler(), tool, json!({})).await;
+
+        let event = find_event(&captured, message);
+        assert!(
+            event.contains(&format!("{}=\"{dapper_event}\" ", events::FIELD)),
+            "the {message} arm must log dapper_event={dapper_event}; got {event}"
+        );
+    }
+}
+
 // -- tool_call telemetry: duration and outcome flags --
 
 /// The rendered value of `field` in a captured event, e.g. `duration_ms=3`.

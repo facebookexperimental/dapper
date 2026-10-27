@@ -8,6 +8,7 @@
 mod grpc;
 pub use grpc::ControlPlaneServer;
 pub use grpc::DapperControlPlaneClient;
+pub use grpc::RejectedByDebugger;
 pub use grpc::resolve_unique_session;
 pub use grpc::serve;
 

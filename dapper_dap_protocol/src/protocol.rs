@@ -74,17 +74,34 @@ pub struct Response {
     pub body: ResponseBody,
 }
 
+/// The adapter answered a request with `success: false`: it received and
+/// understood the request but refused it, e.g. an lldb command that failed on
+/// its input. Distinct from Dapper failing to get an answer at all.
+#[derive(Debug, Error)]
+#[error("{command} request failed: {message}")]
+pub struct DapRequestRejected {
+    /// The rejected request's command, e.g. `evaluate`.
+    pub command: String,
+    /// The adapter's error text; see [`Response::error_message`].
+    pub message: String,
+}
+
 impl Response {
     pub fn command_name(&self) -> &str {
         self.body.command_name()
     }
 
+    /// Fails with [`DapRequestRejected`] when the adapter answered the request
+    /// with `success: false`.
     pub fn check_success(&self) -> anyhow::Result<()> {
-        if !self.success {
-            let command = self.command_name();
-            anyhow::bail!("{} request failed: {}", command, self.error_message());
+        if self.success {
+            return Ok(());
         }
-        Ok(())
+        Err(DapRequestRejected {
+            command: self.command_name().to_owned(),
+            message: self.error_message(),
+        }
+        .into())
     }
 
     /// Human-readable error for a failed response.

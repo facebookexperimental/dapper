@@ -18,6 +18,7 @@ use dapper_dap_protocol::data_types::StackFrame;
 use dapper_dap_protocol::data_types::Thread;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_dap_protocol::protocol::DapRequestRejected;
 use dapper_dap_protocol::responses::ReadMemoryResponseBody;
 use dapper_session::CapabilitiesResult;
 use dapper_session::NavigateResult;
@@ -1040,6 +1041,50 @@ async fn each_tool_call_outcome_carries_its_dapper_event() {
 
 // -- tool_call telemetry: duration and outcome flags --
 
+/// The `dapper_event` of the `tool_call_error` event an evaluate call against
+/// `fake` logs.
+async fn evaluate_error_dapper_event(fake: FakeControlPlane) -> String {
+    let fake = FakeSession::start(fake).await;
+    let events = events_from_call(
+        fake.handler(),
+        "debug_evaluate_command",
+        json!({"expression": "image lookup --address 0x6874"}),
+    )
+    .await;
+    let event = find_event(&events, "tool_call_error");
+    event_field(event, events::FIELD)
+        .unwrap_or_else(|| panic!("no dapper_event; got {event}"))
+        .to_owned()
+}
+
+/// The rejection crosses the real gRPC control plane, so this also covers its
+/// classification surviving the wire.
+#[tokio::test(flavor = "current_thread")]
+async fn a_request_the_debugger_rejects_is_logged_as_rejected() {
+    let dapper_event = evaluate_error_dapper_event(FakeControlPlane {
+        eval_rejection: Some("error: invalid address".to_owned()),
+        ..Default::default()
+    })
+    .await;
+
+    assert_eq!(
+        dapper_event,
+        format!("\"{}\"", events::TOOL_CALL_REJECTED),
+        "an adapter `success: false` must be split from other tool errors"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_control_plane_failure_is_not_logged_as_rejected() {
+    let dapper_event = evaluate_error_dapper_event(FakeControlPlane::default()).await;
+
+    assert_eq!(
+        dapper_event,
+        format!("\"{}\"", events::TOOL_CALL_ERROR),
+        "a failure that is not the adapter refusing the request stays a tool error"
+    );
+}
+
 /// The rendered value of `field` in a captured event, e.g. `duration_ms=3`.
 fn event_field<'a>(event: &'a str, field: &str) -> Option<&'a str> {
     event
@@ -1584,6 +1629,9 @@ struct FakeControlPlane {
     navigate_result: Option<NavigateResult>,
     /// What `send_dap_request` answers; unfaked when `None`.
     dap_result: Option<RawDapResult>,
+    /// The error text `eval_repl` fails with as a rejected `evaluate`
+    /// request; unfaked when `None`.
+    eval_rejection: Option<String>,
 }
 
 impl FakeControlPlane {
@@ -1615,7 +1663,14 @@ impl FakeControlPlane {
 #[async_trait::async_trait]
 impl DapperControlPlane for FakeControlPlane {
     async fn eval_repl(&self, _: &str, _: Option<FrameId>) -> anyhow::Result<String> {
-        unfaked()
+        let Some(message) = self.eval_rejection.clone() else {
+            return unfaked();
+        };
+        Err(DapRequestRejected {
+            command: "evaluate".to_owned(),
+            message,
+        }
+        .into())
     }
 
     async fn stop(&self) -> anyhow::Result<()> {

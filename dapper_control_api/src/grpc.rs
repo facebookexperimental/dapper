@@ -46,6 +46,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_dap_protocol::protocol::DapRequestRejected;
 use dapper_session::CapabilitiesResult;
 use dapper_session::Port;
 use dapper_session::ScopeId;
@@ -58,6 +59,8 @@ use tonic::Code;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
+use tonic::metadata::MetadataMap;
+use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::transport::Server;
@@ -396,23 +399,62 @@ where
     }
 }
 
+/// Metadata `to_tonic` attaches to an error status to classify it. Metadata,
+/// not a distinct status code, so clients built before a kind existed still
+/// read the error text unchanged.
+const ERROR_KIND_KEY: &str = "dapper-error-kind";
+/// [`ERROR_KIND_KEY`] value for an error caused by a [`DapRequestRejected`].
+const ERROR_KIND_DAP_REQUEST_REJECTED: &str = "dap-request-rejected";
+
+/// A control-plane call failed because the debug adapter rejected the request
+/// it made ([`DapRequestRejected`] on the server side), so callers can tell
+/// the debugger refusing a request apart from Dapper failing to answer it.
+/// Displays the server's full error text.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct RejectedByDebugger(String);
+
 async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
 where
     F: Future<Output = anyhow::Result<T>>,
 {
     match fut.await {
         Ok(r) => Ok(tonic::Response::new(r)),
-        Err(e) => Err(tonic::Status::unknown(format!("{e:#}"))),
+        Err(e) => Err(error_status(&e)),
     }
 }
 
-/// Unwraps the error text `to_tonic` sends as an `Unknown` status. Any other
-/// status (e.g. a local transport failure, which has a source) keeps tonic's rendering.
+/// The `Unknown` status carrying `e`'s text, classified with
+/// [`ERROR_KIND_KEY`] when the debug adapter rejected the request.
+fn error_status(e: &anyhow::Error) -> Status {
+    let message = format!("{e:#}");
+    if !e.chain().any(|cause| cause.is::<DapRequestRejected>()) {
+        return Status::unknown(message);
+    }
+    let mut metadata = MetadataMap::new();
+    metadata.insert(
+        ERROR_KIND_KEY,
+        MetadataValue::from_static(ERROR_KIND_DAP_REQUEST_REJECTED),
+    );
+    Status::with_metadata(Code::Unknown, message, metadata)
+}
+
+/// Unwraps the error text `to_tonic` sends as an `Unknown` status, as a
+/// [`RejectedByDebugger`] when it is classified as one. Any other status (e.g.
+/// a local transport failure, which has a source) keeps tonic's rendering.
 fn status_error(status: Status) -> anyhow::Error {
-    if status.code() == Code::Unknown && status.source().is_none() && !status.message().is_empty() {
-        anyhow::Error::msg(status.message().to_owned())
+    if status.code() != Code::Unknown || status.source().is_some() || status.message().is_empty() {
+        return anyhow::Error::new(status);
+    }
+    let message = status.message().to_owned();
+    let kind = status
+        .metadata()
+        .get(ERROR_KIND_KEY)
+        .and_then(|v| v.to_str().ok());
+    if kind == Some(ERROR_KIND_DAP_REQUEST_REJECTED) {
+        anyhow::Error::new(RejectedByDebugger(message))
     } else {
-        anyhow::Error::new(status)
+        anyhow::Error::msg(message)
     }
 }
 
@@ -1483,6 +1525,40 @@ mod tests {
             let rendered = status.to_string();
             assert_eq!(status_error(status).to_string(), rendered);
         }
+    }
+
+    #[test]
+    fn a_rejected_dap_request_crosses_the_wire_as_rejected_by_debugger() {
+        let rejected = anyhow::Error::new(DapRequestRejected {
+            command: "evaluate".to_owned(),
+            message: "error: invalid address".to_owned(),
+        })
+        .context("Error evaluating expression");
+
+        let err = status_error(error_status(&rejected));
+
+        assert!(
+            err.is::<RejectedByDebugger>(),
+            "the classification must survive the round trip; got {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "Error evaluating expression: evaluate request failed: error: invalid address",
+            "the text must be the server's full error chain, as before"
+        );
+    }
+
+    #[test]
+    fn other_errors_are_not_rejected_by_debugger() {
+        let err = status_error(error_status(&anyhow::anyhow!(
+            "Failed to send message from client to the server"
+        )));
+
+        assert!(!err.is::<RejectedByDebugger>(), "got {err:?}");
+        assert_eq!(
+            err.to_string(),
+            "Failed to send message from client to the server"
+        );
     }
 
     fn fake_session(id: &str, port: Option<u16>, scope: Option<&str>) -> SessionInfo {

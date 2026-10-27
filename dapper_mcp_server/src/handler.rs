@@ -3,6 +3,7 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -19,6 +20,7 @@ use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
+use dapper_control_api::RejectedByDebugger;
 use dapper_control_api::RenderedResponse;
 use dapper_control_api::render;
 use dapper_control_api::resolve_unique_session;
@@ -163,6 +165,23 @@ fn flag_tool_call(flag: &str, raised: bool) {
     }
 }
 
+tokio::task_local! {
+    /// Whether the tool call `call_tool` is running in this task failed because
+    /// the debug adapter rejected its request. Task-local rather than a span
+    /// field because `call_tool` reads it back to pick the outcome event.
+    static DEBUGGER_REJECTED: Cell<bool>;
+}
+
+/// Note on the current tool call when `e` is the debug adapter rejecting the
+/// request. Outside `call_tool`, as when a tool body runs directly in a test,
+/// there is no call to note it on, so it does nothing.
+fn note_debugger_rejection(e: &anyhow::Error) {
+    if e.chain().any(|cause| cause.is::<RejectedByDebugger>()) {
+        // An `AccessError` only means no `call_tool` scope, see above.
+        let _ = DEBUGGER_REJECTED.try_with(|rejected| rejected.set(true));
+    }
+}
+
 /// Shorthand for a failed text tool result in `output_format`.
 fn err_text(output_format: OutputFormat, text: impl Into<String>) -> CallToolResult {
     let text = text.into();
@@ -255,6 +274,12 @@ impl McpHandler {
     /// report a failure in a format its success branch would not have used.
     fn err(&self, text: impl Into<String>) -> CallToolResult {
         err_text(self.config.output_format, text)
+    }
+
+    /// A tool error for the control-plane failure `e`, prefixed with `ctx`.
+    fn client_err(&self, ctx: &str, e: &anyhow::Error) -> CallToolResult {
+        note_debugger_rejection(e);
+        self.err(format!("{ctx}: {e:#}"))
     }
 
     /// Resolve the target session from an optional explicit session ID.
@@ -438,7 +463,7 @@ impl McpHandler {
         };
         Ok(match f(client).await {
             Ok(result) => render_result(&result, &self.config),
-            Err(e) => self.err(format!("{err_ctx}: {e:#}")),
+            Err(e) => self.client_err(err_ctx, &e),
         })
     }
 
@@ -462,7 +487,7 @@ impl McpHandler {
                 };
                 render_result(&result, &config)
             }
-            Err(e) => self.err(format!("Error getting status: {:#}", e)),
+            Err(e) => self.client_err("Error getting status", &e),
         })
     }
 
@@ -898,7 +923,7 @@ Response is JSON from the debug adapter."#
                     flag_tool_call(TIMED_OUT, result.timed_out());
                     ok_text(Self::bounded_dap_text(result.to_string()).await)
                 }
-                Err(e) => self.err(format!("DAP request '{}' failed: {:#}", command, e)),
+                Err(e) => self.client_err(&format!("DAP request '{command}' failed"), &e),
             },
         )
     }
@@ -957,7 +982,7 @@ Response is JSON from the debug adapter."#
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
-                Err(e) => self.err(format!("Error reading memory: {:#}", e)),
+                Err(e) => self.client_err("Error reading memory", &e),
             },
         )
     }
@@ -1023,7 +1048,7 @@ Response is JSON from the debug adapter."#
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },
-                Err(e) => self.err(format!("Error writing memory: {:#}", e)),
+                Err(e) => self.client_err("Error writing memory", &e),
             },
         )
     }
@@ -1143,7 +1168,12 @@ impl ServerHandler for McpHandler {
         let tcc = ToolCallContext::new(self, request, context);
         let span = tool_call_span();
         let started = Instant::now();
-        let result = self.tool_router.call(tcc).instrument(span.clone()).await;
+        let (result, rejected) = DEBUGGER_REJECTED
+            .scope(Cell::new(false), async {
+                let result = self.tool_router.call(tcc).instrument(span.clone()).await;
+                (result, DEBUGGER_REJECTED.with(Cell::get))
+            })
+            .await;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Read the proxy session ID from the cached client (set by get_client
@@ -1162,8 +1192,15 @@ impl ServerHandler for McpHandler {
         // can change without breaking it.
         span.in_scope(|| match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
+                // A rejection keeps the `tool_call_error` message, so consumers
+                // that select on the message still count it as an error.
+                let dapper_event = if rejected {
+                    events::TOOL_CALL_REJECTED
+                } else {
+                    events::TOOL_CALL_ERROR
+                };
                 tracing::warn!(
-                    dapper_event = events::TOOL_CALL_ERROR,
+                    dapper_event,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),

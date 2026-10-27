@@ -232,6 +232,11 @@ fn test_error_response_with_error_body() {
         err.to_string(),
         "variables request failed: no frame selected"
     );
+    let rejected = err
+        .downcast_ref::<crate::protocol::DapRequestRejected>()
+        .expect("a success: false response must fail as DapRequestRejected");
+    assert_eq!(rejected.command, "variables");
+    assert_eq!(rejected.message, "no frame selected");
 }
 
 #[test]

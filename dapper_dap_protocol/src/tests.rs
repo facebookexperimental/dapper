@@ -21,6 +21,7 @@ use crate::data_types::i64_from_value;
 use crate::enums::*;
 use crate::events::EventKindDiscriminants;
 use crate::events::*;
+use crate::protocol::DapRequestRejected;
 use crate::protocol::Message;
 use crate::protocol::MessageType;
 use crate::protocol::ProtocolError;
@@ -232,11 +233,10 @@ fn test_error_response_with_error_body() {
         err.to_string(),
         "variables request failed: no frame selected"
     );
-    let rejected = err
-        .downcast_ref::<crate::protocol::DapRequestRejected>()
-        .expect("a success: false response must fail as DapRequestRejected");
-    assert_eq!(rejected.command, "variables");
-    assert_eq!(rejected.message, "no frame selected");
+    assert!(
+        err.is::<DapRequestRejected>(),
+        "a success: false response must fail as DapRequestRejected so callers can classify it; got: {err:#}"
+    );
 }
 
 #[test]

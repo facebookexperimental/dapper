@@ -16,14 +16,10 @@ pub const FIELD: &str = "dapper_event";
 
 /// An MCP tool call completed successfully.
 pub const TOOL_CALL_SUCCESS: &str = "tool_call_success";
-/// An MCP tool call ran but its result reported an error other than a
-/// [`TOOL_CALL_REJECTED`] one.
+/// An MCP tool call ran but its result reported an error. When the debug
+/// adapter rejected the tool's request, the event also carries
+/// `rejected_by_debugger = true`.
 pub const TOOL_CALL_ERROR: &str = "tool_call_error";
-/// An MCP tool call ran but the debug adapter rejected the request it made
-/// (`success: false`), e.g. an lldb command that failed on its input. Split
-/// from [`TOOL_CALL_ERROR`] because it reflects the request, not Dapper or the
-/// debugger failing. Logged with the same `tool_call_error` message.
-pub const TOOL_CALL_REJECTED: &str = "tool_call_rejected";
 /// An MCP tool call failed at the protocol level, e.g. an unknown tool.
 pub const TOOL_CALL_FAILED: &str = "tool_call_failed";
 

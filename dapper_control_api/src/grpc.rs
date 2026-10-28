@@ -428,7 +428,7 @@ where
 /// [`ERROR_KIND_KEY`] when the debug adapter rejected the request.
 fn error_status(e: &anyhow::Error) -> Status {
     let message = format!("{e:#}");
-    if !e.chain().any(|cause| cause.is::<DapRequestRejected>()) {
+    if !e.is::<DapRequestRejected>() {
         return Status::unknown(message);
     }
     let mut metadata = MetadataMap::new();

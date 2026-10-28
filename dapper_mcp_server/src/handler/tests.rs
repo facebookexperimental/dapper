@@ -1041,9 +1041,8 @@ async fn each_tool_call_outcome_carries_its_dapper_event() {
 
 // -- tool_call telemetry: duration and outcome flags --
 
-/// The `dapper_event` of the `tool_call_error` event an evaluate call against
-/// `fake` logs.
-async fn evaluate_error_dapper_event(fake: FakeControlPlane) -> String {
+/// The `tool_call_error` event an evaluate call against `fake` logs.
+async fn evaluate_error_event(fake: FakeControlPlane) -> String {
     let fake = FakeSession::start(fake).await;
     let events = events_from_call(
         fake.handler(),
@@ -1051,37 +1050,39 @@ async fn evaluate_error_dapper_event(fake: FakeControlPlane) -> String {
         json!({"expression": "image lookup --address 0x6874"}),
     )
     .await;
-    let event = find_event(&events, "tool_call_error");
-    event_field(event, events::FIELD)
-        .unwrap_or_else(|| panic!("no dapper_event; got {event}"))
-        .to_owned()
+    find_event(&events, "tool_call_error").to_owned()
 }
 
 /// The rejection crosses the real gRPC control plane, so this also covers its
 /// classification surviving the wire.
 #[tokio::test(flavor = "current_thread")]
-async fn a_request_the_debugger_rejects_is_logged_as_rejected() {
-    let dapper_event = evaluate_error_dapper_event(FakeControlPlane {
+async fn a_request_the_debugger_rejects_is_flagged_on_its_tool_call_error() {
+    let event = evaluate_error_event(FakeControlPlane {
         eval_rejection: Some("error: invalid address".to_owned()),
         ..Default::default()
     })
     .await;
 
     assert_eq!(
-        dapper_event,
-        format!("\"{}\"", events::TOOL_CALL_REJECTED),
-        "an adapter `success: false` must be split from other tool errors"
+        event_field(&event, events::FIELD),
+        Some(format!("\"{}\"", events::TOOL_CALL_ERROR).as_str()),
+        "a rejection is still a tool error; got {event}"
+    );
+    assert_eq!(
+        event_field(&event, "rejected_by_debugger"),
+        Some("true"),
+        "an adapter `success: false` must be flagged; got {event}"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_control_plane_failure_is_not_logged_as_rejected() {
-    let dapper_event = evaluate_error_dapper_event(FakeControlPlane::default()).await;
+async fn a_control_plane_failure_is_not_flagged_as_rejected() {
+    let event = evaluate_error_event(FakeControlPlane::default()).await;
 
     assert_eq!(
-        dapper_event,
-        format!("\"{}\"", events::TOOL_CALL_ERROR),
-        "a failure that is not the adapter refusing the request stays a tool error"
+        event_field(&event, "rejected_by_debugger"),
+        None,
+        "a failure that is not the adapter refusing the request leaves the flag unset; got {event}"
     );
 }
 
@@ -1115,6 +1116,11 @@ async fn every_tool_call_event_carries_a_duration_and_no_unearned_flags() {
             event_field(event, "truncated"),
             None,
             "{event_name}: a short response leaves the flag unset; got {event}"
+        );
+        assert_eq!(
+            event_field(event, "rejected_by_debugger"),
+            None,
+            "{event_name}: no adapter was asked, so nothing was rejected; got {event}"
         );
     }
 }

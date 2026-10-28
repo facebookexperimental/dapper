@@ -3,7 +3,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -136,9 +135,10 @@ fn ok_text(text: impl Into<String>) -> CallToolResult {
 /// Outcome flags a tool records on the span `call_tool` opens around it, for
 /// facts its rendered result does not carry in a form telemetry can read: a
 /// timeout renders as a successful result ("program still running after 60
-/// seconds"), and a truncated response as a successful result with a notice at
-/// the end. The tracing layers attach the span's fields to the `tool_call`
-/// event logged inside it.
+/// seconds"), a truncated response as a successful result with a notice at the
+/// end, and a request the debug adapter rejected as the same tool error as
+/// Dapper failing to get an answer. The tracing layers attach the span's fields
+/// to the `tool_call` event logged inside it.
 ///
 /// A flag is only ever recorded as `true`, and an unset one is absent rather
 /// than `false`: the Scuba layer keeps every value recorded on a span field and
@@ -146,6 +146,9 @@ fn ok_text(text: impl Into<String>) -> CallToolResult {
 /// a later `true`.
 const TIMED_OUT: &str = "timed_out";
 const TRUNCATED: &str = "truncated";
+/// The debug adapter answered the tool's request with `success: false`, e.g.
+/// an lldb command that failed on its input. Set with the tool's error result.
+const REJECTED_BY_DEBUGGER: &str = "rejected_by_debugger";
 
 /// The span `call_tool` runs each tool in; it declares the outcome flags.
 fn tool_call_span() -> Span {
@@ -153,6 +156,7 @@ fn tool_call_span() -> Span {
         "mcp_tool_call",
         timed_out = tracing::field::Empty,
         truncated = tracing::field::Empty,
+        rejected_by_debugger = tracing::field::Empty,
     )
 }
 
@@ -162,23 +166,6 @@ fn tool_call_span() -> Span {
 fn flag_tool_call(flag: &str, raised: bool) {
     if raised {
         Span::current().record(flag, true);
-    }
-}
-
-tokio::task_local! {
-    /// Whether the tool call `call_tool` is running in this task failed because
-    /// the debug adapter rejected its request. Task-local rather than a span
-    /// field because `call_tool` reads it back to pick the outcome event.
-    static DEBUGGER_REJECTED: Cell<bool>;
-}
-
-/// Note on the current tool call when `e` is the debug adapter rejecting the
-/// request. Outside `call_tool`, as when a tool body runs directly in a test,
-/// there is no call to note it on, so it does nothing.
-fn note_debugger_rejection(e: &anyhow::Error) {
-    if e.chain().any(|cause| cause.is::<RejectedByDebugger>()) {
-        // An `AccessError` only means no `call_tool` scope, see above.
-        let _ = DEBUGGER_REJECTED.try_with(|rejected| rejected.set(true));
     }
 }
 
@@ -278,7 +265,7 @@ impl McpHandler {
 
     /// A tool error for the control-plane failure `e`, prefixed with `ctx`.
     fn client_err(&self, ctx: &str, e: &anyhow::Error) -> CallToolResult {
-        note_debugger_rejection(e);
+        flag_tool_call(REJECTED_BY_DEBUGGER, e.is::<RejectedByDebugger>());
         self.err(format!("{ctx}: {e:#}"))
     }
 
@@ -1075,9 +1062,7 @@ Response is JSON from the debug adapter."#
 
         let threads_result = match client.threads().await {
             Ok(r) => r.result,
-            Err(e) => {
-                return Ok(self.err(format!("Error getting threads: {}", e)));
-            }
+            Err(e) => return Ok(self.client_err("Error getting threads", &e)),
         };
 
         let (stack_depth, max_threads) = clamp_snapshot_limits(&req);
@@ -1168,12 +1153,7 @@ impl ServerHandler for McpHandler {
         let tcc = ToolCallContext::new(self, request, context);
         let span = tool_call_span();
         let started = Instant::now();
-        let (result, rejected) = DEBUGGER_REJECTED
-            .scope(Cell::new(false), async {
-                let result = self.tool_router.call(tcc).instrument(span.clone()).await;
-                (result, DEBUGGER_REJECTED.with(Cell::get))
-            })
-            .await;
+        let result = self.tool_router.call(tcc).instrument(span.clone()).await;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         // Read the proxy session ID from the cached client (set by get_client
@@ -1192,15 +1172,8 @@ impl ServerHandler for McpHandler {
         // can change without breaking it.
         span.in_scope(|| match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
-                // A rejection keeps the `tool_call_error` message, so consumers
-                // that select on the message still count it as an error.
-                let dapper_event = if rejected {
-                    events::TOOL_CALL_REJECTED
-                } else {
-                    events::TOOL_CALL_ERROR
-                };
                 tracing::warn!(
-                    dapper_event,
+                    dapper_event = events::TOOL_CALL_ERROR,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),

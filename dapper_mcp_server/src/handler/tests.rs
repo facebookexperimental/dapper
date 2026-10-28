@@ -1015,25 +1015,26 @@ async fn each_tool_call_outcome_carries_its_dapper_event() {
         (
             "debug_sessions_command",
             "tool_call",
-            events::TOOL_CALL_SUCCESS,
+            TelemetryEvent::ToolCallSuccess,
         ),
         (
             "debug_threads_command",
             "tool_call_error",
-            events::TOOL_CALL_ERROR,
+            TelemetryEvent::ToolCallError,
         ),
         (
             "debug_no_such_tool",
             "tool_call_failed",
-            events::TOOL_CALL_FAILED,
+            TelemetryEvent::ToolCallFailed,
         ),
     ];
     for (tool, message, dapper_event) in cases {
         let captured = events_from_call(full_toolset_handler(), tool, json!({})).await;
 
         let event = find_event(&captured, message);
-        assert!(
-            event.contains(&format!("{}=\"{dapper_event}\" ", events::FIELD)),
+        assert_eq!(
+            event_field(event, TelemetryEvent::field_name()),
+            Some(dapper_event.to_string().as_str()),
             "the {message} arm must log dapper_event={dapper_event}; got {event}"
         );
     }
@@ -1064,8 +1065,8 @@ async fn a_request_the_debugger_rejects_is_flagged_on_its_tool_call_error() {
     .await;
 
     assert_eq!(
-        event_field(&event, events::FIELD),
-        Some(format!("\"{}\"", events::TOOL_CALL_ERROR).as_str()),
+        event_field(&event, TelemetryEvent::field_name()),
+        Some(TelemetryEvent::ToolCallError.to_string().as_str()),
         "a rejection is still a tool error; got {event}"
     );
     assert_eq!(
@@ -1237,7 +1238,45 @@ async fn bounding_a_short_response_flags_nothing() {
 fn flagging_outside_a_tool_call_records_nothing() {
     // Tool bodies also run outside `call_tool` (directly, in tests); with no
     // tool-call span current, the record must be a silent no-op.
-    flag_tool_call(TIMED_OUT, true);
+    flag_tool_call(ToolCallFlag::TimedOut, true);
+}
+
+#[tokio::test]
+async fn every_tool_call_flag_names_a_declared_span_field() {
+    for (flag, field) in [
+        (ToolCallFlag::TimedOut, "timed_out"),
+        (ToolCallFlag::Truncated, "truncated"),
+        (ToolCallFlag::RejectedByDebugger, "rejected_by_debugger"),
+    ] {
+        assert_eq!(flag.as_ref(), field);
+        let (_, event) = flags_recorded_by(async {
+            flag_tool_call(flag, false);
+            flag_tool_call(flag, true);
+            flag_tool_call(flag, false);
+        })
+        .await;
+
+        assert_eq!(event_field(&event, field), Some("true"), "got {event}");
+        for other in ["timed_out", "truncated", "rejected_by_debugger"] {
+            if other != field {
+                assert_eq!(event_field(&event, other), None, "got {event}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn tool_call_flags_can_be_raised_together() {
+    let (_, event) = flags_recorded_by(async {
+        flag_tool_call(ToolCallFlag::TimedOut, true);
+        flag_tool_call(ToolCallFlag::Truncated, true);
+        flag_tool_call(ToolCallFlag::RejectedByDebugger, true);
+    })
+    .await;
+
+    for field in ["timed_out", "truncated", "rejected_by_debugger"] {
+        assert_eq!(event_field(&event, field), Some("true"), "got {event}");
+    }
 }
 
 #[test]

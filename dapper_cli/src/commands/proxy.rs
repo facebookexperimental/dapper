@@ -31,7 +31,8 @@ use dapper_session::config::StdioSpawnConfig;
 use dapper_session::config::TcpSpawnConfig;
 #[cfg(unix)]
 use dapper_session::config::UdsSpawnConfig;
-use dapper_tracing::events;
+use dapper_tracing::events::SessionFailureKind;
+use dapper_tracing::events::TelemetryEvent;
 use tokio::task::JoinError;
 
 use crate::invocation::Reentry;
@@ -433,21 +434,21 @@ fn initializer_exit_code(result: Result<anyhow::Result<()>, JoinError>) -> i32 {
             // Only the post-handshake receive loop fails with `SessionHungError`;
             // any other error comes from the handshake itself.
             let session_failure_kind = if e.is::<SessionHungError>() {
-                events::FAILURE_HUNG
+                SessionFailureKind::Hung
             } else {
-                events::FAILURE_HANDSHAKE
+                SessionFailureKind::Handshake
             };
             tracing::error!(
-                dapper_event = events::DAP_SESSION_FAILED,
-                session_failure_kind,
+                dapper_event = %TelemetryEvent::DapSessionFailed,
+                session_failure_kind = %session_failure_kind,
                 "DAP initialization failed, shutting down proxy: {e:#}"
             );
             1
         }
         Err(e) => {
             tracing::error!(
-                dapper_event = events::DAP_SESSION_FAILED,
-                session_failure_kind = events::FAILURE_PANICKED,
+                dapper_event = %TelemetryEvent::DapSessionFailed,
+                session_failure_kind = %SessionFailureKind::Panicked,
                 "DAP initializer task panicked, shutting down proxy: {e}"
             );
             1
@@ -989,8 +990,8 @@ mod tests {
 
         assert!(
             captured.contains(&[
-                "dapper_event=\"dap_session_failed\"",
-                "session_failure_kind=\"handshake\"",
+                "dapper_event=dap_session_failed",
+                "session_failure_kind=handshake",
             ]),
             "a non-hung initializer error comes from the handshake"
         );
@@ -1006,13 +1007,13 @@ mod tests {
 
         assert!(
             captured.contains(&[
-                "dapper_event=\"dap_session_failed\"",
-                "session_failure_kind=\"hung\"",
+                "dapper_event=dap_session_failed",
+                "session_failure_kind=hung",
             ]),
             "SessionHungError must be recognized even when wrapped in context"
         );
         assert!(
-            !captured.contains(&["session_failure_kind=\"handshake\""]),
+            !captured.contains(&["session_failure_kind=handshake"]),
             "a hung session must not also count as a failed handshake"
         );
     }
@@ -1026,8 +1027,8 @@ mod tests {
         let captured = captured_initializer_exit(panicked.map(Ok));
 
         assert!(captured.contains(&[
-            "dapper_event=\"dap_session_failed\"",
-            "session_failure_kind=\"panicked\"",
+            "dapper_event=dap_session_failed",
+            "session_failure_kind=panicked",
         ]));
     }
 

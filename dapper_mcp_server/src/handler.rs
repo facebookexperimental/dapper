@@ -34,7 +34,7 @@ use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
 use dapper_session::SessionsResult;
-use dapper_tracing::events;
+use dapper_tracing::events::TelemetryEvent;
 use dapper_tracing::normalize_reason;
 use rmcp::ErrorData;
 use rmcp::ServerHandler;
@@ -56,6 +56,7 @@ use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
 use rmcp::tool;
 use rmcp::tool_router;
+use strum::AsRefStr;
 use tracing::Instrument as _;
 use tracing::Span;
 
@@ -144,11 +145,15 @@ fn ok_text(text: impl Into<String>) -> CallToolResult {
 /// than `false`: the Scuba layer keeps every value recorded on a span field and
 /// lets the first one win, so a `false` recorded when the span opens would mask
 /// a later `true`.
-const TIMED_OUT: &str = "timed_out";
-const TRUNCATED: &str = "truncated";
-/// The debug adapter answered the tool's request with `success: false`, e.g.
-/// an lldb command that failed on its input. Set with the tool's error result.
-const REJECTED_BY_DEBUGGER: &str = "rejected_by_debugger";
+#[derive(Debug, Clone, Copy, AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+enum ToolCallFlag {
+    TimedOut,
+    Truncated,
+    /// The debug adapter answered the tool's request with `success: false`, e.g.
+    /// an lldb command that failed on its input. Set with the tool's error result.
+    RejectedByDebugger,
+}
 
 /// The span `call_tool` runs each tool in; it declares the outcome flags.
 fn tool_call_span() -> Span {
@@ -161,11 +166,11 @@ fn tool_call_span() -> Span {
 }
 
 /// Set an outcome flag on the current tool call when `raised`. Only ever
-/// records `true`, see [`TIMED_OUT`]. Outside a `call_tool` span, as when a
+/// records `true`, see [`ToolCallFlag`]. Outside a `call_tool` span, as when a
 /// tool body runs directly in a test, it records nothing.
-fn flag_tool_call(flag: &str, raised: bool) {
+fn flag_tool_call(flag: ToolCallFlag, raised: bool) {
     if raised {
-        Span::current().record(flag, true);
+        Span::current().record(flag.as_ref(), true);
     }
 }
 
@@ -265,7 +270,10 @@ impl McpHandler {
 
     /// A tool error for the control-plane failure `e`, prefixed with `ctx`.
     fn client_err(&self, ctx: &str, e: &anyhow::Error) -> CallToolResult {
-        flag_tool_call(REJECTED_BY_DEBUGGER, e.is::<RejectedByDebugger>());
+        flag_tool_call(
+            ToolCallFlag::RejectedByDebugger,
+            e.is::<RejectedByDebugger>(),
+        );
         self.err(format!("{ctx}: {e:#}"))
     }
 
@@ -420,7 +428,7 @@ impl McpHandler {
     async fn bounded_dap_text(text: String) -> String {
         let rendered = RenderedResponse::from_text(text);
         flag_tool_call(
-            TRUNCATED,
+            ToolCallFlag::Truncated,
             matches!(rendered, RenderedResponse::Truncated { .. }),
         );
         tokio::task::spawn_blocking(move || rendered.spill_to_temp_and_render())
@@ -515,7 +523,7 @@ impl McpHandler {
             async |c| {
                 let result = c.navigate(navigation_type, thread_id, single_thread).await;
                 if let Ok(navigation) = &result {
-                    flag_tool_call(TIMED_OUT, navigation.result.timed_out());
+                    flag_tool_call(ToolCallFlag::TimedOut, navigation.result.timed_out());
                 }
                 result
             },
@@ -907,7 +915,7 @@ Response is JSON from the debug adapter."#
                 .await
             {
                 Ok(result) => {
-                    flag_tool_call(TIMED_OUT, result.timed_out());
+                    flag_tool_call(ToolCallFlag::TimedOut, result.timed_out());
                     ok_text(Self::bounded_dap_text(result.to_string()).await)
                 }
                 Err(e) => self.client_err(&format!("DAP request '{command}' failed"), &e),
@@ -1173,7 +1181,7 @@ impl ServerHandler for McpHandler {
         span.in_scope(|| match &result {
             Ok(CallToolResponse::Complete(r)) if r.is_error.unwrap_or(false) => {
                 tracing::warn!(
-                    dapper_event = events::TOOL_CALL_ERROR,
+                    dapper_event = %TelemetryEvent::ToolCallError,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
@@ -1184,7 +1192,7 @@ impl ServerHandler for McpHandler {
             }
             Err(e) => {
                 tracing::error!(
-                    dapper_event = events::TOOL_CALL_FAILED,
+                    dapper_event = %TelemetryEvent::ToolCallFailed,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),
@@ -1196,7 +1204,7 @@ impl ServerHandler for McpHandler {
             }
             Ok(_) => {
                 tracing::info!(
-                    dapper_event = events::TOOL_CALL_SUCCESS,
+                    dapper_event = %TelemetryEvent::ToolCallSuccess,
                     mcp_tool_name = %tool_name,
                     mcp_client_name = %mcp_client_name,
                     tool_reason = tool_reason.as_deref(),

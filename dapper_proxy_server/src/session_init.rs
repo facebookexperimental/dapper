@@ -38,7 +38,7 @@ use dapper_session::config::ChildSessionConfig;
 use dapper_session::config::DebugSessionConfig;
 use dapper_session::config::can_resolve_for_parent_backend;
 use dapper_session::config::resolve_child_session;
-use dapper_tracing::events;
+use dapper_tracing::events::TelemetryEvent;
 // Re-exported for `ProxyClient::set_exception_breakpoints` in `client.rs`, so it
 // builds the same capability-gated request as the headless install path.
 pub(crate) use requests::build_set_exception_breakpoints_request;
@@ -739,7 +739,7 @@ impl SessionInitializer {
             .emit(&ProgressEvent::SessionReady { elapsed });
         let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         info!(
-            dapper_event = events::DAP_INIT_SUCCESS,
+            dapper_event = %TelemetryEvent::DapInitSuccess,
             duration_ms, "DAP initialization complete, continuing to receive messages"
         );
 

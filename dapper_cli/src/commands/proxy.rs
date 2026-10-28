@@ -218,6 +218,7 @@ impl Proxy {
         tracing::debug!("Session config: {:?}", session_config);
 
         let backend = create_backend(&session_config.spawn_config).await?;
+        let adapter_pid = backend.process_id();
 
         // Create the proxy server
         let proxy_server = ProxyServer::new(
@@ -271,6 +272,9 @@ impl Proxy {
             let handle = tokio::spawn(async move {
                 let mut initializer =
                     SessionInitializer::new(session_config).with_event_writer(event_writer);
+                if let Some(pid) = adapter_pid {
+                    initializer = initializer.with_adapter_pid(pid);
+                }
                 if let Some(tx) = child_spawn_tx {
                     initializer = initializer.with_child_spawn_tx(tx);
                 }

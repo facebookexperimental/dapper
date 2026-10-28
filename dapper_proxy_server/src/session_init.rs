@@ -96,6 +96,12 @@ pub enum Status {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "stage", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProgressEvent {
+    /// Dapper spawned the debug adapter process
+    AdapterStarted {
+        pid: u32,
+        #[serde(rename = "elapsed_ms", with = "duration_ms")]
+        elapsed: Duration,
+    },
     /// DAP initialization sequence progress
     SessionInit {
         status: Status,
@@ -275,6 +281,7 @@ pub struct SessionInitializer {
     /// Time when initialization started, for progress reporting.
     start_time: Option<Instant>,
     event_writer: EventWriter,
+    adapter_pid: Option<u32>,
     /// Capabilities reported by the adapter in the `initialize` response.
     /// Captured eagerly so later steps (e.g. `set_exception_breakpoints`)
     /// can consult `exceptionBreakpointFilters` without re-issuing the
@@ -304,6 +311,7 @@ impl SessionInitializer {
             receive_idle_timeout: DEFAULT_RECEIVE_IDLE_TIMEOUT,
             start_time: None,
             event_writer: EventWriter::stdout(),
+            adapter_pid: None,
             adapter_capabilities: None,
             child_spawn_tx: None,
             debuggee_ended: false,
@@ -324,6 +332,13 @@ impl SessionInitializer {
 
     pub fn with_event_writer(mut self, event_writer: EventWriter) -> Self {
         self.event_writer = event_writer;
+        self
+    }
+
+    /// The pid of the debug adapter process dapper spawned. `run` reports it
+    /// first, as `ADAPTER_STARTED`.
+    pub fn with_adapter_pid(mut self, pid: u32) -> Self {
+        self.adapter_pid = Some(pid);
         self
     }
 
@@ -692,6 +707,12 @@ impl SessionInitializer {
     /// 6. Wait for launch/attach response (may come after configurationDone)
     pub async fn run(mut self, mut channel: DuplexChannel) -> anyhow::Result<()> {
         self.start_time = Some(Instant::now());
+        if let Some(pid) = self.adapter_pid {
+            self.event_writer.emit(&ProgressEvent::AdapterStarted {
+                pid,
+                elapsed: Duration::ZERO,
+            });
+        }
         self.event_writer.emit(&ProgressEvent::SessionInit {
             status: Status::Started,
             message: "Starting DAP initialization".into(),
@@ -1390,6 +1411,61 @@ mod tests {
         assert!(
             message.contains("initialize"),
             "the failure should name the failed step, got: {message}"
+        );
+    }
+
+    async fn events_of_a_successful_handshake(
+        initializer: SessionInitializer,
+    ) -> Vec<serde_json::Value> {
+        let events = SharedBuf::default();
+        let (server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(mock_backend(server));
+
+        initializer
+            .with_timeout(Duration::from_secs(2))
+            .with_event_writer(EventWriter::Writer(Box::new(events.clone())))
+            .run(client)
+            .await
+            .expect("the handshake should succeed");
+
+        backend_handle.await.expect("backend panicked").unwrap();
+        let output = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
+        output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_adapter_started_is_the_first_event() {
+        let events = events_of_a_successful_handshake(
+            SessionInitializer::new(launch_config(vec![], false)).with_adapter_pid(4711),
+        )
+        .await;
+
+        assert_eq!(
+            events.first(),
+            Some(&serde_json::json!({"stage": "ADAPTER_STARTED", "pid": 4711, "elapsed_ms": 0})),
+            "got {events:?}"
+        );
+        assert_eq!(
+            events.last().map(|event| &event["stage"]),
+            Some(&serde_json::json!("SESSION_READY")),
+            "got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_adapter_started_without_an_adapter_pid() {
+        let events =
+            events_of_a_successful_handshake(SessionInitializer::new(launch_config(vec![], false)))
+                .await;
+
+        assert!(
+            events
+                .iter()
+                .all(|event| event["stage"] != "ADAPTER_STARTED"),
+            "an adapter dapper did not spawn has no pid to report, got {events:?}"
         );
     }
 

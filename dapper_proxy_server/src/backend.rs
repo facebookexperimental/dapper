@@ -17,9 +17,16 @@ use crate::transport::DuplexChannel;
 pub struct Backend {
     pub(crate) duplex: DuplexChannel,
     pub(crate) handle: Option<JoinHandle<()>>,
+    pub(crate) process_id: Option<u32>,
 }
 
 impl Backend {
+    /// The pid of the debug adapter process this backend spawned; `None` when
+    /// it connected to an adapter that was already running.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process_id
+    }
+
     pub async fn from_tcp(host: &str, port: u16) -> anyhow::Result<Self> {
         tracing::debug!("Backend: connecting to TCP {}:{}", host, port);
 
@@ -29,6 +36,7 @@ impl Backend {
         Ok(Self {
             duplex,
             handle: None,
+            process_id: None,
         })
     }
 
@@ -42,6 +50,7 @@ impl Backend {
         Ok(Self {
             duplex,
             handle: None,
+            process_id: None,
         })
     }
 
@@ -87,7 +96,8 @@ impl Backend {
         }
 
         let mut process = cmd.spawn()?;
-        tracing::info!("Backend: started {:?}", process.id().unwrap_or_default());
+        let process_id = process.id();
+        tracing::info!("Backend: started {:?}", process_id.unwrap_or_default());
 
         let stdin = process
             .stdin
@@ -132,6 +142,7 @@ impl Backend {
         Ok(Self {
             duplex,
             handle: Some(handle),
+            process_id,
         })
     }
 }
@@ -163,5 +174,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines, ["bad \u{fffd} byte", "next"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn from_process_reports_the_pid_of_the_adapter_it_spawned() {
+        let backend = Backend::from_process("cat", &[], false).await.unwrap();
+
+        let pid = backend.process_id().expect("a spawned adapter has a pid");
+        let comm = tokio::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .await
+            .unwrap();
+        assert_eq!(
+            comm.trim_end(),
+            "cat",
+            "the pid should name the spawned adapter"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_connects_to_a_running_adapter_has_no_pid() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let backend = Backend::from_tcp("127.0.0.1", port).await.unwrap();
+
+        assert_eq!(backend.process_id(), None);
     }
 }

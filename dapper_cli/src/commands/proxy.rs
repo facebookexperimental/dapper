@@ -239,7 +239,7 @@ impl Proxy {
         // Create DAP client based on mode:
         // - Headless mode (debug_request present): use in-memory channel with SessionInitializer
         // - Normal mode: use TCP server or stdio for external IDE client
-        let (dap_client, initializer_handle) = if session_config.debug_request.is_some() {
+        let (dap_client, mut initializer_handle) = if session_config.debug_request.is_some() {
             // Headless mode: create in-memory channel pair
             tracing::info!("Running in headless mode (no external DAP client)");
             let (server_channel, client_channel) = DuplexChannel::in_memory(64 * 1024);
@@ -327,11 +327,27 @@ impl Proxy {
         let (needs_shutdown, exit_code) = tokio::select! {
             // No shutdown: the proxy server task has already torn itself down.
             result = proxy_server_handle => {
+                // Only the control-plane `stop` cancels this task while the select runs.
+                let stopped = matches!(&result, Err(e) if e.is_cancelled());
                 log_proxy_server_exit(result);
-                (false, 0)
+                let exit_code = match initializer_handle.take() {
+                    // Bounded: SIGTERM goes unhandled here, and the initializer can block
+                    // on a child-session spawn or a full events pipe.
+                    Some(handle) if !stopped => {
+                        match tokio::time::timeout(Self::SHUTDOWN_TIMEOUT, handle).await {
+                            Ok(result) => initializer_exit_code(result),
+                            Err(_) => {
+                                tracing::warn!("Headless initializer still running after the proxy server stopped");
+                                0
+                            }
+                        }
+                    }
+                    _ => 0,
+                };
+                (false, exit_code)
             }
             result = async {
-                match initializer_handle {
+                match initializer_handle.as_mut() {
                     Some(handle) => handle.await,
                     None => std::future::pending().await,
                 }

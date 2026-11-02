@@ -631,6 +631,7 @@ mod tests {
             duplex: backend,
             handle: None,
             process_id: None,
+            exit_status: None,
         };
         let config = DapperConfig::default();
         let sessions = dapper_session::SessionStore::at(

@@ -90,3 +90,52 @@ async fn headless_session_reports_the_adapter_pid_first() -> anyhow::Result<()> 
     proxy.kill().await?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn headless_session_reports_an_adapter_that_exits_during_the_handshake() -> anyhow::Result<()>
+{
+    let scope_id = generate_test_scope_id("headless-adapter-exit");
+    let config = DebugSessionConfig {
+        spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+            cmd: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "read -r _; exit 3".to_owned()],
+            new_session: true,
+        }),
+        ..headless_config()?
+    };
+    let (mut proxy, _config_file, _adapter_log) =
+        spawn_proxy_from_config(&config, &scope_id).await?;
+
+    let stdout = proxy.stdout.take().context("proxy has no stdout")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut events = Vec::new();
+    tokio::time::timeout(EVENTS_TIMEOUT, async {
+        while let Some(line) = lines.next_line().await? {
+            events.extend(parse_progress_event(&line));
+        }
+        anyhow::Ok(())
+    })
+    .await
+    .context("timed out waiting for the proxy to exit")??;
+    let status = proxy.wait().await?;
+
+    let [
+        ..,
+        failed,
+        ProgressEvent::AdapterExited {
+            exit_code, signal, ..
+        },
+    ] = events.as_slice()
+    else {
+        anyhow::bail!("ADAPTER_EXITED should be the last event, got {events:?}");
+    };
+    assert_eq!(
+        serde_json::to_value(failed)?["status"],
+        "failed",
+        "got {events:?}"
+    );
+    assert_eq!((*exit_code, *signal), (Some(3), None), "got {events:?}");
+    assert_eq!(status.code(), Some(1), "a failed handshake should exit 1");
+    Ok(())
+}

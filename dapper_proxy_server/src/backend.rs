@@ -4,12 +4,14 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::path::Path;
+use std::process::ExitStatus;
 use std::process::Stdio;
 
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::BufReader;
 use tokio::process::Command;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::transport::DuplexChannel;
@@ -18,6 +20,7 @@ pub struct Backend {
     pub(crate) duplex: DuplexChannel,
     pub(crate) handle: Option<JoinHandle<()>>,
     pub(crate) process_id: Option<u32>,
+    pub(crate) exit_status: Option<oneshot::Receiver<ExitStatus>>,
 }
 
 impl Backend {
@@ -25,6 +28,13 @@ impl Backend {
     /// it connected to an adapter that was already running.
     pub fn process_id(&self) -> Option<u32> {
         self.process_id
+    }
+
+    /// The exit status of the debug adapter process this backend spawned, once
+    /// it exits; `None` when it connected to an adapter that was already
+    /// running, or when already taken.
+    pub fn take_exit_status(&mut self) -> Option<oneshot::Receiver<ExitStatus>> {
+        self.exit_status.take()
     }
 
     pub async fn from_tcp(host: &str, port: u16) -> anyhow::Result<Self> {
@@ -37,6 +47,7 @@ impl Backend {
             duplex,
             handle: None,
             process_id: None,
+            exit_status: None,
         })
     }
 
@@ -51,6 +62,7 @@ impl Backend {
             duplex,
             handle: None,
             process_id: None,
+            exit_status: None,
         })
     }
 
@@ -121,8 +133,12 @@ impl Backend {
                 tracing::warn!("Failed to read backend stderr: {e}");
             }
         });
+        let (exit_status_tx, exit_status_rx) = oneshot::channel();
         let handle = tokio::spawn(async move {
             let result = process.wait().await;
+            if let Ok(status) = &result {
+                let _ = exit_status_tx.send(*status);
+            }
             match result {
                 Ok(status) if status.success() => {
                     tracing::info!("Backend process exited successfully");
@@ -143,6 +159,7 @@ impl Backend {
             duplex,
             handle: Some(handle),
             process_id,
+            exit_status: Some(exit_status_rx),
         })
     }
 }
@@ -192,13 +209,30 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn a_backend_that_connects_to_a_running_adapter_has_no_pid() {
+    async fn from_process_reports_how_the_adapter_exited() {
+        let mut backend =
+            Backend::from_process("sh", &["-c".to_owned(), "exit 3".to_owned()], false)
+                .await
+                .unwrap();
+
+        let status = backend
+            .take_exit_status()
+            .expect("a spawned adapter reports its exit")
+            .await
+            .unwrap();
+        assert_eq!(status.code(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_connects_to_a_running_adapter_has_no_pid_or_exit_status() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let backend = Backend::from_tcp("127.0.0.1", port).await.unwrap();
+        let mut backend = Backend::from_tcp("127.0.0.1", port).await.unwrap();
 
         assert_eq!(backend.process_id(), None);
+        assert!(backend.take_exit_status().is_none());
     }
 }

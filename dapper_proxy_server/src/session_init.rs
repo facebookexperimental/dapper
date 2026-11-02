@@ -15,6 +15,9 @@ mod requests;
 
 use std::collections::BTreeMap;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -83,6 +86,10 @@ pub struct SessionHungError {
     pub timeout: Duration,
 }
 
+/// How long a handshake that failed on a closed channel waits for the adapter's
+/// exit status, which can land after the channel closes.
+const ADAPTER_EXIT_GRACE: Duration = Duration::from_millis(500);
+
 /// Status of an initialization stage.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -99,6 +106,16 @@ pub enum ProgressEvent {
     /// Dapper spawned the debug adapter process
     AdapterStarted {
         pid: u32,
+        #[serde(rename = "elapsed_ms", with = "duration_ms")]
+        elapsed: Duration,
+    },
+    /// The debug adapter process dapper spawned exited before the session was
+    /// ready
+    AdapterExited {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signal: Option<i32>,
         #[serde(rename = "elapsed_ms", with = "duration_ms")]
         elapsed: Duration,
     },
@@ -282,6 +299,7 @@ pub struct SessionInitializer {
     start_time: Option<Instant>,
     event_writer: EventWriter,
     adapter_pid: Option<u32>,
+    adapter_exit: Option<oneshot::Receiver<ExitStatus>>,
     /// Capabilities reported by the adapter in the `initialize` response.
     /// Captured eagerly so later steps (e.g. `set_exception_breakpoints`)
     /// can consult `exceptionBreakpointFilters` without re-issuing the
@@ -294,6 +312,7 @@ pub struct SessionInitializer {
     /// Set by `recv_message`, so an `exited`/`terminated` event that arrives
     /// during the handshake also ends the post-init receive loop.
     debuggee_ended: bool,
+    channel_closed: bool,
 }
 
 impl SessionInitializer {
@@ -312,9 +331,11 @@ impl SessionInitializer {
             start_time: None,
             event_writer: EventWriter::stdout(),
             adapter_pid: None,
+            adapter_exit: None,
             adapter_capabilities: None,
             child_spawn_tx: None,
             debuggee_ended: false,
+            channel_closed: false,
         }
     }
 
@@ -339,6 +360,14 @@ impl SessionInitializer {
     /// first, as `ADAPTER_STARTED`.
     pub fn with_adapter_pid(mut self, pid: u32) -> Self {
         self.adapter_pid = Some(pid);
+        self
+    }
+
+    /// The exit status of the debug adapter process dapper spawned. When the
+    /// handshake fails on a closed channel and that adapter exited, `run`
+    /// reports `ADAPTER_EXITED` after the failure.
+    pub fn with_adapter_exit(mut self, exit_status: oneshot::Receiver<ExitStatus>) -> Self {
+        self.adapter_exit = Some(exit_status);
         self
     }
 
@@ -390,7 +419,10 @@ impl SessionInitializer {
         channel: &mut DuplexChannel,
     ) -> anyhow::Result<Option<dap::Message>> {
         let msg = match channel.recv().await.context("Failed to receive message")? {
-            None => return Ok(None),
+            None => {
+                self.channel_closed = true;
+                return Ok(None);
+            }
             Some(msg) => msg,
         };
 
@@ -629,10 +661,9 @@ impl SessionInitializer {
             message,
             body,
         };
-        channel
-            .send(response.into())
-            .await
-            .context("Failed to send reverse-request response")?;
+        let sent = channel.send(response.into()).await;
+        self.channel_closed |= sent.is_err();
+        sent.context("Failed to send reverse-request response")?;
         Ok(())
     }
 
@@ -726,6 +757,8 @@ impl SessionInitializer {
                 message: format!("{e:#}"),
                 elapsed: self.elapsed(),
             });
+            // After the failure event: a shutdown can exit the process during this wait.
+            self.report_adapter_exit().await;
             return Err(e);
         }
 
@@ -746,6 +779,27 @@ impl SessionInitializer {
         self.receive_messages_until_closed(&mut channel).await?;
 
         Ok(())
+    }
+
+    async fn report_adapter_exit(&mut self) {
+        if !self.channel_closed {
+            return;
+        }
+        let Some(exit_status) = self.adapter_exit.take() else {
+            return;
+        };
+        let Ok(Ok(status)) = tokio::time::timeout(ADAPTER_EXIT_GRACE, exit_status).await else {
+            return;
+        };
+        #[cfg(unix)]
+        let signal = status.signal();
+        #[cfg(not(unix))]
+        let signal = None;
+        self.event_writer.emit(&ProgressEvent::AdapterExited {
+            exit_code: status.code(),
+            signal,
+            elapsed: self.elapsed(),
+        });
     }
 
     async fn handshake(&mut self, channel: &mut DuplexChannel) -> anyhow::Result<()> {
@@ -1061,10 +1115,9 @@ impl SessionInitializer {
         self.next_seq = self.next_seq.next();
         request.seq = seq;
 
-        channel
-            .send(request.into())
-            .await
-            .context("Failed to send request")?;
+        let sent = channel.send(request.into()).await;
+        self.channel_closed |= sent.is_err();
+        sent.context("Failed to send request")?;
 
         Ok(seq)
     }
@@ -1414,6 +1467,14 @@ mod tests {
         );
     }
 
+    fn json_lines(events: &SharedBuf) -> Vec<serde_json::Value> {
+        let output = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
+        output
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     async fn events_of_a_successful_handshake(
         initializer: SessionInitializer,
     ) -> Vec<serde_json::Value> {
@@ -1429,11 +1490,7 @@ mod tests {
             .expect("the handshake should succeed");
 
         backend_handle.await.expect("backend panicked").unwrap();
-        let output = String::from_utf8(events.0.lock().unwrap().clone()).unwrap();
-        output
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
+        json_lines(&events)
     }
 
     #[tokio::test]
@@ -1467,6 +1524,125 @@ mod tests {
                 .all(|event| event["stage"] != "ADAPTER_STARTED"),
             "an adapter dapper did not spawn has no pid to report, got {events:?}"
         );
+    }
+
+    async fn events_when_the_adapter_closes_the_channel(
+        adapter_exit: oneshot::Receiver<ExitStatus>,
+    ) -> Vec<serde_json::Value> {
+        let events = SharedBuf::default();
+        let (mut server, client) = DuplexChannel::in_memory(1024);
+        let backend_handle = tokio::spawn(async move {
+            let _ = server.recv().await;
+        });
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .with_event_writer(EventWriter::Writer(Box::new(events.clone())))
+            .with_adapter_exit(adapter_exit)
+            .run(client)
+            .await;
+
+        backend_handle.await.expect("backend panicked");
+        result.expect_err("a closed channel must fail init");
+        json_lines(&events)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn test_adapter_exit_is_reported_after_the_failure() {
+        let (exit_status_tx, adapter_exit) = oneshot::channel();
+        // The exit status lands after the closed channel has failed the handshake.
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = exit_status_tx.send(ExitStatus::from_raw(libc::SIGSEGV));
+        });
+
+        let events = events_when_the_adapter_closes_the_channel(adapter_exit).await;
+
+        let [.., failed, exited] = events.as_slice() else {
+            panic!("expected at least two events, got {events:?}");
+        };
+        assert_eq!(exited["stage"], "ADAPTER_EXITED", "got {events:?}");
+        assert_eq!(exited["signal"], libc::SIGSEGV, "got {events:?}");
+        assert_eq!(exited.get("exit_code"), None, "got {events:?}");
+        assert_eq!(failed["stage"], "SESSION_INIT", "got {events:?}");
+        assert_eq!(failed["status"], "failed", "got {events:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_adapter_exit_is_reported_when_a_send_finds_the_channel_closed() {
+        let events = SharedBuf::default();
+        let (server, client) = DuplexChannel::in_memory(1024);
+        drop(server);
+        let (exit_status_tx, adapter_exit) = oneshot::channel();
+        let _ = exit_status_tx.send(ExitStatus::from_raw(3 << 8));
+
+        SessionInitializer::new(launch_config(vec![], false))
+            .with_event_writer(EventWriter::Writer(Box::new(events.clone())))
+            .with_adapter_exit(adapter_exit)
+            .run(client)
+            .await
+            .expect_err("a closed channel must fail init");
+
+        let events = json_lines(&events);
+        assert!(
+            events
+                .iter()
+                .any(|event| event["stage"] == "ADAPTER_EXITED" && event["exit_code"] == 3),
+            "got {events:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_no_adapter_exited_while_the_adapter_is_alive() {
+        let (_exit_status_tx, adapter_exit) = oneshot::channel();
+
+        let events = events_when_the_adapter_closes_the_channel(adapter_exit).await;
+
+        assert!(
+            events
+                .iter()
+                .all(|event| event["stage"] != "ADAPTER_EXITED"),
+            "got {events:?}"
+        );
+        assert_eq!(
+            events.last().map(|event| &event["status"]),
+            Some(&serde_json::json!("failed")),
+            "got {events:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_a_rejected_request_is_reported_without_waiting_for_an_exit() {
+        let (mut server, client) = DuplexChannel::in_memory(1024);
+        let (_exit_status_tx, adapter_exit) = oneshot::channel();
+        let backend_handle = tokio::spawn(async move {
+            let Some(dap::Message::Request(req)) = server.recv().await? else {
+                anyhow::bail!("expected the initialize request");
+            };
+            let response = dap::Response {
+                seq: 1.into(),
+                request_seq: req.seq,
+                success: false,
+                message: Some("adapter refused".to_owned()),
+                body: ResponseBody::Initialize(None),
+            };
+            server.send(response.into()).await?;
+            Ok(server)
+        });
+        let start = tokio::time::Instant::now();
+
+        let result = SessionInitializer::new(launch_config(vec![], false))
+            .with_adapter_exit(adapter_exit)
+            .run(client)
+            .await;
+
+        assert!(
+            start.elapsed() < ADAPTER_EXIT_GRACE,
+            "a live adapter's rejection must not wait for an exit status"
+        );
+        let _server = backend_handle.await.expect("backend panicked").unwrap();
+        result.expect_err("a rejected initialize must fail init");
     }
 
     #[tokio::test(start_paused = true)]

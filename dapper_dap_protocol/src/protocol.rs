@@ -108,11 +108,16 @@ impl Response {
     ///
     /// Prefers the `ErrorResponse` body's `format` text (the spec's display
     /// error), then the short top-level `message` — adapters differ in which
-    /// one they populate.
+    /// one they populate. Blank text counts as absent.
     pub fn error_message(&self) -> String {
+        let non_blank = |text: String| (!text.trim().is_empty()).then_some(text);
         self.dap_error_message()
-            .or_else(|| self.message.clone())
-            .unwrap_or_else(|| "unknown error".to_owned())
+            .and_then(non_blank)
+            .or_else(|| self.message.clone().and_then(non_blank))
+            .unwrap_or_else(|| match self.command_name() {
+                "evaluate" => "the debugger reported failure without any error text".to_owned(),
+                _ => "unknown error".to_owned(),
+            })
     }
 
     /// Extract and render `body.error` (a DAP `Message` object) if present.

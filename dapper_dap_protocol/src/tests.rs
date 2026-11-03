@@ -341,6 +341,75 @@ fn test_error_response_without_any_details() {
 }
 
 #[test]
+fn test_error_response_blank_format_falls_back_to_message() {
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "variables",
+        "message": "no frame selected",
+        "body": {
+            "error": {
+                "id": 1,
+                "format": "  "
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    assert_eq!(resp.error_message(), "no frame selected");
+}
+
+#[test]
+fn test_error_response_blank_message_is_unknown_error() {
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "variables",
+        "message": ""
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    let err = resp.check_success().unwrap_err();
+    assert_eq!(err.to_string(), "variables request failed: unknown error");
+}
+
+#[test]
+fn test_evaluate_error_response_with_empty_format() {
+    // lldb-dap sends an empty `format` when a command such as `image lookup`
+    // fails without writing any error text.
+    let msg = parse_message(json!({
+        "seq": 10,
+        "type": "response",
+        "request_seq": 5,
+        "success": false,
+        "command": "evaluate",
+        "body": {
+            "error": {
+                "id": 3,
+                "format": ""
+            }
+        }
+    }));
+
+    let Message::Response(resp) = msg else {
+        panic!("Expected Response");
+    };
+    let err = resp.check_success().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "evaluate request failed: the debugger reported failure without any error text"
+    );
+}
+
+#[test]
 fn test_parse_stopped_event() {
     let msg = parse_message(json!({
         "seq": 50,

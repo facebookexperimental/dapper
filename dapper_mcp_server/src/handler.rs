@@ -120,6 +120,9 @@ pub struct McpHandler {
     /// Where to discover active sessions.
     sessions: SessionStore,
     tool_router: ToolRouter<McpHandler>,
+    /// The auto-expansion `threads`, `stack_trace` and `scopes` ask for,
+    /// derived from the toolset.
+    expansion: Expansion,
     config: DapperConfig,
     /// Cached client for connection reuse.
     cached_client: Arc<RwLock<Option<CachedClient>>>,
@@ -227,6 +230,7 @@ impl McpHandler {
             scope_id: env.scope_id,
             sessions: env.sessions,
             tool_router,
+            expansion: toolset.expansion(),
             config: env.config,
             cached_client: Arc::new(RwLock::new(None)),
             last_session_id: Arc::new(Mutex::new(None)),
@@ -496,7 +500,7 @@ impl McpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         let Parameters(SessionTargeted { session_id, .. }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting threads", async |c| {
-            c.threads(Expansion::ALL).await
+            c.threads(self.expansion).await
         })
         .await
     }
@@ -553,7 +557,7 @@ impl McpHandler {
             session_id.as_ref(),
             "Error getting stack trace",
             async |c| {
-                c.stack_trace(thread_id, start_frame, levels, Expansion::ALL)
+                c.stack_trace(thread_id, start_frame, levels, self.expansion)
                     .await
             },
         )
@@ -573,7 +577,7 @@ impl McpHandler {
             ..
         }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting scopes", async |c| {
-            c.scopes(frame_id, Expansion::ALL).await
+            c.scopes(frame_id, self.expansion).await
         })
         .await
     }
@@ -1072,7 +1076,9 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(e),
         };
 
-        let threads_result = match client.threads(Expansion::ALL).await {
+        // The snapshot fetches each stack itself and keeps only the frames,
+        // so any expansion would be discarded.
+        let threads_result = match client.threads(Expansion::NONE).await {
             Ok(r) => r.result,
             Err(e) => return Ok(self.client_err("Error getting threads", &e)),
         };
@@ -1098,7 +1104,7 @@ Response is JSON from the debug adapter."#
                             "name": thread.name,
                         });
                         match client
-                            .stack_trace(thread.id, None, Some(stack_depth), Expansion::ALL)
+                            .stack_trace(thread.id, None, Some(stack_depth), Expansion::NONE)
                             .await
                         {
                             Ok(st) => {

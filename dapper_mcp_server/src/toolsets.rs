@@ -4,6 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use clap::ValueEnum;
+use dapper_session::Expansion;
 use strum::AsRefStr;
 use strum::Display;
 use strum::EnumString;
@@ -163,6 +164,16 @@ impl Toolset {
     pub fn to_tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.to_string()).collect()
     }
+
+    /// The auto-expansion to ask the proxy for: a nested result is inlined
+    /// only when this toolset has the tool that fetches it on its own.
+    pub fn expansion(&self) -> Expansion {
+        Expansion {
+            stack_trace: self.tools.contains(&DebugTool::StackTrace),
+            scopes: self.tools.contains(&DebugTool::Scopes),
+            locals: self.tools.contains(&DebugTool::Variables),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,6 +197,47 @@ mod tests {
 
         assert!(!toolset.contains_tool("debug_evaluate_command"));
         assert!(!toolset.contains_tool("nonexistent"));
+    }
+
+    #[test]
+    fn expansion_follows_the_toolset_tools() {
+        for builtin in [
+            BuiltinToolset::Minimal,
+            BuiltinToolset::Standard,
+            BuiltinToolset::Full,
+        ] {
+            assert_eq!(
+                Toolset::from(builtin).expansion(),
+                Expansion::ALL,
+                "{builtin} has every inspection tool, so it keeps every expansion"
+            );
+        }
+
+        let no_scopes = Toolset::custom(
+            "no_scopes".to_string(),
+            vec![DebugTool::Threads, DebugTool::StackTrace],
+        );
+        assert_eq!(
+            no_scopes.expansion(),
+            Expansion {
+                stack_trace: true,
+                scopes: false,
+                locals: false,
+            }
+        );
+
+        let no_stack_trace = Toolset::custom(
+            "no_stack_trace".to_string(),
+            vec![DebugTool::Threads, DebugTool::Scopes],
+        );
+        assert_eq!(
+            no_stack_trace.expansion(),
+            Expansion {
+                stack_trace: false,
+                scopes: true,
+                locals: false,
+            }
+        );
     }
 
     #[test]

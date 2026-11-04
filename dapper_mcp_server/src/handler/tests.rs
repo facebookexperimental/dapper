@@ -1677,9 +1677,18 @@ struct FakeControlPlane {
     /// The error text `eval_repl` fails with as a rejected `evaluate`
     /// request; unfaked when `None`.
     eval_rejection: Option<String>,
+    /// The `Expansion` each `threads`/`stack_trace` call received, by call.
+    expansions: Arc<Mutex<Vec<(&'static str, Expansion)>>>,
 }
 
 impl FakeControlPlane {
+    fn record_expansion(&self, call: &'static str, expansion: Expansion) {
+        self.expansions
+            .lock()
+            .expect("expansion recorder mutex should not be poisoned")
+            .push((call, expansion));
+    }
+
     async fn stack_trace_result(&self, thread_id: ThreadId) -> anyhow::Result<StackTraceResult> {
         if let Some(turn) = self
             .stack_answer_order
@@ -1722,7 +1731,11 @@ impl DapperControlPlane for FakeControlPlane {
         unfaked()
     }
 
-    async fn threads(&self, _: Expansion) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
+    async fn threads(
+        &self,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
+        self.record_expansion("threads", expansion);
         Ok(ControlPlaneResult {
             result: ThreadsResult {
                 threads: self.threads.clone(),
@@ -1737,8 +1750,9 @@ impl DapperControlPlane for FakeControlPlane {
         thread_id: ThreadId,
         _: Option<i64>,
         _: Option<i64>,
-        _: Expansion,
+        expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
+        self.record_expansion("stack_trace", expansion);
         Ok(ControlPlaneResult {
             result: self.stack_trace_result(thread_id).await?,
             context: None,
@@ -1852,6 +1866,10 @@ impl FakeSession {
         full_toolset_handler_with(self.env())
     }
 
+    fn handler_with(&self, toolset: &Toolset) -> McpHandler {
+        McpHandler::new(self.env(), toolset)
+    }
+
     /// `debug_dap_request` exists only in the raw toolset.
     fn raw_handler(&self) -> McpHandler {
         let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Raw);
@@ -1934,6 +1952,88 @@ async fn thread_snapshot_keeps_thread_order_when_stacks_arrive_out_of_order() {
         .map(|thread| thread["id"].as_i64())
         .collect();
     assert_eq!(ids, [Some(1), Some(2), Some(3)], "got {snapshot:#}");
+}
+
+/// Call `threads` then `stack_trace` through a handler built from `toolset`
+/// and return the expansions the control plane received.
+async fn expansions_requested_by(toolset: &Toolset) -> Vec<(&'static str, Expansion)> {
+    let fake = FakeControlPlane {
+        threads: vec![Thread {
+            id: 1.into(),
+            name: "main".to_owned(),
+        }],
+        ..Default::default()
+    };
+    let recorded = Arc::clone(&fake.expansions);
+    let fake = FakeSession::start(fake).await;
+
+    for (tool, arguments) in [
+        ("debug_threads_command", json!({})),
+        ("debug_stack_trace_command", json!({"thread_id": 1})),
+    ] {
+        let result = call_tool_e2e_with(fake.handler_with(toolset), tool, arguments)
+            .await
+            .expect("the call itself must succeed at the MCP layer");
+        assert_eq!(result.is_error, Some(false), "{tool}: {}", text_of(&result));
+    }
+
+    recorded
+        .lock()
+        .expect("expansion recorder mutex should not be poisoned")
+        .clone()
+}
+
+#[tokio::test]
+async fn inspection_tools_request_the_expansion_their_toolset_can_use() {
+    assert_eq!(
+        expansions_requested_by(&Toolset::from(BuiltinToolset::Full)).await,
+        [("threads", Expansion::ALL), ("stack_trace", Expansion::ALL)],
+        "a toolset with every inspection tool should leave expansion to the proxy"
+    );
+
+    let without_scopes = Expansion {
+        stack_trace: true,
+        scopes: false,
+        locals: false,
+    };
+    assert_eq!(
+        expansions_requested_by(&Toolset::custom(
+            "no_scopes".to_owned(),
+            vec![DebugTool::Threads, DebugTool::StackTrace],
+        ))
+        .await,
+        [("threads", without_scopes), ("stack_trace", without_scopes)],
+        "without the scopes and variables tools, neither should be inlined"
+    );
+}
+
+#[tokio::test]
+async fn thread_snapshot_requests_no_expansion() {
+    let fake = FakeControlPlane {
+        threads: vec![Thread {
+            id: 1.into(),
+            name: "main".to_owned(),
+        }],
+        ..Default::default()
+    };
+    let recorded = Arc::clone(&fake.expansions);
+    let fake = FakeSession::start(fake).await;
+
+    let result = call_tool_e2e_with(fake.handler(), "debug_thread_snapshot", json!({}))
+        .await
+        .expect("the call itself must succeed at the MCP layer");
+    assert_eq!(result.is_error, Some(false), "got {}", text_of(&result));
+
+    assert_eq!(
+        *recorded
+            .lock()
+            .expect("expansion recorder mutex should not be poisoned"),
+        [
+            ("threads", Expansion::NONE),
+            ("stack_trace", Expansion::NONE)
+        ],
+        "the snapshot keeps only frames, so it should not pay for any expansion"
+    );
 }
 
 // -- stack_trace: ThreadId, Option<i64> levels, Option<i64> start_frame --

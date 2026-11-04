@@ -16,6 +16,7 @@ use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
 use dapper_control_proto::EvalRequest;
 use dapper_control_proto::EvalResponse;
+use dapper_control_proto::Expansion as ProtoExpansion;
 use dapper_control_proto::NavigateRequest;
 use dapper_control_proto::NavigateResponse;
 use dapper_control_proto::NavigationType;
@@ -48,6 +49,7 @@ use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::protocol::DapRequestRejected;
 use dapper_session::CapabilitiesResult;
+use dapper_session::Expansion;
 use dapper_session::Port;
 use dapper_session::ScopeId;
 use dapper_session::SessionId;
@@ -141,10 +143,14 @@ where
 
     async fn threads(
         &self,
-        _request: Request<ThreadsRequest>,
+        request: Request<ThreadsRequest>,
     ) -> Result<Response<ThreadsResponse>, Status> {
         to_tonic(async {
-            let cp_result = self.control_plane.threads().await?;
+            let ThreadsRequest { expansion } = request.into_inner();
+            let cp_result = self
+                .control_plane
+                .threads(expansion_from_proto(expansion))
+                .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(ThreadsResponse {
                 result_json,
@@ -163,10 +169,16 @@ where
                 thread_id,
                 start_frame,
                 levels,
+                expansion,
             } = request.into_inner();
             let cp_result = self
                 .control_plane
-                .stack_trace(thread_id.into(), start_frame, levels)
+                .stack_trace(
+                    thread_id.into(),
+                    start_frame,
+                    levels,
+                    expansion_from_proto(expansion),
+                )
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(StackTraceResponse {
@@ -182,8 +194,14 @@ where
         request: Request<ScopesRequest>,
     ) -> Result<Response<ScopesResponse>, Status> {
         to_tonic(async {
-            let ScopesRequest { frame_id } = request.into_inner();
-            let cp_result = self.control_plane.scopes(frame_id.into()).await?;
+            let ScopesRequest {
+                frame_id,
+                expansion,
+            } = request.into_inner();
+            let cp_result = self
+                .control_plane
+                .scopes(frame_id.into(), expansion_from_proto(expansion))
+                .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(ScopesResponse {
                 result_json,
@@ -596,6 +614,33 @@ fn navigation_type_to_proto(
     }
 }
 
+/// Proto <-> domain conversions for `Expansion`, free functions for the same
+/// orphan-rule reason. A gate the caller left unset, as a client predating it
+/// does, allows the expansion.
+fn expansion_from_proto(proto: Option<ProtoExpansion>) -> Expansion {
+    let Some(proto) = proto else {
+        return Expansion::ALL;
+    };
+    Expansion {
+        stack_trace: proto.stack_trace.unwrap_or(true),
+        scopes: proto.scopes.unwrap_or(true),
+        locals: proto.locals.unwrap_or(true),
+    }
+}
+
+fn expansion_to_proto(expansion: Expansion) -> ProtoExpansion {
+    let Expansion {
+        stack_trace,
+        scopes,
+        locals,
+    } = expansion;
+    ProtoExpansion {
+        stack_trace: Some(stack_trace),
+        scopes: Some(scopes),
+        locals: Some(locals),
+    }
+}
+
 /// How the client locates the control plane: an exact port, or discovery of
 /// the unique active session from a store, re-resolved on each call.
 #[derive(Debug, Clone)]
@@ -714,10 +759,15 @@ impl DapperControlPlane for DapperControlPlaneClient {
         Ok(())
     }
 
-    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
+    async fn threads(
+        &self,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
         let mut client = self.get_client().await?;
         let resp = client
-            .threads(ThreadsRequest {})
+            .threads(ThreadsRequest {
+                expansion: Some(expansion_to_proto(expansion)),
+            })
             .await
             .map_err(status_error)?
             .into_inner();
@@ -729,6 +779,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
+        expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<dapper_session::StackTraceResult>> {
         let mut client = self.get_client().await?;
         let resp = client
@@ -736,6 +787,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
                 thread_id: thread_id.into(),
                 start_frame,
                 levels,
+                expansion: Some(expansion_to_proto(expansion)),
             })
             .await
             .map_err(status_error)?
@@ -746,11 +798,13 @@ impl DapperControlPlane for DapperControlPlaneClient {
     async fn scopes(
         &self,
         frame_id: FrameId,
+        expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<dapper_session::ScopesResult>> {
         let mut client = self.get_client().await?;
         let resp = client
             .scopes(ScopesRequest {
                 frame_id: frame_id.into(),
+                expansion: Some(expansion_to_proto(expansion)),
             })
             .await
             .map_err(status_error)?
@@ -982,13 +1036,23 @@ mod tests {
     struct TestServer {
         stop_was_called: Arc<AtomicBool>,
         breakpoint_specs: Arc<Mutex<Vec<SourceBreakpoint>>>,
+        /// The `Expansion` each threads/stack_trace/scopes call received.
+        expansions: Arc<Mutex<Vec<Expansion>>>,
     }
     impl TestServer {
         fn new(stop_was_called: Arc<AtomicBool>) -> Self {
             TestServer {
                 stop_was_called,
                 breakpoint_specs: Arc::new(Mutex::new(Vec::new())),
+                expansions: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn record_expansion(&self, expansion: Expansion) {
+            self.expansions
+                .lock()
+                .expect("expansion recorder mutex should not be poisoned")
+                .push(expansion);
         }
     }
     #[async_trait::async_trait]
@@ -1014,7 +1078,9 @@ mod tests {
 
         async fn threads(
             &self,
+            expansion: Expansion,
         ) -> anyhow::Result<ControlPlaneResult<dapper_session::ThreadsResult>> {
+            self.record_expansion(expansion);
             Ok(ControlPlaneResult {
                 result: dapper_session::ThreadsResult {
                     threads: vec![Thread {
@@ -1049,7 +1115,9 @@ mod tests {
             thread_id: ThreadId,
             _start_frame: Option<i64>,
             _levels: Option<i64>,
+            expansion: Expansion,
         ) -> anyhow::Result<ControlPlaneResult<dapper_session::StackTraceResult>> {
+            self.record_expansion(expansion);
             Ok(ControlPlaneResult {
                 result: dapper_session::StackTraceResult {
                     stack_frames: vec![StackFrame {
@@ -1067,7 +1135,9 @@ mod tests {
         async fn scopes(
             &self,
             frame_id: FrameId,
+            expansion: Expansion,
         ) -> anyhow::Result<ControlPlaneResult<dapper_session::ScopesResult>> {
+            self.record_expansion(expansion);
             Ok(ControlPlaneResult {
                 result: dapper_session::ScopesResult {
                     scopes: vec![Scope {
@@ -1272,6 +1342,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expansion_survives_the_grpc_round_trip() -> anyhow::Result<()> {
+        let server = TestServer::new(Arc::new(AtomicBool::new(false)));
+        let recorded = Arc::clone(&server.expansions);
+        let control_plane_server = serve(None, server).await?;
+        tokio::task::yield_now().await;
+
+        let client = DapperControlPlaneClient::for_port(control_plane_server.port);
+        let no_locals = Expansion {
+            locals: false,
+            ..Expansion::ALL
+        };
+        let no_scopes = Expansion {
+            scopes: false,
+            ..Expansion::ALL
+        };
+        client.threads(Expansion::NONE).await?;
+        client.stack_trace(1.into(), None, None, no_scopes).await?;
+        client.scopes(2.into(), no_locals).await?;
+        control_plane_server.handle.abort();
+
+        let recorded = recorded
+            .lock()
+            .expect("expansion recorder mutex should not be poisoned")
+            .clone();
+        assert_eq!(
+            recorded,
+            vec![Expansion::NONE, no_scopes, no_locals],
+            "each call should reach the server with the gates the client sent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unset_expansion_gates_allow_expansion() {
+        assert_eq!(
+            expansion_from_proto(None),
+            Expansion::ALL,
+            "a client predating `Expansion` sends none and keeps today's behavior"
+        );
+        assert_eq!(
+            expansion_from_proto(Some(ProtoExpansion {
+                stack_trace: None,
+                scopes: Some(false),
+                locals: None,
+            })),
+            Expansion {
+                scopes: false,
+                ..Expansion::ALL
+            },
+            "only the gate that was set should close"
+        );
+    }
+
+    #[tokio::test]
     async fn set_breakpoints_grpc_preserves_source_breakpoint_metadata() -> anyhow::Result<()> {
         let expected = SourceBreakpoint {
             line: 42,
@@ -1325,7 +1449,7 @@ mod tests {
         let eval_with_frame_result = client.eval_repl("step", Some(2.into())).await?;
         assert_eq!(eval_with_frame_result, "eval result for: step (frame 2)");
 
-        let (threads, threads_ctx) = client.threads().await?.into_parts();
+        let (threads, threads_ctx) = client.threads(Expansion::ALL).await?.into_parts();
         assert_eq!(threads.threads.len(), 1);
         assert_eq!(threads.threads[0].name, "MainThread");
         let ctx = threads_ctx.expect("expected context");
@@ -1333,12 +1457,15 @@ mod tests {
         assert_eq!(session.session_id.as_str(), "test-session");
         assert_eq!(session.session_type.as_deref(), Some("debugpy"));
 
-        let (stack_trace, _) = client.stack_trace(1.into(), None, None).await?.into_parts();
+        let (stack_trace, _) = client
+            .stack_trace(1.into(), None, None, Expansion::ALL)
+            .await?
+            .into_parts();
         assert_eq!(stack_trace.stack_frames.len(), 1);
         assert_eq!(stack_trace.stack_frames[0].name, "main_entry");
         assert_eq!(stack_trace.thread_id, 1.into());
 
-        let (scopes, _) = client.scopes(2.into()).await?.into_parts();
+        let (scopes, _) = client.scopes(2.into(), Expansion::ALL).await?.into_parts();
         assert_eq!(scopes.scopes.len(), 1);
         assert_eq!(scopes.scopes[0].name, "Locals");
         assert_eq!(scopes.frame_id, 2.into());

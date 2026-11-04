@@ -8,6 +8,7 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_session::CapabilitiesResult;
+use dapper_session::Expansion;
 use dapper_session::NavigationResult;
 use dapper_session::RawDapResult;
 use dapper_session::ScopesResult;
@@ -29,19 +30,30 @@ pub trait DapperControlPlane: Send + Sync {
     /// Request the server to shutdown
     async fn stop(&self) -> anyhow::Result<()>;
 
-    /// List all available threads in the debugged process
-    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<ThreadsResult>>;
+    /// List all available threads in the debugged process, expanding nested
+    /// results as far as `expansion` and the proxy's config allow
+    async fn threads(
+        &self,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ThreadsResult>>;
 
-    /// Get stack trace for a specific thread
+    /// Get stack trace for a specific thread, expanding nested results as far
+    /// as `expansion` and the proxy's config allow
     async fn stack_trace(
         &self,
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
+        expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>>;
 
-    /// Get scopes for a specific stack frame
-    async fn scopes(&self, frame_id: FrameId) -> anyhow::Result<ControlPlaneResult<ScopesResult>>;
+    /// Get scopes for a specific stack frame, expanding the locals when
+    /// `expansion` and the proxy's config allow
+    async fn scopes(
+        &self,
+        frame_id: FrameId,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ScopesResult>>;
 
     /// Get variables for a specific variables reference
     async fn variables(

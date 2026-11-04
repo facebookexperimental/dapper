@@ -1722,7 +1722,7 @@ impl DapperControlPlane for FakeControlPlane {
         unfaked()
     }
 
-    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
+    async fn threads(&self, _: Expansion) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
         Ok(ControlPlaneResult {
             result: ThreadsResult {
                 threads: self.threads.clone(),
@@ -1737,6 +1737,7 @@ impl DapperControlPlane for FakeControlPlane {
         thread_id: ThreadId,
         _: Option<i64>,
         _: Option<i64>,
+        _: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
         Ok(ControlPlaneResult {
             result: self.stack_trace_result(thread_id).await?,
@@ -1744,7 +1745,11 @@ impl DapperControlPlane for FakeControlPlane {
         })
     }
 
-    async fn scopes(&self, _: FrameId) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
+    async fn scopes(
+        &self,
+        _: FrameId,
+        _: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
         unfaked()
     }
 

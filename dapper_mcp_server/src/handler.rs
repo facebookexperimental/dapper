@@ -27,6 +27,7 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::requests::ReadMemoryArguments;
 use dapper_dap_protocol::requests::WriteMemoryArguments;
 use dapper_dap_protocol::responses::ResponseBody;
+use dapper_session::Expansion;
 use dapper_session::Port;
 use dapper_session::ScopeClause;
 use dapper_session::ScopeId;
@@ -495,7 +496,7 @@ impl McpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         let Parameters(SessionTargeted { session_id, .. }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting threads", async |c| {
-            c.threads().await
+            c.threads(Expansion::ALL).await
         })
         .await
     }
@@ -551,7 +552,10 @@ impl McpHandler {
         self.run_rendered(
             session_id.as_ref(),
             "Error getting stack trace",
-            async |c| c.stack_trace(thread_id, start_frame, levels).await,
+            async |c| {
+                c.stack_trace(thread_id, start_frame, levels, Expansion::ALL)
+                    .await
+            },
         )
         .await
     }
@@ -569,7 +573,7 @@ impl McpHandler {
             ..
         }) = request;
         self.run_rendered(session_id.as_ref(), "Error getting scopes", async |c| {
-            c.scopes(frame_id).await
+            c.scopes(frame_id, Expansion::ALL).await
         })
         .await
     }
@@ -1068,7 +1072,7 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(e),
         };
 
-        let threads_result = match client.threads().await {
+        let threads_result = match client.threads(Expansion::ALL).await {
             Ok(r) => r.result,
             Err(e) => return Ok(self.client_err("Error getting threads", &e)),
         };
@@ -1093,7 +1097,10 @@ Response is JSON from the debug adapter."#
                             "id": thread.id.0,
                             "name": thread.name,
                         });
-                        match client.stack_trace(thread.id, None, Some(stack_depth)).await {
+                        match client
+                            .stack_trace(thread.id, None, Some(stack_depth), Expansion::ALL)
+                            .await
+                        {
                             Ok(st) => {
                                 entry["stack_frames"] =
                                     serde_json::to_value(&st.result.stack_frames)

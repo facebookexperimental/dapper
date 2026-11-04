@@ -52,6 +52,9 @@ pub use breakpoint_info::BreakpointInfo;
 mod exception_filter_entry;
 pub use exception_filter_entry::ExceptionFilterEntry;
 
+mod expansion;
+pub use expansion::Expansion;
+
 mod output_event;
 pub use output_event::BufferedOutput;
 pub use output_event::OutputEvent;

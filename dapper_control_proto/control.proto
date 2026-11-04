@@ -19,7 +19,21 @@ message EvalResponse {
 message StopRequest {}
 message StopResponse {}
 
-message ThreadsRequest {}
+// Gates on the nested results a `Threads`, `StackTrace` or `Scopes` call may
+// fold into its response. The proxy expands a level only when both its config
+// and the gate allow it; an unset gate, or an unset `Expansion`, allows it.
+message Expansion {
+  // Attach the first thread's stack trace to `Threads`.
+  optional bool stack_trace = 1;
+  // Attach the topmost frame's scopes to a stack trace.
+  optional bool scopes = 2;
+  // Attach the locals scope's variables to scopes.
+  optional bool locals = 3;
+}
+
+message ThreadsRequest {
+  Expansion expansion = 1;
+}
 message ThreadsResponse {
   // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
   reserved 1;
@@ -32,6 +46,7 @@ message StackTraceRequest {
   int64 thread_id = 1;
   optional int64 start_frame = 2;
   optional int64 levels = 3;
+  Expansion expansion = 4;
 }
 message StackTraceResponse {
   // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.
@@ -43,6 +58,7 @@ message StackTraceResponse {
 
 message ScopesRequest {
   int64 frame_id = 1;
+  Expansion expansion = 2;
 }
 message ScopesResponse {
   // Tag 1 was legacy pre-rendered plaintext; responses are structured-only.

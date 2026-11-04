@@ -22,6 +22,7 @@ use dapper_proxy_server::ControlPlaneStatus;
 use dapper_proxy_server::DapperEvent;
 use dapper_proxy_server::ProxyClient;
 use dapper_session::CapabilitiesResult;
+use dapper_session::Expansion;
 use dapper_session::NavigationResult;
 use dapper_session::NavigationType;
 use dapper_session::Port;
@@ -84,8 +85,11 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
         Ok(())
     }
 
-    async fn threads(&self) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
-        let result = self.proxy_client.threads().await?;
+    async fn threads(
+        &self,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
+        let result = self.proxy_client.threads(expansion).await?;
         Ok(self.structured(result))
     }
 
@@ -94,16 +98,21 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
+        expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
         let result = self
             .proxy_client
-            .stack_trace(thread_id, start_frame, levels)
+            .stack_trace(thread_id, start_frame, levels, expansion)
             .await?;
         Ok(self.structured(result))
     }
 
-    async fn scopes(&self, frame_id: FrameId) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
-        let result = self.proxy_client.scopes(frame_id).await?;
+    async fn scopes(
+        &self,
+        frame_id: FrameId,
+        expansion: Expansion,
+    ) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
+        let result = self.proxy_client.scopes(frame_id, expansion).await?;
         Ok(self.structured(result))
     }
 

@@ -39,6 +39,7 @@ use dapper_dap_protocol::responses::StackTraceResponseBody;
 use dapper_dap_protocol::responses::ThreadsResponseBody;
 use dapper_dap_protocol::responses::VariablesResponseBody;
 use dapper_session::ExceptionFilterEntry;
+use dapper_session::Expansion;
 use dapper_session::NavigateResult;
 use dapper_session::NavigationType;
 use dapper_session::RawDapResult;
@@ -218,17 +219,23 @@ impl ProxyClient {
         Ok(body.result)
     }
 
-    pub async fn threads(&self) -> anyhow::Result<dapper_session::ThreadsResult> {
+    pub async fn threads(
+        &self,
+        expansion: Expansion,
+    ) -> anyhow::Result<dapper_session::ThreadsResult> {
         let request = dap::Request::new(RequestCommand::Threads);
 
         let body: ThreadsResponseBody = self.round_trip_body(request).await?;
         let threads = body.threads;
 
-        let stack_trace = if self.config.threads.show_stacktrace
+        let stack_trace = if expansion.stack_trace
+            && self.config.threads.show_stacktrace
             && threads.len() <= self.config.threads.expand_stacktrace_threshold
             && let Some(first_thread) = threads.first()
         {
-            self.stack_trace(first_thread.id, None, None).await.ok()
+            self.stack_trace(first_thread.id, None, None, expansion)
+                .await
+                .ok()
         } else {
             None
         };
@@ -245,6 +252,7 @@ impl ProxyClient {
         thread_id: ThreadId,
         start_frame: Option<i64>,
         levels: Option<i64>,
+        expansion: Expansion,
     ) -> anyhow::Result<dapper_session::StackTraceResult> {
         let effective_start_frame = start_frame.unwrap_or(0);
         anyhow::ensure!(
@@ -269,10 +277,11 @@ impl ProxyClient {
         let stack_frames: Vec<_> = all_frames.into_iter().take(frames_to_show).collect();
 
         let scopes = if effective_start_frame == 0
+            && expansion.scopes
             && self.config.stack_trace.expand_scopes
             && let Some(first_frame) = stack_frames.first()
         {
-            self.scopes(first_frame.id).await.ok()
+            self.scopes(first_frame.id, expansion).await.ok()
         } else {
             None
         };
@@ -287,7 +296,11 @@ impl ProxyClient {
         })
     }
 
-    pub async fn scopes(&self, frame_id: FrameId) -> anyhow::Result<dapper_session::ScopesResult> {
+    pub async fn scopes(
+        &self,
+        frame_id: FrameId,
+        expansion: Expansion,
+    ) -> anyhow::Result<dapper_session::ScopesResult> {
         let request = dap::Request::new(RequestCommand::Scopes(ScopesArguments {
             frame_id,
             ..Default::default()
@@ -296,7 +309,7 @@ impl ProxyClient {
         let body: ScopesResponseBody = self.round_trip_body(request).await?;
         let scopes = body.scopes;
 
-        let (locals, locals_reference) = if self.config.scopes.expand_locals {
+        let (locals, locals_reference) = if expansion.locals && self.config.scopes.expand_locals {
             let locals_scope = scopes
                 .iter()
                 .find(|s| s.is_locals() && s.variables_reference.has_children());
@@ -1015,7 +1028,11 @@ pub struct ListenerPayload {
 mod tests {
     use dapper_dap_protocol::capabilities::Capabilities;
     use dapper_dap_protocol::data_types::Breakpoint;
+    use dapper_dap_protocol::data_types::Scope;
+    use dapper_dap_protocol::data_types::StackFrame;
+    use dapper_dap_protocol::data_types::Thread;
     use dapper_dap_protocol::data_types::ThreadId;
+    use dapper_dap_protocol::data_types::Variable;
     use dapper_dap_protocol::enums::StoppedReason;
     use dapper_dap_protocol::events::StoppedEventBody;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
@@ -1587,12 +1604,203 @@ mod tests {
             .expect_err("a raw request should fail instead of reporting a timeout");
     }
 
+    /// Answers `threads`, `stackTrace`, `scopes` and `variables` requests
+    /// with one thread, one frame, a locals scope with children and one
+    /// variable, and returns the commands it answered, in order, once the
+    /// client hangs up.
+    fn spawn_inspection_mock(
+        mut rx: mpsc::UnboundedReceiver<ProxyRequest>,
+    ) -> tokio::task::JoinHandle<Vec<String>> {
+        tokio::spawn(async move {
+            let mut commands = Vec::new();
+            while let Some(req) = rx.recv().await {
+                let dap::Message::Request(dap_req) = &req.message else {
+                    panic!("expected a debugger request");
+                };
+                let body = match &dap_req.command {
+                    RequestCommand::Threads => ResponseBody::Threads(ThreadsResponseBody {
+                        threads: vec![Thread {
+                            id: ThreadId(1),
+                            name: "main".to_owned(),
+                        }],
+                        ..Default::default()
+                    }),
+                    RequestCommand::StackTrace(_) => {
+                        ResponseBody::StackTrace(StackTraceResponseBody {
+                            stack_frames: vec![StackFrame {
+                                id: FrameId(10),
+                                name: "top".to_owned(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        })
+                    }
+                    RequestCommand::Scopes(_) => ResponseBody::Scopes(ScopesResponseBody {
+                        scopes: vec![Scope {
+                            name: "Locals".to_owned(),
+                            variables_reference: VariablesReference(20),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    RequestCommand::Variables(_) => {
+                        ResponseBody::Variables(VariablesResponseBody {
+                            variables: vec![Variable {
+                                name: "x".to_owned(),
+                                value: "42".to_owned(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        })
+                    }
+                    other => panic!("unexpected request `{}`", other.command_name()),
+                };
+                commands.push(dap_req.command_name().to_owned());
+
+                let (msg_tx, _) = broadcast::channel::<Arc<dap::Message>>(16);
+                let messages = msg_tx.subscribe();
+                let response = dap::Response {
+                    seq: Seq(2),
+                    request_seq: dap_req.seq,
+                    success: true,
+                    message: None,
+                    body,
+                };
+                msg_tx.send(Arc::new(response.into())).unwrap();
+                let _ = req.result.send(ListenerPayload {
+                    seq: dap_req.seq,
+                    messages,
+                });
+            }
+            commands
+        })
+    }
+
+    /// Run `threads` with `expansion` against [`spawn_inspection_mock`] and
+    /// return the result along with the commands the debugger received.
+    async fn threads_with(expansion: Expansion) -> (dapper_session::ThreadsResult, Vec<String>) {
+        let (client, rx) = make_client_with_caps(None);
+        let mock = spawn_inspection_mock(rx);
+        let result = client
+            .threads(expansion)
+            .await
+            .expect("threads should succeed against the mock");
+        drop(client);
+        let commands = mock.await.expect("the mock should not panic");
+        (result, commands)
+    }
+
+    #[tokio::test]
+    async fn threads_expands_every_level_the_config_allows() {
+        let (result, commands) = threads_with(Expansion::ALL).await;
+
+        assert_eq!(commands, ["threads", "stackTrace", "scopes", "variables"]);
+        let scopes = result
+            .stack_trace
+            .expect("the first thread's stack trace should be attached")
+            .scopes
+            .expect("the top frame's scopes should be attached");
+        assert_eq!(
+            scopes.locals.expect("the locals should be attached").len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn threads_skips_the_levels_the_caller_gates_off() {
+        let (result, commands) = threads_with(Expansion {
+            locals: false,
+            ..Expansion::ALL
+        })
+        .await;
+        assert_eq!(
+            commands,
+            ["threads", "stackTrace", "scopes"],
+            "no variables request should be sent without the locals gate"
+        );
+        let scopes = result.stack_trace.and_then(|st| st.scopes);
+        assert!(
+            scopes.is_some_and(|s| s.locals.is_none() && s.locals_reference.is_none()),
+            "the scopes should be attached without locals"
+        );
+
+        let (result, commands) = threads_with(Expansion {
+            scopes: false,
+            ..Expansion::ALL
+        })
+        .await;
+        assert_eq!(
+            commands,
+            ["threads", "stackTrace"],
+            "no scopes request should be sent without the scopes gate"
+        );
+        assert!(
+            result.stack_trace.is_some_and(|st| st.scopes.is_none()),
+            "the stack trace should be attached without scopes"
+        );
+
+        let (result, commands) = threads_with(Expansion {
+            stack_trace: false,
+            ..Expansion::ALL
+        })
+        .await;
+        assert_eq!(
+            commands,
+            ["threads"],
+            "nothing past `threads` should be sent without the stack trace gate"
+        );
+        assert!(result.stack_trace.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_caller_gate_cannot_reenable_what_the_config_disables() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (event_channel, _event_rx) = EventChannel::new_pair();
+        let mut config = DapperConfig::default();
+        config.stack_trace.expand_scopes = false;
+        let tracker = DebugSessionTracker::new("test-session".into(), config.clone(), None);
+        let client = ProxyClient::new(
+            ClientId::new("test-client"),
+            tx,
+            event_channel,
+            tracker,
+            config,
+            Arc::default(),
+        );
+        let mock = spawn_inspection_mock(rx);
+
+        let result = client
+            .stack_trace(ThreadId(1), None, None, Expansion::ALL)
+            .await
+            .expect("stack_trace should succeed against the mock");
+        drop(client);
+
+        assert_eq!(mock.await.unwrap(), ["stackTrace"]);
+        assert!(result.scopes.is_none());
+    }
+
+    #[tokio::test]
+    async fn scopes_skips_the_locals_without_the_locals_gate() {
+        let (client, rx) = make_client_with_caps(None);
+        let mock = spawn_inspection_mock(rx);
+
+        let result = client
+            .scopes(FrameId(10), Expansion::NONE)
+            .await
+            .expect("scopes should succeed against the mock");
+        drop(client);
+
+        assert_eq!(mock.await.unwrap(), ["scopes"]);
+        assert_eq!(result.scopes.len(), 1);
+        assert!(result.locals.is_none());
+    }
+
     #[tokio::test]
     async fn test_threads_errors_on_mismatched_body() {
         let (client, rx) = make_client_with_caps(None);
         spawn_next_response_mock(rx);
 
-        let err = client.threads().await.unwrap_err();
+        let err = client.threads(Expansion::ALL).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             "Unexpected response body for threads: got `next`"
@@ -1604,7 +1812,7 @@ mod tests {
         let (client, _rx) = make_client_with_caps(None);
 
         let err = client
-            .stack_trace(ThreadId(1), Some(-1), None)
+            .stack_trace(ThreadId(1), Some(-1), None, Expansion::ALL)
             .await
             .unwrap_err();
 
@@ -1617,7 +1825,7 @@ mod tests {
         spawn_next_response_mock(rx);
 
         let err = client
-            .stack_trace(ThreadId(1), None, None)
+            .stack_trace(ThreadId(1), None, None, Expansion::ALL)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1631,7 +1839,7 @@ mod tests {
         let (client, rx) = make_client_with_caps(None);
         spawn_next_response_mock(rx);
 
-        let err = client.scopes(FrameId(1)).await.unwrap_err();
+        let err = client.scopes(FrameId(1), Expansion::ALL).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             "Unexpected response body for scopes: got `next`"

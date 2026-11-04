@@ -21,6 +21,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_session::Expansion;
 use dapper_session::NavigationType;
 use dapper_session::Port;
 use dapper_session::ScopeId;
@@ -323,7 +324,10 @@ impl Debug {
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Threads {} => {
-                let result = client.threads().await.context("Error getting threads")?;
+                let result = client
+                    .threads(Expansion::ALL)
+                    .await
+                    .context("Error getting threads")?;
                 print_rendered(&result, &config)?;
             }
             DebugCommands::StackTrace {
@@ -332,14 +336,14 @@ impl Debug {
                 start_frame,
             } => {
                 let result = client
-                    .stack_trace(thread_id, start_frame, levels)
+                    .stack_trace(thread_id, start_frame, levels, Expansion::ALL)
                     .await
                     .context("Error getting stack trace")?;
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Scopes { frame_id } => {
                 let result = client
-                    .scopes(frame_id)
+                    .scopes(frame_id, Expansion::ALL)
                     .await
                     .context("Error getting scopes")?;
                 print_rendered(&result, &config)?;

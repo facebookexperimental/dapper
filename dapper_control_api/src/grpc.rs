@@ -476,6 +476,17 @@ fn status_error(status: Status) -> anyhow::Error {
     }
 }
 
+/// Upper bound on a decoded control-plane response. Tonic's 4 MiB default
+/// rejects legitimately large debugger output such as `thread backtrace all`.
+const MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+fn control_plane_client(
+    channel: Channel,
+) -> dapper_control_plane_client::DapperControlPlaneClient<Channel> {
+    dapper_control_plane_client::DapperControlPlaneClient::new(channel)
+        .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE)
+}
+
 struct CachedConnection {
     channel: Channel,
     port: u16,
@@ -709,9 +720,7 @@ impl DapperControlPlaneClient {
             if let Some(cached) = cache.as_ref()
                 && cached.port == port.get()
             {
-                return Ok(dapper_control_plane_client::DapperControlPlaneClient::new(
-                    cached.channel.clone(),
-                ));
+                return Ok(control_plane_client(cached.channel.clone()));
             }
         }
 
@@ -732,9 +741,7 @@ impl DapperControlPlaneClient {
             });
         }
 
-        Ok(dapper_control_plane_client::DapperControlPlaneClient::new(
-            channel,
-        ))
+        Ok(control_plane_client(channel))
     }
 }
 
@@ -1032,6 +1039,9 @@ mod tests {
 
     const FAILING_EVAL_COMMAND: &str = "fail";
     const FAILING_EVAL_ERROR: &str = "evaluation failed\nNameError: name 'x' is not defined";
+    const LARGE_EVAL_COMMAND: &str = "thread backtrace all";
+    /// Larger than tonic's default 4 MiB decoding limit.
+    const LARGE_EVAL_LEN: usize = 5 * 1024 * 1024;
 
     struct TestServer {
         stop_was_called: Arc<AtomicBool>,
@@ -1064,6 +1074,9 @@ mod tests {
         ) -> anyhow::Result<String> {
             if command == FAILING_EVAL_COMMAND {
                 anyhow::bail!(FAILING_EVAL_ERROR);
+            }
+            if command == LARGE_EVAL_COMMAND {
+                return Ok("x".repeat(LARGE_EVAL_LEN));
             }
             match frame_id {
                 Some(fid) => Ok(format!("eval result for: {command} (frame {fid})")),
@@ -1594,6 +1607,24 @@ mod tests {
 
         let err = result.expect_err("the server's eval_repl should fail");
         assert_eq!(format!("{err:#}"), FAILING_EVAL_ERROR);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn client_receives_responses_larger_than_the_tonic_default() -> anyhow::Result<()> {
+        let control_plane_server =
+            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let client = DapperControlPlaneClient::for_port(control_plane_server.port);
+        let large = client.eval_repl(LARGE_EVAL_COMMAND, None).await;
+        let cached = client.eval_repl(LARGE_EVAL_COMMAND, None).await;
+        control_plane_server.handle.abort();
+
+        assert_eq!(large?.len(), LARGE_EVAL_LEN);
+        assert_eq!(
+            cached?.len(),
+            LARGE_EVAL_LEN,
+            "a client built from the cached channel must keep the limit"
+        );
         Ok(())
     }
 

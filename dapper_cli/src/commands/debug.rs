@@ -311,6 +311,7 @@ impl Debug {
             }
             DebugCommands::Stop {} => {
                 client.stop().await?;
+                try_println(format_args!("Stopped the debug session."))?;
             }
             DebugCommands::Eval { command, frame_id } => {
                 let result = client

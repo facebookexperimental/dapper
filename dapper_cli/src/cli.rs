@@ -119,7 +119,11 @@ impl Commands {
             // of an error trace. Both binaries funnel through here.
             Err(err) if is_broken_pipe(&err) => Ok(32),
             Err(err) => {
-                tracing::error!("Dapper top-level error: {:#}", err);
+                tracing::error!(
+                    target: dapper_tracing::NOT_ON_CONSOLE,
+                    "Dapper top-level error: {:#}",
+                    err
+                );
                 Err(err)
             }
         }

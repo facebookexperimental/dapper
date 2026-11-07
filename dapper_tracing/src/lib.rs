@@ -112,9 +112,20 @@ pub fn normalize_reason(reason: &str) -> Option<String> {
 
 pub type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
 
+/// Events with this target are kept out of the stderr console, for errors the
+/// binary already reports to the user itself; log files and telemetry layers
+/// still receive them.
+pub const NOT_ON_CONSOLE: &str = "dapper::not_on_console";
+
 pub fn default_layers() -> Result<Vec<BoxedLayer>> {
     let filter = EnvFilter::from_default_env();
-    let console_layer: BoxedLayer = Box::new(console_logging_layer().with_filter(filter.clone()));
+    let console_layer: BoxedLayer = Box::new(
+        console_logging_layer()
+            .with_filter(filter.clone())
+            .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.target() != NOT_ON_CONSOLE
+            })),
+    );
 
     let mut layers = vec![console_layer];
 

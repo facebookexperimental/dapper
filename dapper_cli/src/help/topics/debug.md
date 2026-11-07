@@ -110,7 +110,45 @@ Send any DAP request directly with the `dap` subcommand:
 {{program}} debug dap continue --arguments '{"threadId": 1}' --wait-for-event
 ```
 
-`--wait-for-event` blocks until the next `stopped`/`exited` event. `--timeout` bounds the request and, with `--wait-for-event`, the event wait (default 60 s; 0 also means 60). Output is pretty-printed JSON; pipe into `jq` for further processing.
+`--wait-for-event` blocks until the next `stopped`/`exited` event. `--timeout` bounds the request and, with `--wait-for-event`, the event wait (default 60 s; 0 also means 60). Output is pretty-printed JSON; pipe it into `jq`, if available, for further processing.
+
+## Machine-readable output
+
+Add `--json` after `debug` (or set `DAPPER_OUTPUT_JSON=true`) to get one JSON object per command: `result` holds the command's own data and `context` the session state. Text output is laid out for reading; JSON keeps every field, so use it when a script needs particular values.
+
+If `jq` is available, these pick out common fields. Without it, read the JSON as is.
+
+```bash
+# Frame ids, names and locations of thread 1
+{{program}} debug --json stack-trace 1 | jq -r '.result.stackFrames[] | "\(.id)\t\(.name)\t\(.source.path):\(.line)"'
+
+# How a continue ended: stopped, exited, terminated or timedOut
+{{program}} debug --json continue 1 | jq -r '.result.result.type'
+
+# One local of the innermost frame, in full
+{{program}} debug --json stack-trace 1 | jq -r '.result.scopes.locals[] | select(.name == "order") | .value'
+
+# An evaluation result, in a frame id from this stop's stack-trace
+{{program}} debug --json eval "len(orders)" --frame-id 1001 | jq -r '.result'
+
+# Execution state: status, stopped thread, stop reason
+{{program}} debug --json status | jq '.context.executionState'
+```
+
+A `continue` that stopped returns:
+
+```json
+{
+  "result": {
+    "navigationType": "continue",
+    "result": {"type": "stopped", "data": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}}
+  },
+  "context": {
+    "session": {"sessionId": "7e84ab68-1e64-4203-87c3-9c5952107ced", "type": "launch", "program": "/path/to/invoice.par"},
+    "executionState": {"version": 3, "status": "stopped", "threadId": 1, "stopReason": "breakpoint"}
+  }
+}
+```
 
 ## Sessions
 

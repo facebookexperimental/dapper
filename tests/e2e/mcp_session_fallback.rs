@@ -39,13 +39,9 @@ async fn call_threads(
 fn parse_session_id_from_response(content: &str) -> Option<SessionId> {
     content
         .lines()
-        .find(|line| line.starts_with("Session: "))
-        .and_then(|line| {
-            line.strip_prefix("Session: ")?
-                .split(" | ")
-                .next()
-                .map(|s| s.into())
-        })
+        .find_map(|line| line.strip_prefix("Session "))
+        .and_then(|rest| rest.split(" | ").next())
+        .map(|id| id.into())
 }
 
 async fn list_session_ids(scope: &dapper_session::ScopeId) -> anyhow::Result<Vec<SessionId>> {

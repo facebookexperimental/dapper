@@ -461,22 +461,21 @@ pub fn assert_context_contains_session_info(content: &str) -> Result<()> {
         .and_then(serde_json::Value::as_str)
         .context("launch argument overrides must identify the debugger with `type`")?;
 
+    let program = debuggee
+        .file_name()
+        .context("the test debuggee path should name a file")?
+        .to_string_lossy();
+    let header = content
+        .lines()
+        .find(|line| line.starts_with("Session "))
+        .with_context(|| format!("response should start with a session header: {content}"))?;
     anyhow::ensure!(
-        content.contains("Session: "),
-        "response should contain a session ID in its context header: {content}"
+        header.contains(&format!(" | {debugger} launch | ")),
+        "the session header should identify a `{debugger}` launch: {header}"
     );
     anyhow::ensure!(
-        content.contains(&format!("Debugger: {debugger}")),
-        "response should identify debugger `{debugger}` in its context header: {content}"
-    );
-    anyhow::ensure!(
-        content.contains("Type: launch"),
-        "response should identify a launch request in its context header: {content}"
-    );
-    anyhow::ensure!(
-        content.contains(&format!("Program: {}", debuggee.display())),
-        "response should identify program `{}` in its context header: {content}",
-        debuggee.display()
+        header.ends_with(&format!(" | {program}")),
+        "the session header should name program `{program}`: {header}"
     );
     Ok(())
 }

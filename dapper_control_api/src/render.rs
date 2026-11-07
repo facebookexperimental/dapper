@@ -115,8 +115,7 @@ mod tests {
         let config = DapperConfig::default();
         let output = render_plaintext(&result, &config);
 
-        assert!(output.contains("Session: test-123"));
-        assert!(output.contains("Debugger: debugpy"));
+        assert!(output.contains("Session test-123 | debugpy"));
         assert!(output.contains("___"));
         assert!(output.contains("Threads:"));
     }

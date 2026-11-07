@@ -19,21 +19,31 @@ use crate::response_context_output::OutputSummary;
 use crate::response_context_output::ResponseContextOutput;
 use crate::response_context_output::SessionInfoOutput;
 
+/// One short line naming the session, so a change of target between calls is
+/// visible at the top of the next response. The JSON output carries full ids
+/// and paths.
 pub(crate) fn format_context_header(session: &SessionInfoOutput) -> String {
-    let mut parts = vec![format!("Session: {}", session.session_id)];
+    let mut parts = vec![format!("Session {}", session.session_id)];
 
-    if let Some(debugger) = session.debugger {
-        parts.push(format!("Debugger: {}", debugger));
-    }
-
-    if let Some(request_type) = session.request_type {
-        parts.push(format!("Type: {}", request_type));
+    let kind = [
+        session.debugger.map(str::to_owned),
+        session.request_type.map(|t| t.to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ");
+    if !kind.is_empty() {
+        parts.push(kind);
     }
     if let Some(program) = session.program {
-        parts.push(format!("Program: {}", program));
+        let name = std::path::Path::new(program)
+            .file_name()
+            .map_or(program.into(), |name| name.to_string_lossy());
+        parts.push(name.into_owned());
     }
     if let Some(pid) = session.pid {
-        parts.push(format!("PID: {}", pid));
+        parts.push(format!("pid {}", pid));
     }
 
     parts.join(" | ")
@@ -225,11 +235,10 @@ mod tests {
         info.request_type = Some(RequestType::Launch);
         info.program_path = Some("/path/to/main.py".to_string());
 
-        let output = header_for(&info);
-        assert!(output.contains("Session: abc-123"));
-        assert!(output.contains("Debugger: debugpy"));
-        assert!(output.contains("Type: launch"));
-        assert!(output.contains("Program: /path/to/main.py"));
+        assert_eq!(
+            header_for(&info),
+            "Session abc-123 | debugpy launch | main.py"
+        );
     }
 
     #[test]
@@ -239,17 +248,16 @@ mod tests {
         info.request_type = Some(RequestType::Attach);
         info.debuggee_process_id = Some(12345);
 
-        let output = header_for(&info);
-        assert!(output.contains("Session: def-456"));
-        assert!(output.contains("Debugger: cppdbg"));
-        assert!(output.contains("Type: attach"));
-        assert!(output.contains("PID: 12345"));
+        assert_eq!(
+            header_for(&info),
+            "Session def-456 | cppdbg attach | pid 12345"
+        );
     }
 
     #[test]
     fn format_context_header_minimal_session_info() {
         let info = make_session_info("min-session");
-        assert_eq!(header_for(&info), "Session: min-session");
+        assert_eq!(header_for(&info), "Session min-session");
     }
 
     fn empty_context() -> ResponseContext {

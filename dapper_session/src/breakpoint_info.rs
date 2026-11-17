@@ -31,6 +31,8 @@ pub struct BreakpointInfo {
     pub log_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     #[serde(skip)]
     pub requested: Option<SourceBreakpoint>,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
@@ -58,6 +60,7 @@ impl BreakpointInfo {
         Breakpoint {
             id: self.id,
             verified: self.verified,
+            message: self.message.clone(),
             line: Some(self.line),
             column: self.column,
             source: Some(Source {

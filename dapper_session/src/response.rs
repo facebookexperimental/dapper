@@ -626,6 +626,13 @@ impl fmt::Display for SetBreakpointsResult {
                 "Not Verified:"
             };
             writeln!(f, "  {} Line {}", verified_str, bp.line)?;
+            if !bp.verified
+                && let Some(message) = &bp.message
+            {
+                for line in message.lines().filter(|line| !line.trim().is_empty()) {
+                    writeln!(f, "    {}", line.trim())?;
+                }
+            }
         }
 
         Ok(())
@@ -1518,6 +1525,36 @@ mod tests {
         assert!(output.contains("Set 2 breakpoints in /path/to/file.py:"));
         assert!(output.contains("  Verified: Line 10"));
         assert!(output.contains("  Not Verified: Line 20"));
+    }
+
+    #[test]
+    fn format_set_breakpoints_shows_why_a_breakpoint_is_not_verified() {
+        let result = SetBreakpointsResult {
+            breakpoints: vec![
+                BreakpointInfo {
+                    message: Some("stale reason".into()),
+                    ..make_bp(10, true)
+                },
+                BreakpointInfo {
+                    message: Some(
+                        "Breakpoint in file excluded by filters.\nNote: may be excluded because of \"justMyCode\" option.\n"
+                            .into(),
+                    ),
+                    ..make_bp(20, false)
+                },
+            ],
+            source_path: "/path/to/third-party/lib.py".to_string(),
+            new_count: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            result.to_string(),
+            "Set 2 breakpoints in /path/to/third-party/lib.py:\n  \
+             Verified: Line 10\n  \
+             Not Verified: Line 20\n    \
+             Breakpoint in file excluded by filters.\n    \
+             Note: may be excluded because of \"justMyCode\" option.\n"
+        );
     }
 
     #[test]

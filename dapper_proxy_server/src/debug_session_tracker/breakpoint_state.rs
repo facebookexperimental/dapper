@@ -179,6 +179,9 @@ impl BreakpointState {
 
     fn apply_changed_fields(existing: &mut BreakpointInfo, bp_id: BreakpointId, bp: &Breakpoint) {
         existing.verified = bp.verified;
+        if bp.message.is_some() || bp.verified {
+            existing.message = bp.message.clone();
+        }
         if let Some(line) = Self::event_line(bp_id, bp.line) {
             existing.line = line;
         }
@@ -276,6 +279,7 @@ impl BreakpointState {
                     verified: bp.verified,
                     id: Some(bp_id),
                     column: Self::event_column(bp_id, bp.column),
+                    message: bp.message.clone(),
                     condition: None,
                     log_message: None,
                     ..Default::default()
@@ -319,6 +323,7 @@ pub(crate) fn breakpoints_with_fallback(
                 line,
                 verified: bp.verified,
                 id: bp.id,
+                message: bp.message.clone(),
                 column: bp.column.or_else(|| spec.and_then(|s| s.column)),
                 condition: spec.and_then(|s| s.condition.clone()),
                 hit_condition: spec.and_then(|s| s.hit_condition.clone()),
@@ -448,6 +453,31 @@ mod tests {
         assert_eq!(breakpoints[0].line, 42);
         assert_eq!(breakpoints[0].column, Some(7));
         assert_eq!(breakpoints[0].requested, Some(spec));
+    }
+
+    #[test]
+    fn test_breakpoints_keep_the_adapter_reason_for_an_unverified_breakpoint() {
+        let breakpoints = breakpoints_with_fallback(
+            &[Breakpoint {
+                verified: false,
+                message: Some("Breakpoint in file excluded by filters.".into()),
+                ..Default::default()
+            }],
+            &[SourceBreakpoint {
+                line: 42,
+                ..Default::default()
+            }],
+        );
+
+        assert_eq!(
+            breakpoints[0].message.as_deref(),
+            Some("Breakpoint in file excluded by filters.")
+        );
+        assert_eq!(
+            serde_json::to_value(&breakpoints[0]).expect("breakpoint should serialize")["message"],
+            "Breakpoint in file excluded by filters.",
+            "the reason should reach JSON output"
+        );
     }
 
     #[test]
@@ -584,6 +614,70 @@ mod tests {
         assert_eq!(bps[0].column, Some(4));
         assert!(bps[0].verified);
         assert_eq!(bps[1].line, 20);
+    }
+
+    #[test]
+    fn test_apply_breakpoint_event_changed_replaces_the_adapter_reason() {
+        let mut state = BreakpointState::new();
+        state.update_breakpoints(
+            "/test.py",
+            vec![BreakpointInfo {
+                line: 10,
+                verified: false,
+                id: Some(BreakpointId(1)),
+                message: Some("Waiting for code to be loaded to verify breakpoint.".into()),
+                ..Default::default()
+            }],
+        );
+
+        state.apply_breakpoint_event(
+            &BreakpointEventReason::Changed,
+            &Breakpoint {
+                id: Some(BreakpointId(1)),
+                verified: true,
+                ..Default::default()
+            },
+        );
+
+        let bps = state.get_breakpoints("/test.py");
+        assert!(bps[0].verified);
+        assert_eq!(
+            bps[0].message, None,
+            "a verified breakpoint must not keep the old unverified reason"
+        );
+    }
+
+    #[test]
+    fn test_apply_breakpoint_event_changed_keeps_the_reason_when_still_unverified() {
+        let mut state = BreakpointState::new();
+        state.update_breakpoints(
+            "/test.py",
+            vec![BreakpointInfo {
+                line: 10,
+                verified: false,
+                id: Some(BreakpointId(1)),
+                message: Some("Breakpoint in file excluded by filters.".into()),
+                ..Default::default()
+            }],
+        );
+
+        state.apply_breakpoint_event(
+            &BreakpointEventReason::Changed,
+            &Breakpoint {
+                id: Some(BreakpointId(1)),
+                verified: false,
+                line: Some(11),
+                ..Default::default()
+            },
+        );
+
+        let bps = state.get_breakpoints("/test.py");
+        assert_eq!(bps[0].line, 11);
+        assert_eq!(
+            bps[0].message.as_deref(),
+            Some("Breakpoint in file excluded by filters."),
+            "an event that omits the reason should not erase it"
+        );
     }
 
     #[test]

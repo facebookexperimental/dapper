@@ -4,7 +4,6 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::io::Write;
-use std::str::FromStr;
 
 use anyhow::Context;
 use clap::ArgGroup;
@@ -12,9 +11,9 @@ use clap::Parser;
 use clap::Subcommand;
 use dapper_config::DapperConfig;
 use dapper_config::OutputFormat;
+use dapper_control_api::BreakpointArg;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
-use dapper_control_api::DapperControlPlaneClient;
 use dapper_control_api::RenderedResponse;
 use dapper_control_api::render;
 use dapper_dap_protocol::data_types::FrameId;
@@ -23,12 +22,7 @@ use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_session::Expansion;
 use dapper_session::NavigationType;
-use dapper_session::Port;
-use dapper_session::ScopeId;
-use dapper_session::SessionId;
-use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
-use dapper_session::SessionsResult;
 
 use crate::commands::SessionTarget;
 
@@ -51,53 +45,6 @@ impl From<StepType> for NavigationType {
             StepType::Over => NavigationType::StepOver,
             StepType::Out => NavigationType::StepOut,
             StepType::Back => NavigationType::StepBack,
-        }
-    }
-}
-
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(untagged)]
-enum BreakpointArg {
-    Line(i64),
-    Spec {
-        line: i64,
-        #[serde(default)]
-        condition: Option<String>,
-        #[serde(default, alias = "logMessage")]
-        log_message: Option<String>,
-    },
-}
-
-impl FromStr for BreakpointArg {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(line) = s.parse::<i64>() {
-            return Ok(BreakpointArg::Line(line));
-        }
-        // Interpolate the serde error rather than attaching it as context:
-        // clap renders value-parser errors via `Display`, which drops the
-        // source chain.
-        serde_json::from_str(s).map_err(|e| anyhow::anyhow!("invalid breakpoint spec: {e}"))
-    }
-}
-
-impl From<BreakpointArg> for SourceBreakpoint {
-    fn from(arg: BreakpointArg) -> Self {
-        match arg {
-            BreakpointArg::Line(line) => SourceBreakpoint {
-                line,
-                ..Default::default()
-            },
-            BreakpointArg::Spec {
-                line,
-                condition,
-                log_message,
-            } => SourceBreakpoint {
-                line,
-                condition,
-                log_message,
-                ..Default::default()
-            },
         }
     }
 }
@@ -285,7 +232,9 @@ pub struct Debug {
 
 impl Debug {
     pub async fn run(self, config: DapperConfig) -> anyhow::Result<()> {
-        let client = client_for_target(&self.target)?;
+        let store = SessionStore::default_location()?;
+        let target = self.target.resolve();
+        let client = target.client(&store)?;
 
         match self.command {
             DebugCommands::Status {} => {
@@ -297,12 +246,7 @@ impl Debug {
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Config {} => {
-                let session = find_config_session(
-                    &SessionStore::default_location()?,
-                    self.target.control_port,
-                    self.target.session_id.as_ref(),
-                    self.target.scope_id,
-                )?;
+                let session = target.find_session(&store)?;
                 let output = serde_json::json!({
                     "debugger_args": session.debugger_args,
                     "dapper_config": config,
@@ -432,23 +376,8 @@ impl Debug {
                 print_rendered(&result, &config)?;
             }
             DebugCommands::Sessions {} => {
-                let store = SessionStore::default_location()?;
-                let sessions: Vec<SessionInfo> = match self.target.session_id.as_ref() {
-                    Some(session_id) => store
-                        .find_active_session_with_id(self.target.scope_id.clone(), session_id)
-                        .into_iter()
-                        .collect(),
-                    None => store
-                        .iter_active_sessions(self.target.scope_id.clone())
-                        .collect(),
-                };
-
-                let sessions_result = SessionsResult {
-                    sessions,
-                    scope_id: self.target.scope_id,
-                };
                 let result = ControlPlaneResult {
-                    result: sessions_result,
+                    result: target.list_sessions(&store),
                     context: None,
                 };
                 print_rendered(&result, &config)?;
@@ -495,55 +424,6 @@ impl Debug {
     }
 }
 
-fn client_for_target(target: &SessionTarget) -> anyhow::Result<DapperControlPlaneClient> {
-    if let Some(port) = target.control_port {
-        return Ok(DapperControlPlaneClient::for_port(port));
-    }
-
-    let store = SessionStore::default_location()?;
-    let Some(session_id) = target.session_id.as_ref() else {
-        return Ok(DapperControlPlaneClient::discover(
-            store,
-            target.scope_id.clone(),
-        ));
-    };
-    let session = store
-        .find_active_session_with_id(target.scope_id.clone(), session_id)
-        .with_context(|| format!("no active session found with id {session_id}"))?;
-    let port = session
-        .control_plane_port
-        .with_context(|| format!("session {session_id} has no control plane port"))?;
-    Ok(DapperControlPlaneClient::for_port(port))
-}
-
-fn find_config_session(
-    store: &SessionStore,
-    control_port: Option<Port>,
-    session_id: Option<&SessionId>,
-    scope_id: Option<ScopeId>,
-) -> anyhow::Result<SessionInfo> {
-    if let Some(port) = control_port {
-        // Unscoped like `DapperControlPlaneClient::for_port`: an exported
-        // `DAPPER_SCOPE_ID` must not hide the session `--control-port` names.
-        return store
-            .iter_active_sessions(None)
-            .find(|session| session.control_plane_port == Some(port))
-            .with_context(|| format!("no session found on port {port}"));
-    }
-
-    if let Some(session_id) = session_id {
-        return store
-            .find_active_session_with_id(scope_id, session_id)
-            .with_context(|| format!("no active session found with id {session_id}"));
-    }
-
-    dapper_control_api::resolve_unique_session(
-        store.iter_active_sessions(scope_id.clone()).collect(),
-        &scope_id,
-        None,
-    )
-}
-
 /// Print a line to stdout, returning write errors instead of panicking the
 /// way `println!` does; `Commands::run` maps a closed pipe to exit code 32.
 fn try_println(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
@@ -563,10 +443,10 @@ fn print_rendered<T: std::fmt::Display + serde::Serialize>(
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-
     use clap::Parser;
     use clap::error::ErrorKind;
+    use dapper_session::ScopeId;
+    use dapper_session::SessionId;
 
     use super::*;
 
@@ -656,52 +536,6 @@ mod tests {
     }
 
     #[test]
-    fn config_session_targeting_by_control_port_and_session_id() {
-        let dir = tempfile::tempdir().expect("create temp sessions dir");
-        let store = SessionStore::at(dir.path());
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        let port = Port::try_new(listener.local_addr().expect("local addr").port())
-            .expect("an ephemeral port is non-zero");
-        let session = SessionInfo::generate(
-            "other-scope".into(),
-            Some(port),
-            Some(ScopeId::new("other")),
-            None,
-            None,
-        );
-        store.save(&session).expect("seed the store");
-
-        let found = find_config_session(&store, Some(port), None, Some(ScopeId::new("mine")))
-            .expect("--control-port names the session whatever its scope");
-        assert_eq!(found.session_id, session.session_id);
-
-        let found_by_session = find_config_session(
-            &store,
-            None,
-            Some(&session.session_id),
-            Some(ScopeId::new("other")),
-        )
-        .expect("--session-id should select the matching session in scope");
-        assert_eq!(found_by_session.session_id, session.session_id);
-        assert!(
-            find_config_session(
-                &store,
-                None,
-                Some(&session.session_id),
-                Some(ScopeId::new("mine")),
-            )
-            .is_err(),
-            "--scope-id must constrain --session-id"
-        );
-
-        assert!(
-            find_config_session(&store, None, None, Some(ScopeId::new("mine"))).is_err(),
-            "auto-discovery must still filter by scope"
-        );
-        drop(listener);
-    }
-
-    #[test]
     fn parse_set_exception_breakpoints_with_filters() {
         let debug = Debug::try_parse_from([
             "debug",
@@ -766,51 +600,5 @@ mod tests {
             panic!("passing neither --filter nor --clear-existing must fail to parse");
         };
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn breakpoint_arg_parses_bare_line() {
-        let arg: BreakpointArg = "10".parse().expect("bare line number");
-        assert!(matches!(arg, BreakpointArg::Line(10)));
-        assert_eq!(SourceBreakpoint::from(arg).line, 10);
-    }
-
-    #[test]
-    fn breakpoint_arg_parses_json_spec() {
-        let arg: BreakpointArg = r#"{"line":20,"condition":"x>5"}"#.parse().expect("json spec");
-        let bp = SourceBreakpoint::from(arg);
-        assert_eq!(bp.line, 20);
-        assert_eq!(bp.condition.as_deref(), Some("x>5"));
-        assert_eq!(bp.log_message, None);
-    }
-
-    #[test]
-    fn breakpoint_arg_accepts_log_message_alias() {
-        let arg: BreakpointArg = r#"{"line":30,"logMessage":"x={x}"}"#
-            .parse()
-            .expect("logMessage alias");
-        assert_eq!(
-            SourceBreakpoint::from(arg).log_message.as_deref(),
-            Some("x={x}")
-        );
-    }
-
-    #[test]
-    fn breakpoint_arg_rejects_non_line_non_json() {
-        let err = "not-a-breakpoint"
-            .parse::<BreakpointArg>()
-            .expect_err("neither a line number nor JSON");
-        assert!(
-            err.to_string().starts_with("invalid breakpoint spec: "),
-            "clap renders this via Display, so the serde detail must be inline: {err}"
-        );
-    }
-
-    #[test]
-    fn breakpoint_arg_rejects_json_without_line() {
-        assert!(
-            r#"{"condition":"x>5"}"#.parse::<BreakpointArg>().is_err(),
-            "a spec with no line has nowhere to set a breakpoint"
-        );
     }
 }

@@ -655,7 +655,7 @@ fn expansion_to_proto(expansion: Expansion) -> ProtoExpansion {
 /// How the client locates the control plane: an exact port, or discovery of
 /// the unique active session from a store, re-resolved on each call.
 #[derive(Debug, Clone)]
-enum SessionTarget {
+enum ClientTarget {
     Port(Port),
     Discover {
         store: SessionStore,
@@ -664,7 +664,7 @@ enum SessionTarget {
 }
 
 pub struct DapperControlPlaneClient {
-    target: SessionTarget,
+    target: ClientTarget,
     /// Cached gRPC channel for connection reuse. Invalidated when port changes.
     cached_connection: Arc<Mutex<Option<CachedConnection>>>,
 }
@@ -672,26 +672,26 @@ pub struct DapperControlPlaneClient {
 impl DapperControlPlaneClient {
     /// A client for the control plane listening on a known port.
     pub fn for_port(port: Port) -> Self {
-        Self::with_target(SessionTarget::Port(port))
+        Self::with_target(ClientTarget::Port(port))
     }
 
     /// A client that discovers the unique active session in `store`
     /// (optionally narrowed by `scope_id`) and targets its control plane.
     pub fn discover(store: SessionStore, scope_id: Option<ScopeId>) -> Self {
-        Self::with_target(SessionTarget::Discover { store, scope_id })
+        Self::with_target(ClientTarget::Discover { store, scope_id })
     }
 
-    fn with_target(target: SessionTarget) -> Self {
+    fn with_target(target: ClientTarget) -> Self {
         Self {
             target,
             cached_connection: Arc::new(Mutex::new(None)),
         }
     }
 
-    fn resolve_port(&self) -> anyhow::Result<(Port, Option<SessionId>)> {
+    pub(crate) fn resolve_port(&self) -> anyhow::Result<(Port, Option<SessionId>)> {
         match &self.target {
-            SessionTarget::Port(p) => Ok((*p, None)),
-            SessionTarget::Discover { store, scope_id } => {
+            ClientTarget::Port(p) => Ok((*p, None)),
+            ClientTarget::Discover { store, scope_id } => {
                 let sessions: Vec<SessionInfo> =
                     store.iter_active_sessions(scope_id.clone()).collect();
                 let session = resolve_unique_session(sessions, scope_id, None)?;

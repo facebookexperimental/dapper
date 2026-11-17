@@ -27,3 +27,7 @@ pub use rendered_response::RenderedResponse;
 
 mod protocol;
 pub use protocol::DapperControlPlane;
+
+mod target;
+pub use target::BreakpointArg;
+pub use target::SessionTarget;

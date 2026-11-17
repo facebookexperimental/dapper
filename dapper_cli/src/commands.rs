@@ -34,3 +34,13 @@ pub(crate) struct SessionTarget {
     #[arg(long, env = "DAPPER_SCOPE_ID")]
     scope_id: Option<ScopeId>,
 }
+
+impl SessionTarget {
+    pub(crate) fn resolve(&self) -> dapper_control_api::SessionTarget {
+        dapper_control_api::SessionTarget::from_flags(
+            self.control_port,
+            self.session_id.clone(),
+            self.scope_id.clone(),
+        )
+    }
+}

@@ -45,6 +45,7 @@ pub use harness::setup_stopped_debug_session;
 pub use harness::setup_stopped_fake_debug_session;
 pub use harness::spawn_proxy_from_config;
 pub use harness::start_stopped_debug_session;
+pub use harness::start_stopped_debug_session_with_config_dir;
 pub use harness::test_source_path;
 
 pub const REVERSE_DEBUG_GATING_MSG: &str =

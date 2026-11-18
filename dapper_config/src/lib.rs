@@ -51,6 +51,9 @@ pub struct DapperConfig {
     /// Configuration for dapper's own additions to DAP traffic
     #[serde(default)]
     pub protocol: ProtocolConfig,
+    /// Configuration for request/response round trips with the debug adapter
+    #[serde(default)]
+    pub request: RequestConfig,
 }
 
 /// Configuration for the threads command
@@ -146,6 +149,58 @@ impl NavigateConfig {
             Some(0) | None => None,
             Some(secs) => Some(Duration::from_secs(secs)),
         }
+    }
+}
+
+/// Configuration for request/response round trips with the debug adapter.
+///
+/// Bounds how long an inspection command (threads, stackTrace, scopes,
+/// variables, evaluate, ...) waits for the adapter's response. Without a bound,
+/// an adapter that never answers leaves the command hanging until the session
+/// is killed, since the session idle timeout is reset by any other traffic.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RequestConfig {
+    /// Timeout in seconds for a response to any request other than evaluate.
+    /// Set to 0 or null to wait indefinitely. Defaults to 120 seconds.
+    pub timeout_seconds: Option<u64>,
+    /// Timeout in seconds for a response to evaluate, which runs debuggee code
+    /// and can legitimately take longer. Set to 0 or null to wait indefinitely.
+    /// Defaults to 600 seconds.
+    pub evaluate_timeout_seconds: Option<u64>,
+    /// Whether to send a DAP `cancel` for a request that hit its timeout, so
+    /// the adapter can drop it instead of keeping later requests queued behind
+    /// it. Only sent to adapters that advertise `supportsCancelRequest`.
+    /// Defaults to true.
+    pub cancel_on_timeout: bool,
+}
+
+impl Default for RequestConfig {
+    fn default() -> Self {
+        Self {
+            timeout_seconds: Some(120),
+            evaluate_timeout_seconds: Some(600),
+            cancel_on_timeout: true,
+        }
+    }
+}
+
+impl RequestConfig {
+    /// Returns None if the timeout is disabled (timeout_seconds is 0 or None).
+    pub fn timeout(&self) -> Option<Duration> {
+        seconds_to_timeout(self.timeout_seconds)
+    }
+
+    /// Returns None if the timeout is disabled (evaluate_timeout_seconds is 0 or None).
+    pub fn evaluate_timeout(&self) -> Option<Duration> {
+        seconds_to_timeout(self.evaluate_timeout_seconds)
+    }
+}
+
+fn seconds_to_timeout(seconds: Option<u64>) -> Option<Duration> {
+    match seconds {
+        Some(0) | None => None,
+        Some(secs) => Some(Duration::from_secs(secs)),
     }
 }
 
@@ -313,6 +368,45 @@ mod tests {
             .expect("a missing config file is not an error");
         assert_eq!(config.output_format, OutputFormat::Plaintext);
         assert_eq!(config.stop.timeout_seconds, 15);
+        assert_eq!(config.request.timeout(), Some(Duration::from_secs(120)));
+        assert_eq!(
+            config.request.evaluate_timeout(),
+            Some(Duration::from_secs(600))
+        );
+        assert!(
+            config.request.cancel_on_timeout,
+            "timed-out requests are cancelled by default"
+        );
+    }
+
+    #[test]
+    fn test_request_config_cancel_on_timeout_can_be_disabled() {
+        let config: DapperConfig =
+            toml::from_str("[request]\ncancel_on_timeout = false\n").unwrap();
+
+        assert!(!config.request.cancel_on_timeout);
+        assert_eq!(
+            config.request.timeout(),
+            Some(Duration::from_secs(120)),
+            "keys left out of a partial [request] block keep their defaults"
+        );
+    }
+
+    #[test]
+    fn test_request_config_timeout_zero_waits_indefinitely() {
+        let toml_content = r#"
+[request]
+timeout_seconds = 0
+evaluate_timeout_seconds = 7
+        "#;
+        let config: DapperConfig = toml::from_str(toml_content).unwrap();
+
+        assert_eq!(config.request.timeout(), None, "0 disables the timeout");
+        assert_eq!(
+            config.request.evaluate_timeout(),
+            Some(Duration::from_secs(7)),
+            "a non-zero value is used as configured"
+        );
     }
 
     #[test]

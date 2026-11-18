@@ -31,7 +31,8 @@ use tokio::process::Command as TokioCommand;
 use crate::dap_client::DapClient as GeneralDapClient;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-// Above dapper's own 60s `continue` and request timeouts, so dapper reports those itself.
+// Above dapper's own 60s `continue` and raw-request timeouts, so dapper reports those itself.
+// Tests that exercise the `[request]` timeout configure a shorter one.
 const DEBUG_COMMAND_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Temp file used to capture adapter diagnostics for panicking tests.
@@ -139,19 +140,20 @@ impl DapClient {
         scope_id: Option<ScopeId>,
         adapter_args: &[&str],
     ) -> Result<Self> {
-        let adapter = adapter_command()?;
+        Self::spawn(proxy_process_command(
+            dapper_path,
+            control_port,
+            scope_id,
+            adapter_args,
+        )?)
+    }
 
-        let mut command = dapper_command(dapper_path, "proxy");
-        if let Some(port) = control_port {
-            command.arg("--control-port").arg(port.to_string());
-        }
-        if let Some(scope) = scope_id {
-            command.arg("--scope-id").arg(scope.as_str());
-        }
-        command.arg("process").arg(adapter.executable);
-        command.args(adapter.arguments);
-        command.args(adapter_args);
-
+    /// Starts the proxy with `DAPPER_CONFIG_DIR` pointing at `config_dir`, so
+    /// its `config.toml` replaces the defaults.
+    pub fn new_with_config_dir(scope_id: Option<ScopeId>, config_dir: &Path) -> Result<Self> {
+        let dapper_path = dapper_executable()?;
+        let mut command = proxy_process_command(&dapper_path, None, scope_id, &[])?;
+        command.env("DAPPER_CONFIG_DIR", config_dir);
         Self::spawn(command)
     }
 
@@ -351,6 +353,28 @@ fn receive_error(error: RecvTimeoutError, timeout: Duration, awaited: &str) -> a
     }
 }
 
+/// The `dapper proxy process` command that fronts the injected adapter.
+fn proxy_process_command(
+    dapper_path: &str,
+    control_port: Option<u16>,
+    scope_id: Option<ScopeId>,
+    adapter_args: &[&str],
+) -> Result<Command> {
+    let adapter = adapter_command()?;
+
+    let mut command = dapper_command(dapper_path, "proxy");
+    if let Some(port) = control_port {
+        command.arg("--control-port").arg(port.to_string());
+    }
+    if let Some(scope) = scope_id {
+        command.arg("--scope-id").arg(scope.as_str());
+    }
+    command.arg("process").arg(adapter.executable);
+    command.args(adapter.arguments);
+    command.args(adapter_args);
+    Ok(command)
+}
+
 /// Returns the adapter command supplied by the E2E runner or Buck target.
 pub fn adapter_command() -> Result<AdapterCommand> {
     let executable = std::env::var("DAPPER_TEST_ADAPTER_EXECUTABLE")
@@ -505,9 +529,21 @@ pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClien
 
 /// Starts a stopped real-adapter session in a caller-provided scope.
 pub fn start_stopped_debug_session(scope_id: ScopeId) -> Result<DapClient> {
+    launch_stopped(DapClient::new(Some(scope_id))?)
+}
+
+/// [`start_stopped_debug_session`] with the proxy reading its config from
+/// `config_dir`.
+pub fn start_stopped_debug_session_with_config_dir(
+    scope_id: ScopeId,
+    config_dir: &Path,
+) -> Result<DapClient> {
+    launch_stopped(DapClient::new_with_config_dir(Some(scope_id), config_dir)?)
+}
+
+fn launch_stopped(mut dap_client: DapClient) -> Result<DapClient> {
     let debuggee = test_debuggee_path()?;
 
-    let mut dap_client = DapClient::new(Some(scope_id))?;
     dap_client.initialize()?;
     let mut launch_arguments = serde_json::json!({
         "noDebug": false,

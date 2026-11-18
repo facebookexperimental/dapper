@@ -21,6 +21,7 @@ use dapper_dap_protocol::enums::EvaluateContext;
 use dapper_dap_protocol::events::BreakpointEventBody;
 use dapper_dap_protocol::events::EventKind;
 use dapper_dap_protocol::protocol as dap;
+use dapper_dap_protocol::requests::CancelArguments;
 use dapper_dap_protocol::requests::EvaluateArguments;
 use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::requests::ScopesArguments;
@@ -84,6 +85,47 @@ pub struct ProxyRequest {
     pub(crate) client_id: ClientId,
     pub(crate) message: dap::Message,
     pub(crate) result: oneshot::Sender<ListenerPayload>,
+}
+
+/// How long a timed-out request waits for the proxy to take its `cancel`. The
+/// proxy hands it on as soon as it's written to the adapter, so this only
+/// runs out when the proxy itself is stuck.
+const CANCEL_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The debug adapter accepted a request but sent no response within the
+/// request timeout.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "DAP request '{command}' timed out after {}s; the debug adapter is not responding. {cancel}",
+    timeout.as_secs()
+)]
+pub struct RequestTimedOutError {
+    pub command: String,
+    pub timeout: std::time::Duration,
+    pub cancel: TimeoutCancel,
+}
+
+/// What dapper did about a request that hit its timeout. Only a sent cancel
+/// can stop the adapter working on it; otherwise later requests can still
+/// queue behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+pub enum TimeoutCancel {
+    #[strum(to_string = "Asked the adapter to cancel it.")]
+    Sent,
+    #[strum(
+        to_string = "Cancelling timed-out requests is turned off (`[request] cancel_on_timeout`), so the adapter may still be working on it and later requests can wait until it finishes."
+    )]
+    Disabled,
+    #[strum(
+        to_string = "The adapter can't cancel requests, so it may still be working on it and later requests can wait until it finishes."
+    )]
+    Unsupported,
+    /// No cancel was sent for another reason: the request was itself a
+    /// `cancel`, never reached the adapter, or the cancel failed to send.
+    #[strum(
+        to_string = "The adapter may still be working on it and later requests can wait until it finishes."
+    )]
+    NotSent,
 }
 
 /// Names a client in the proxy's logs.
@@ -177,14 +219,92 @@ impl ProxyClient {
     /// round trip every command shares. Returns the response together with
     /// the listener stream for callers that keep waiting for events after
     /// the response (e.g. navigate).
+    ///
+    /// Bounded by the `[request]` config timeout for the request's command.
     async fn round_trip(
         &self,
         request: dap::Request,
     ) -> anyhow::Result<(dap::Response, broadcast::Receiver<Arc<dap::Message>>)> {
-        let ListenerPayload { seq, mut messages } = self.send_message(request.into()).await?;
-        let response = helpers::wait_for_response(seq, &mut messages).await?;
-        response.check_success()?;
-        Ok((response, messages))
+        let timeout = match request.command {
+            RequestCommand::Evaluate(_) => self.config.request.evaluate_timeout(),
+            _ => self.config.request.timeout(),
+        };
+        self.round_trip_within(request, timeout).await
+    }
+
+    /// [`round_trip`](Self::round_trip) with an explicit bound; `None` waits
+    /// indefinitely.
+    async fn round_trip_within(
+        &self,
+        request: dap::Request,
+        timeout: Option<std::time::Duration>,
+    ) -> anyhow::Result<(dap::Response, broadcast::Receiver<Arc<dap::Message>>)> {
+        let command = request.command_name().to_owned();
+        let is_cancel = matches!(request.command, RequestCommand::Cancel(_));
+        let sent_seq = std::sync::OnceLock::new();
+        let exchange = async {
+            let ListenerPayload { seq, mut messages } = self.send_message(request.into()).await?;
+            let _ = sent_seq.set(seq);
+            let response = helpers::wait_for_response(seq, &mut messages).await?;
+            response.check_success()?;
+            Ok((response, messages))
+        };
+
+        let Some(timeout) = timeout else {
+            return exchange.await;
+        };
+        match tokio::time::timeout(timeout, exchange).await {
+            Ok(result) => result,
+            Err(_) => {
+                let cancel = match sent_seq.get() {
+                    Some(seq) if !is_cancel => self.cancel_timed_out(*seq).await,
+                    _ => TimeoutCancel::NotSent,
+                };
+                Err(RequestTimedOutError {
+                    command,
+                    timeout,
+                    cancel,
+                }
+                .into())
+            }
+        }
+    }
+
+    /// Best effort: asks the adapter to drop a request we stopped waiting
+    /// for, so it doesn't keep later requests queued behind it. Requires both
+    /// `[request] cancel_on_timeout` and the adapter's `supportsCancelRequest`.
+    /// Doesn't wait for the adapter's answer, and only waits
+    /// [`CANCEL_SEND_TIMEOUT`] for the proxy to take the cancel, so a stuck
+    /// proxy can't hold back the timeout error.
+    async fn cancel_timed_out(&self, seq: Seq) -> TimeoutCancel {
+        if !self.config.request.cancel_on_timeout {
+            return TimeoutCancel::Disabled;
+        }
+        let supports_cancel = self
+            .debug_session_tracker
+            .adapter_capabilities()
+            .is_some_and(|caps| caps.supports_cancel_request == Some(true));
+        if !supports_cancel {
+            return TimeoutCancel::Unsupported;
+        }
+        let cancel = dap::Request::new(RequestCommand::Cancel(Some(CancelArguments {
+            request_id: Some(seq.as_i64()),
+            ..Default::default()
+        })));
+        match self
+            .send_message_with_timeout(cancel.into(), CANCEL_SEND_TIMEOUT)
+            .await
+        {
+            Ok(_) => TimeoutCancel::Sent,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    seq = seq.as_i64(),
+                    "Failed to cancel a timed-out request"
+                );
+                TimeoutCancel::NotSent
+            }
+        }
     }
 
     /// [`round_trip`](Self::round_trip) for the commands that only want a
@@ -728,15 +848,7 @@ impl ProxyClient {
 
         let request = dap::Request::new(helpers::raw_request_command(command, arguments));
 
-        let (response, mut messages) = tokio::time::timeout(timeout, self.round_trip(request))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "DAP request '{}' timed out after {}s",
-                    command,
-                    timeout.as_secs()
-                )
-            })??;
+        let (response, mut messages) = self.round_trip_within(request, Some(timeout)).await?;
         let body = response.body;
 
         if wait_for_event {
@@ -1107,11 +1219,18 @@ mod tests {
     fn make_client_with_caps(
         caps: Option<Capabilities>,
     ) -> (ProxyClient, mpsc::UnboundedReceiver<ProxyRequest>) {
+        make_client_with_caps_and_config(caps, DapperConfig::default())
+    }
+
+    fn make_client_with_caps_and_config(
+        caps: Option<Capabilities>,
+        config: DapperConfig,
+    ) -> (ProxyClient, mpsc::UnboundedReceiver<ProxyRequest>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (event_channel, _event_rx) = EventChannel::new_pair();
         let tracker = DebugSessionTracker::new(
             "test-session".into(),
-            DapperConfig::default(),
+            config.clone(),
             Some(dapper_session::SessionStore::at(
                 dapper_session::get_user_temp_dir().join("client_test_sessions"),
             )),
@@ -1133,7 +1252,7 @@ mod tests {
             tx,
             event_channel,
             tracker,
-            DapperConfig::default(),
+            config,
             Arc::default(),
         );
         (client, rx)
@@ -1584,6 +1703,287 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// Accepts every request but never answers, keeping the response stream
+    /// open the way a wedged adapter that still emits other traffic does.
+    /// Assigns each request a backend seq starting at 100 and records it.
+    fn spawn_unanswered_mock(
+        mut rx: mpsc::UnboundedReceiver<ProxyRequest>,
+    ) -> Arc<std::sync::Mutex<Vec<dap::Request>>> {
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = received.clone();
+        tokio::spawn(async move {
+            let mut senders = Vec::new();
+            let mut next_seq = 100;
+            while let Some(req) = rx.recv().await {
+                let dap::Message::Request(mut dap_req) = req.message else {
+                    panic!("expected a debugger request");
+                };
+                dap_req.seq = Seq(next_seq);
+                next_seq += 1;
+                recorder
+                    .lock()
+                    .expect("request recorder mutex should not be poisoned")
+                    .push(dap_req.clone());
+                let (msg_tx, messages) = broadcast::channel::<Arc<dap::Message>>(16);
+                senders.push(msg_tx);
+                let _ = req.result.send(ListenerPayload {
+                    seq: dap_req.seq,
+                    messages,
+                });
+            }
+        });
+        received
+    }
+
+    /// Runs `call` against an adapter that never answers and returns the
+    /// error together with how long (in paused virtual time) it took.
+    async fn unanswered<T: std::fmt::Debug>(
+        call: impl AsyncFnOnce(&ProxyClient) -> anyhow::Result<T>,
+    ) -> (anyhow::Error, std::time::Duration) {
+        let (err, elapsed, _) = unanswered_with_caps(None, call).await;
+        (err, elapsed)
+    }
+
+    /// [`unanswered`] against an adapter with `caps`, also returning every
+    /// request the adapter received.
+    async fn unanswered_with_caps<T: std::fmt::Debug>(
+        caps: Option<Capabilities>,
+        call: impl AsyncFnOnce(&ProxyClient) -> anyhow::Result<T>,
+    ) -> (anyhow::Error, std::time::Duration, Vec<dap::Request>) {
+        unanswered_with_caps_and_config(caps, DapperConfig::default(), call).await
+    }
+
+    async fn unanswered_with_caps_and_config<T: std::fmt::Debug>(
+        caps: Option<Capabilities>,
+        config: DapperConfig,
+        call: impl AsyncFnOnce(&ProxyClient) -> anyhow::Result<T>,
+    ) -> (anyhow::Error, std::time::Duration, Vec<dap::Request>) {
+        let (client, rx) = make_client_with_caps_and_config(caps, config);
+        let received = spawn_unanswered_mock(rx);
+        let start = tokio::time::Instant::now();
+        let err = call(&client)
+            .await
+            .expect_err("an unanswered request must fail instead of hanging");
+        let elapsed = start.elapsed();
+        let received = received
+            .lock()
+            .expect("request recorder mutex should not be poisoned")
+            .clone();
+        (err, elapsed, received)
+    }
+
+    fn cancel_request_ids(requests: &[dap::Request]) -> Vec<Option<i64>> {
+        requests
+            .iter()
+            .filter_map(|request| match &request.command {
+                RequestCommand::Cancel(args) => {
+                    Some(args.as_ref().and_then(|args| args.request_id))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn cancel_outcome(err: &anyhow::Error) -> TimeoutCancel {
+        err.downcast_ref::<RequestTimedOutError>()
+            .expect("the error should be a typed request timeout")
+            .cancel
+    }
+
+    fn cancellable() -> Capabilities {
+        Capabilities {
+            supports_cancel_request: Some(true),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_request_is_cancelled_when_the_adapter_supports_it() {
+        let (err, _, received) = unanswered_with_caps(Some(cancellable()), async |client| {
+            client.threads(Expansion::default()).await
+        })
+        .await;
+
+        assert!(
+            matches!(received[0].command, RequestCommand::Threads),
+            "threads should be the first request, got {:?}",
+            received[0].command
+        );
+        assert_eq!(
+            cancel_request_ids(&received),
+            vec![Some(received[0].seq.as_i64())],
+            "exactly one cancel, naming the timed-out request's backend seq"
+        );
+        assert_eq!(cancel_outcome(&err), TimeoutCancel::Sent);
+        assert_eq!(
+            err.to_string(),
+            "DAP request 'threads' timed out after 120s; the debug adapter is not responding. \
+             Asked the adapter to cancel it."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_request_is_not_cancelled_when_the_config_turns_it_off() {
+        let mut config = DapperConfig::default();
+        config.request.cancel_on_timeout = false;
+        let (err, _, received) =
+            unanswered_with_caps_and_config(Some(cancellable()), config, async |client| {
+                client.threads(Expansion::default()).await
+            })
+            .await;
+
+        assert_eq!(
+            cancel_request_ids(&received),
+            Vec::<Option<i64>>::new(),
+            "the config overrides the adapter's supportsCancelRequest"
+        );
+        assert_eq!(cancel_outcome(&err), TimeoutCancel::Disabled);
+        assert_eq!(
+            err.to_string(),
+            "DAP request 'threads' timed out after 120s; the debug adapter is not responding. \
+             Cancelling timed-out requests is turned off (`[request] cancel_on_timeout`), so the \
+             adapter may still be working on it and later requests can wait until it finishes."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_request_is_not_cancelled_when_the_adapter_cannot_cancel() {
+        for caps in [
+            None,
+            Some(Capabilities::default()),
+            Some(Capabilities {
+                supports_cancel_request: Some(false),
+                ..Default::default()
+            }),
+        ] {
+            let (err, _, received) = unanswered_with_caps(caps.clone(), async |client| {
+                client.threads(Expansion::default()).await
+            })
+            .await;
+
+            assert_eq!(
+                cancel_request_ids(&received),
+                Vec::<Option<i64>>::new(),
+                "no cancel for capabilities {caps:?}"
+            );
+            assert_eq!(
+                cancel_outcome(&err),
+                TimeoutCancel::Unsupported,
+                "capabilities {caps:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_cancel_hand_off_cannot_hold_back_the_timeout() {
+        let (client, mut rx) = make_client_with_caps(Some(cancellable()));
+        // Takes every request but only hands back the listener for non-cancel
+        // ones; a cancel's oneshot is held open forever, like a stuck proxy.
+        tokio::spawn(async move {
+            let mut senders = Vec::new();
+            let mut held_cancels = Vec::new();
+            while let Some(req) = rx.recv().await {
+                let dap::Message::Request(dap_req) = &req.message else {
+                    panic!("expected a debugger request");
+                };
+                if matches!(dap_req.command, RequestCommand::Cancel(_)) {
+                    held_cancels.push(req);
+                    continue;
+                }
+                let seq = dap_req.seq;
+                let (msg_tx, messages) = broadcast::channel::<Arc<dap::Message>>(16);
+                senders.push(msg_tx);
+                let _ = req.result.send(ListenerPayload { seq, messages });
+            }
+        });
+
+        let start = tokio::time::Instant::now();
+        let err = client
+            .threads(Expansion::default())
+            .await
+            .expect_err("an unanswered request must fail instead of hanging");
+
+        assert_eq!(
+            start.elapsed(),
+            std::time::Duration::from_secs(120) + CANCEL_SEND_TIMEOUT,
+            "the request timeout plus the bounded wait for the cancel hand-off"
+        );
+        assert_eq!(cancel_outcome(&err), TimeoutCancel::NotSent);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timed_out_cancel_request_is_not_itself_cancelled() {
+        let (err, _, received) = unanswered_with_caps(Some(cancellable()), async |client| {
+            client
+                .send_raw_dap_request(
+                    "cancel",
+                    Some(serde_json::json!({"requestId": 1})),
+                    false,
+                    5,
+                )
+                .await
+        })
+        .await;
+
+        assert_eq!(
+            received.len(),
+            1,
+            "only the caller's cancel should be sent, got {received:?}"
+        );
+        assert_eq!(cancel_outcome(&err), TimeoutCancel::NotSent);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_inspection_request_times_out() {
+        let (err, elapsed) =
+            unanswered(async |client| client.threads(Expansion::default()).await).await;
+
+        let timed_out = err
+            .downcast_ref::<RequestTimedOutError>()
+            .expect("the error should be a typed request timeout");
+        assert_eq!(timed_out.command, "threads", "the error names the request");
+        assert_eq!(
+            elapsed,
+            std::time::Duration::from_secs(120),
+            "the default request timeout is 120s"
+        );
+        assert_eq!(
+            err.to_string(),
+            "DAP request 'threads' timed out after 120s; the debug adapter is not responding. \
+             The adapter can't cancel requests, so it may still be working on it and later \
+             requests can wait until it finishes."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_evaluate_uses_the_longer_evaluate_timeout() {
+        let (err, elapsed) =
+            unanswered(async |client| client.repl("x".to_owned(), None).await).await;
+
+        assert!(err.downcast_ref::<RequestTimedOutError>().is_some());
+        assert_eq!(
+            elapsed,
+            std::time::Duration::from_secs(600),
+            "evaluate runs debuggee code, so it gets the 600s evaluate timeout"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_raw_request_uses_its_own_timeout_not_the_default() {
+        let (_, elapsed) = unanswered(async |client| {
+            client
+                .send_raw_dap_request("threads", None, false, 180)
+                .await
+        })
+        .await;
+
+        assert_eq!(
+            elapsed,
+            std::time::Duration::from_secs(180),
+            "a caller-supplied timeout longer than the 120s default must be honoured"
+        );
     }
 
     #[tokio::test]

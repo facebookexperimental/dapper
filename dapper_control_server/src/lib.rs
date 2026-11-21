@@ -206,15 +206,15 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
 fn send_dapper_event(
     proxy_client: ProxyClient,
     serve_result: &anyhow::Result<ControlPlaneServer>,
-    session_id: &SessionId,
+    session_id: SessionId,
 ) {
     let event = match serve_result.as_ref() {
         Ok(control_plane_server) => DapperEvent::ControlPlaneStatus(ControlPlaneStatus::success(
-            session_id.clone(),
+            session_id,
             control_plane_server.port,
         )),
         Err(err) => DapperEvent::ControlPlaneStatus(ControlPlaneStatus::failure(
-            session_id.clone(),
+            session_id,
             format!("{err:#}"),
         )),
     };
@@ -222,14 +222,28 @@ fn send_dapper_event(
     let _ = proxy_client.send_dapper_event(event);
 }
 
-pub async fn start_control_plane(
-    port: Option<Port>,
-    proxy_client: ProxyClient,
-    proxy_server_abort: tokio::task::AbortHandle,
-    session_id: &SessionId,
-    scope_id: Option<ScopeId>,
-    child_teardown: Option<ChildTeardownHook>,
-) -> anyhow::Result<ControlPlaneServer> {
+/// What [`start_control_plane`] needs to serve a proxy session's control plane.
+pub struct ControlPlaneParams {
+    /// The port to bind, or `None` for one the OS picks.
+    pub port: Option<Port>,
+    pub proxy_client: ProxyClient,
+    /// Aborts the proxy server task when the control plane's `stop` runs.
+    pub proxy_server_abort: tokio::task::AbortHandle,
+    pub session_id: SessionId,
+    pub scope_id: Option<ScopeId>,
+    /// Tears down child sessions before `stop` stops this one.
+    pub child_teardown: Option<ChildTeardownHook>,
+}
+
+pub async fn start_control_plane(params: ControlPlaneParams) -> anyhow::Result<ControlPlaneServer> {
+    let ControlPlaneParams {
+        port,
+        proxy_client,
+        proxy_server_abort,
+        session_id,
+        scope_id,
+        child_teardown,
+    } = params;
     let handler = DapperControlPlaneServiceImpl {
         proxy_server_abort,
         proxy_client: proxy_client.clone(),

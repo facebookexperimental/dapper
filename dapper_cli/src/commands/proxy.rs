@@ -11,6 +11,7 @@ use clap::Parser;
 use clap::Subcommand;
 use dapper_config::DapperConfig;
 use dapper_control_server as control_plane_server;
+use dapper_control_server::ControlPlaneParams;
 use dapper_dap_protocol::protocol::Request;
 use dapper_dap_protocol::requests::DisconnectArguments;
 use dapper_dap_protocol::requests::RequestCommand;
@@ -300,14 +301,14 @@ impl Proxy {
         let cleanup_client = control_client.clone();
 
         // Start the control plane server
-        let control_plane_result = control_plane_server::start_control_plane(
-            control_port,
-            control_client,
-            proxy_server_abort.clone(),
-            session_id,
-            self.scope_id.clone(),
-            child_teardown_hook.clone(),
-        )
+        let control_plane_result = control_plane_server::start_control_plane(ControlPlaneParams {
+            port: control_port,
+            proxy_client: control_client,
+            proxy_server_abort: proxy_server_abort.clone(),
+            session_id: session_id.clone(),
+            scope_id: self.scope_id.clone(),
+            child_teardown: child_teardown_hook.clone(),
+        })
         .await;
 
         let control_plane_task = match control_plane_result {

@@ -15,6 +15,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use bon::Builder;
 use dapper_dap_protocol::requests::AttachRequestArguments;
 use dapper_dap_protocol::requests::LaunchRequestArguments;
 use dapper_dap_protocol::requests::RequestCommand;
@@ -27,7 +28,7 @@ use serde::Serialize;
 pub use crate::child_session::*;
 
 /// Configuration for starting a debug session via dapper proxy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 #[serde(rename_all = "camelCase")]
 pub struct DebugSessionConfig {
     /// How to spawn/connect to the DAP backend
@@ -40,9 +41,11 @@ pub struct DebugSessionConfig {
     pub debug_request: Option<DebugRequest>,
     /// Initial breakpoints to set
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(default)]
     pub breakpoints: Vec<BreakpointSpec>,
     /// Optional metadata (session IDs, telemetry, etc.)
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[builder(default)]
     pub metadata: HashMap<String, serde_json::Value>,
     /// Optional override for the DAP initialize request arguments.
     /// When provided, these arguments replace the defaults entirely, except
@@ -71,6 +74,7 @@ pub struct DebugSessionConfig {
     /// distinguishing "user opted out" from "user accepted the default" in
     /// stored configs.
     #[serde(default = "default_install_default_exception_breakpoints")]
+    #[builder(default = default_install_default_exception_breakpoints())]
     pub install_default_exception_breakpoints: bool,
     /// Configuration governing whether and how this proxy spawns child debug
     /// sessions in response to the adapter's `startDebugging` reverse requests
@@ -84,20 +88,6 @@ fn default_install_default_exception_breakpoints() -> bool {
 }
 
 impl DebugSessionConfig {
-    /// A session config for the given backend, all other fields at their defaults.
-    pub fn from_spawn(spawn_config: SpawnConfig) -> Self {
-        Self {
-            spawn_config,
-            debug_request: None,
-            breakpoints: Vec::new(),
-            metadata: HashMap::new(),
-            initialize_args: None,
-            init_timeout_secs: None,
-            install_default_exception_breakpoints: true,
-            child_sessions: None,
-        }
-    }
-
     /// Load a debug session configuration from a JSON file.
     ///
     /// For stdio spawn configs, `new_session` is forced to `true` so that the
@@ -523,5 +513,23 @@ mod tests {
         }"#;
         let config: DebugSessionConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.init_timeout_secs, Some(900));
+    }
+
+    #[test]
+    fn builder_defaults_match_serde_defaults() {
+        let spawn_config = SpawnConfig::Tcp(TcpSpawnConfig {
+            addr: "127.0.0.1:4711".parse().expect("a valid socket address"),
+        });
+        let built = DebugSessionConfig::builder()
+            .spawn_config(spawn_config.clone())
+            .build();
+        let parsed: DebugSessionConfig =
+            serde_json::from_value(serde_json::json!({ "spawnConfig": spawn_config }))
+                .expect("a config with only a backend should parse");
+        assert_eq!(
+            serde_json::to_value(&built).expect("a config should serialize"),
+            serde_json::to_value(&parsed).expect("a config should serialize"),
+            "a field left unset should get the same default from the builder as from serde"
+        );
     }
 }

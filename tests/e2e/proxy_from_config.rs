@@ -25,20 +25,14 @@ fn proxy_from_config_launches_adapter() -> anyhow::Result<()> {
     let debuggee = std::env::var("DAPPER_TEST_DEBUGGEE")
         .context("DAPPER_TEST_DEBUGGEE must name the test debuggee")?;
 
-    let config = DebugSessionConfig {
-        spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+    let config = DebugSessionConfig::builder()
+        .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
             cmd: adapter.executable,
             args: adapter.arguments,
             new_session: false,
-        }),
-        debug_request: None,
-        breakpoints: vec![],
-        metadata: Default::default(),
-        initialize_args: None,
-        init_timeout_secs: None,
-        install_default_exception_breakpoints: false,
-        child_sessions: None,
-    };
+        }))
+        .install_default_exception_breakpoints(false)
+        .build();
 
     let mut config_file = tempfile::NamedTempFile::new()?;
     serde_json::to_writer(&mut config_file, &config)?;

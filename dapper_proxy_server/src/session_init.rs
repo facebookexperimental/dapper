@@ -1352,25 +1352,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialization_sequence() {
-        let config = DebugSessionConfig {
-            spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+        let config = DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                 cmd: "test".to_owned(),
                 args: vec![],
                 new_session: false,
-            }),
-            debug_request: Some(DebugRequest::Launch(
+            }))
+            .debug_request(DebugRequest::Launch(
                 serde_json::from_value(serde_json::json!({
                     "program": "/path/to/program"
                 }))
                 .unwrap(),
-            )),
-            breakpoints: vec![],
-            metadata: Default::default(),
-            initialize_args: None,
-            init_timeout_secs: None,
-            install_default_exception_breakpoints: false,
-            child_sessions: None,
-        };
+            ))
+            .install_default_exception_breakpoints(false)
+            .build();
 
         let (server, client) = DuplexChannel::in_memory(1024);
         let backend_handle = tokio::spawn(mock_backend(server));
@@ -1390,20 +1385,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialization_fails_without_debug_request() {
-        let config = DebugSessionConfig {
-            spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+        let config = DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                 cmd: "test".to_owned(),
                 args: vec![],
                 new_session: false,
-            }),
-            debug_request: None,
-            breakpoints: vec![],
-            metadata: Default::default(),
-            initialize_args: None,
-            init_timeout_secs: None,
-            install_default_exception_breakpoints: false,
-            child_sessions: None,
-        };
+            }))
+            .install_default_exception_breakpoints(false)
+            .build();
 
         let (server, client) = DuplexChannel::in_memory(1024);
         let backend_handle = tokio::spawn(mock_backend(server));
@@ -1780,25 +1769,21 @@ mod tests {
         // Verify that init_timeout_secs from config is applied correctly.
         // Use a very short timeout (1 second) with a backend that never sends
         // the initialized event, so the timeout triggers quickly.
-        let config = DebugSessionConfig {
-            spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+        let config = DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                 cmd: "test".to_owned(),
                 args: vec![],
                 new_session: false,
-            }),
-            debug_request: Some(DebugRequest::Launch(
+            }))
+            .debug_request(DebugRequest::Launch(
                 serde_json::from_value(serde_json::json!({
                     "program": "/path/to/program"
                 }))
                 .unwrap(),
-            )),
-            breakpoints: vec![],
-            metadata: Default::default(),
-            initialize_args: None,
-            init_timeout_secs: Some(1),
-            install_default_exception_breakpoints: false,
-            child_sessions: None,
-        };
+            ))
+            .init_timeout_secs(1)
+            .install_default_exception_breakpoints(false)
+            .build();
 
         let (server, client) = DuplexChannel::in_memory(1024);
         let backend_handle = tokio::spawn(mock_backend_hangs_after_initialize(server));
@@ -2193,25 +2178,21 @@ mod tests {
         breakpoints: Vec<BreakpointSpec>,
         install_defaults: bool,
     ) -> DebugSessionConfig {
-        DebugSessionConfig {
-            spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+        DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                 cmd: "test".to_owned(),
                 args: vec![],
                 new_session: false,
-            }),
-            debug_request: Some(DebugRequest::Launch(
+            }))
+            .debug_request(DebugRequest::Launch(
                 serde_json::from_value(serde_json::json!({
                     "program": "/path/to/program"
                 }))
                 .unwrap(),
-            )),
-            breakpoints,
-            metadata: Default::default(),
-            initialize_args: None,
-            init_timeout_secs: None,
-            install_default_exception_breakpoints: install_defaults,
-            child_sessions: None,
-        }
+            ))
+            .breakpoints(breakpoints)
+            .install_default_exception_breakpoints(install_defaults)
+            .build()
     }
 
     #[tokio::test]
@@ -2826,30 +2807,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_initialization_with_custom_initialize_args() {
-        let config = DebugSessionConfig {
-            spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+        let config = DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                 cmd: "test".to_owned(),
                 args: vec![],
                 new_session: false,
-            }),
-            debug_request: Some(DebugRequest::Launch(
+            }))
+            .debug_request(DebugRequest::Launch(
                 serde_json::from_value(serde_json::json!({
                     "program": "/path/to/program"
                 }))
                 .unwrap(),
-            )),
-            breakpoints: vec![],
-            metadata: Default::default(),
-            initialize_args: Some(serde_json::json!({
+            ))
+            .initialize_args(serde_json::json!({
                 "adapterID": "cppdbg",
                 "linesStartAt1": true,
                 "columnsStartAt1": true,
                 "pathFormat": "path"
-            })),
-            init_timeout_secs: None,
-            install_default_exception_breakpoints: false,
-            child_sessions: None,
-        };
+            }))
+            .install_default_exception_breakpoints(false)
+            .build();
 
         let (server, client) = DuplexChannel::in_memory(1024);
         let backend_handle = tokio::spawn(mock_backend(server));

@@ -63,21 +63,17 @@ async fn headless_start_debugging_spawns_child_session() -> anyhow::Result<()> {
         }
     }))?;
 
-    let config = DebugSessionConfig {
-        spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
+    let config = DebugSessionConfig::builder()
+        .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
             cmd: adapter_path.clone(),
             args: vec!["--emit-start-debugging".to_string()],
             new_session: true,
-        }),
+        }))
         // debug_request present -> headless mode (no external DAP client).
-        debug_request: Some(DebugRequest::Launch(serde_json::from_value(json!({}))?)),
-        breakpoints: vec![],
-        metadata: Default::default(),
-        initialize_args: None,
-        init_timeout_secs: None,
-        install_default_exception_breakpoints: false,
-        child_sessions: Some(child_sessions),
-    };
+        .debug_request(DebugRequest::Launch(serde_json::from_value(json!({}))?))
+        .install_default_exception_breakpoints(false)
+        .child_sessions(child_sessions)
+        .build();
 
     let (mut child, _config_file, _adapter_log) =
         spawn_proxy_from_config(&config, &scope_id).await?;

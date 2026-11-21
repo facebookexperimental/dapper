@@ -119,21 +119,21 @@ impl BackendMode {
                 let (first, rest) = cmd
                     .split_first()
                     .ok_or_else(|| anyhow::anyhow!("Process command cannot be empty"))?;
-                Ok(DebugSessionConfig::from_spawn(SpawnConfig::Stdio(
-                    StdioSpawnConfig {
+                Ok(DebugSessionConfig::builder()
+                    .spawn_config(SpawnConfig::Stdio(StdioSpawnConfig {
                         cmd: first.clone(),
                         args: rest.to_vec(),
                         new_session: false,
-                    },
-                )))
+                    }))
+                    .build())
             }
-            BackendMode::Tcp { addr } => Ok(DebugSessionConfig::from_spawn(SpawnConfig::Tcp(
-                TcpSpawnConfig { addr },
-            ))),
+            BackendMode::Tcp { addr } => Ok(DebugSessionConfig::builder()
+                .spawn_config(SpawnConfig::Tcp(TcpSpawnConfig { addr }))
+                .build()),
             #[cfg(unix)]
-            BackendMode::Uds { path } => Ok(DebugSessionConfig::from_spawn(SpawnConfig::Uds(
-                UdsSpawnConfig { path },
-            ))),
+            BackendMode::Uds { path } => Ok(DebugSessionConfig::builder()
+                .spawn_config(SpawnConfig::Uds(UdsSpawnConfig { path }))
+                .build()),
             BackendMode::FromConfig { config_file, .. } => {
                 DebugSessionConfig::from_file(&config_file)
             }

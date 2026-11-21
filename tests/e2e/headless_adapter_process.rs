@@ -29,21 +29,12 @@ fn adapter_path() -> anyhow::Result<String> {
         .context("DAPPER_TEST_ADAPTER_EXECUTABLE must name the DAP adapter")
 }
 
-fn headless_config() -> anyhow::Result<DebugSessionConfig> {
-    Ok(DebugSessionConfig {
-        spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
-            cmd: adapter_path()?,
-            args: vec![],
-            new_session: true,
-        }),
-        debug_request: Some(DebugRequest::Launch(serde_json::from_value(json!({}))?)),
-        breakpoints: vec![],
-        metadata: Default::default(),
-        initialize_args: None,
-        init_timeout_secs: None,
-        install_default_exception_breakpoints: false,
-        child_sessions: None,
-    })
+fn headless_config(spawn_config: SpawnConfig) -> anyhow::Result<DebugSessionConfig> {
+    Ok(DebugSessionConfig::builder()
+        .spawn_config(spawn_config)
+        .debug_request(DebugRequest::Launch(serde_json::from_value(json!({}))?))
+        .install_default_exception_breakpoints(false)
+        .build())
 }
 
 async fn events_until_ready(proxy: &mut Child) -> anyhow::Result<Vec<ProgressEvent>> {
@@ -71,8 +62,13 @@ async fn events_until_ready(proxy: &mut Child) -> anyhow::Result<Vec<ProgressEve
 #[tokio::test]
 async fn headless_session_reports_the_adapter_pid_first() -> anyhow::Result<()> {
     let scope_id = generate_test_scope_id("headless-adapter-pid");
+    let config = headless_config(SpawnConfig::Stdio(StdioSpawnConfig {
+        cmd: adapter_path()?,
+        args: vec![],
+        new_session: true,
+    }))?;
     let (mut proxy, _config_file, _adapter_log) =
-        spawn_proxy_from_config(&headless_config()?, &scope_id).await?;
+        spawn_proxy_from_config(&config, &scope_id).await?;
 
     let events = events_until_ready(&mut proxy).await?;
 
@@ -96,14 +92,11 @@ async fn headless_session_reports_the_adapter_pid_first() -> anyhow::Result<()> 
 async fn headless_session_reports_an_adapter_that_exits_during_the_handshake() -> anyhow::Result<()>
 {
     let scope_id = generate_test_scope_id("headless-adapter-exit");
-    let config = DebugSessionConfig {
-        spawn_config: SpawnConfig::Stdio(StdioSpawnConfig {
-            cmd: "/bin/sh".to_owned(),
-            args: vec!["-c".to_owned(), "read -r _; exit 3".to_owned()],
-            new_session: true,
-        }),
-        ..headless_config()?
-    };
+    let config = headless_config(SpawnConfig::Stdio(StdioSpawnConfig {
+        cmd: "/bin/sh".to_owned(),
+        args: vec!["-c".to_owned(), "read -r _; exit 3".to_owned()],
+        new_session: true,
+    }))?;
     let (mut proxy, _config_file, _adapter_log) =
         spawn_proxy_from_config(&config, &scope_id).await?;
 

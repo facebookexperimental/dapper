@@ -1821,8 +1821,7 @@ impl DapperControlPlane for FakeControlPlane {
 
     async fn send_dap_request(
         &self,
-        _: &str,
-        _: Option<Value>,
+        _: RequestCommand,
         _: bool,
         _: u64,
     ) -> anyhow::Result<RawDapResult> {
@@ -2323,46 +2322,55 @@ fn hex_string_to_bytes_rejects_oversized_payload() {
 }
 
 #[test]
-fn read_memory_arguments_render_the_dap_wire_shape() {
-    let args = ReadMemoryArguments {
+fn read_memory_requests_render_the_dap_wire_shape() {
+    let request = RequestCommand::ReadMemory(ReadMemoryArguments {
         memory_reference: "0xdeadbeef".to_owned(),
         offset: Some(16),
         count: 64,
         extra: Default::default(),
-    };
+    });
     assert_eq!(
-        dap_args(&args),
-        serde_json::json!({"memoryReference": "0xdeadbeef", "offset": 16, "count": 64})
+        request.into_raw().expect("a DAP request should serialize"),
+        (
+            "readMemory".to_owned(),
+            Some(json!({"memoryReference": "0xdeadbeef", "offset": 16, "count": 64}))
+        )
     );
 }
 
 #[test]
-fn read_memory_arguments_omit_an_absent_offset() {
-    let args = ReadMemoryArguments {
+fn read_memory_requests_omit_an_absent_offset() {
+    let request = RequestCommand::ReadMemory(ReadMemoryArguments {
         memory_reference: "0xdeadbeef".to_owned(),
         offset: None,
         count: 64,
         extra: Default::default(),
-    };
+    });
     assert_eq!(
-        dap_args(&args),
-        serde_json::json!({"memoryReference": "0xdeadbeef", "count": 64}),
+        request
+            .into_raw()
+            .expect("a DAP request should serialize")
+            .1,
+        Some(json!({"memoryReference": "0xdeadbeef", "count": 64})),
         "an absent offset must not reach the adapter as an explicit null"
     );
 }
 
 #[test]
-fn write_memory_arguments_render_the_dap_wire_shape() {
-    let args = WriteMemoryArguments {
+fn write_memory_requests_render_the_dap_wire_shape() {
+    let request = RequestCommand::WriteMemory(WriteMemoryArguments {
         memory_reference: "0xdeadbeef".to_owned(),
         offset: None,
         allow_partial: None,
         data: "SGVsbG8=".to_owned(),
         extra: Default::default(),
-    };
+    });
     assert_eq!(
-        dap_args(&args),
-        serde_json::json!({"memoryReference": "0xdeadbeef", "data": "SGVsbG8="}),
+        request.into_raw().expect("a DAP request should serialize"),
+        (
+            "writeMemory".to_owned(),
+            Some(json!({"memoryReference": "0xdeadbeef", "data": "SGVsbG8="}))
+        ),
         "allowPartial is not exposed by this tool and must stay off the wire"
     );
 }

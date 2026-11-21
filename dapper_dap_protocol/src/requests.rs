@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use serde_json::json;
 use strum::AsRefStr;
 
 use crate::data_types::DataBreakpoint;
@@ -628,10 +629,119 @@ pub struct UnknownCommand {
 }
 
 impl RequestCommand {
+    /// The request a client names by command and JSON arguments: the typed
+    /// variant when they parse as one, otherwise [`RequestCommand::Unknown`]
+    /// carrying both unchanged.
+    pub fn from_raw(command: &str, arguments: Option<Value>) -> Self {
+        let request = match &arguments {
+            Some(arguments) => json!({ "command": command, "arguments": arguments }),
+            None => json!({ "command": command }),
+        };
+        serde_json::from_value(request).unwrap_or_else(|_| {
+            Self::Unknown(UnknownCommand {
+                command: command.to_owned(),
+                arguments,
+                extra: Default::default(),
+            })
+        })
+    }
+
+    /// The command name and JSON arguments [`RequestCommand::from_raw`] parses
+    /// back into this request. An unknown command's top-level fields other
+    /// than `command` and `arguments` have no raw form and are dropped.
+    pub fn into_raw(self) -> serde_json::Result<(String, Option<Value>)> {
+        if let Self::Unknown(UnknownCommand {
+            command, arguments, ..
+        }) = self
+        {
+            return Ok((command, arguments));
+        }
+        let command = self.command_name().to_owned();
+        let arguments = match serde_json::to_value(self)? {
+            Value::Object(mut request) => request
+                .remove("arguments")
+                .filter(|arguments| !arguments.is_null()),
+            _ => None,
+        };
+        Ok((command, arguments))
+    }
+
     pub fn command_name(&self) -> &str {
         match self {
             Self::Unknown(u) => &u.command,
             _ => self.as_ref(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_raw_is_typed_only_when_it_parses() {
+        let RequestCommand::Continue(args) =
+            RequestCommand::from_raw("continue", Some(json!({"threadId": 1})))
+        else {
+            panic!("a well-formed continue should parse as `RequestCommand::Continue`");
+        };
+        assert_eq!(args.thread_id, ThreadId(1));
+
+        for (command, arguments) in [
+            ("customCommand", Some(json!({"a": 1}))),
+            ("continue", Some(json!({"threadId": "main"}))),
+        ] {
+            assert_eq!(
+                RequestCommand::from_raw(command, arguments.clone()),
+                RequestCommand::Unknown(UnknownCommand {
+                    command: command.to_owned(),
+                    arguments,
+                    extra: Default::default(),
+                }),
+                "`{command}` should be sent verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn from_raw_parses_into_raw_back_unchanged() {
+        let requests = [
+            RequestCommand::Threads,
+            RequestCommand::Pause(PauseArguments {
+                thread_id: ThreadId(1),
+                extra: IndexMap::from([("vendorField".to_owned(), json!("kept"))]),
+            }),
+            RequestCommand::ReadMemory(ReadMemoryArguments {
+                memory_reference: "0xdeadbeef".to_owned(),
+                offset: None,
+                count: 64,
+                extra: Default::default(),
+            }),
+            RequestCommand::from_raw("continue", Some(json!({"threadId": 1}))),
+            RequestCommand::from_raw("continue", Some(json!({"threadId": "main"}))),
+            RequestCommand::from_raw("customCommand", Some(json!({"a": 1}))),
+            RequestCommand::from_raw("customCommand", None),
+        ];
+        for request in requests {
+            let (command, arguments) = request
+                .clone()
+                .into_raw()
+                .expect("a DAP request should serialize");
+            assert_eq!(
+                RequestCommand::from_raw(&command, arguments),
+                request,
+                "`{command}` should cross the raw form unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_without_arguments_has_no_raw_arguments() {
+        assert_eq!(
+            RequestCommand::Threads
+                .into_raw()
+                .expect("a DAP request should serialize"),
+            ("threads".to_owned(), None)
+        );
     }
 }

@@ -18,6 +18,7 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::protocol as dap;
+use dapper_dap_protocol::requests::RequestCommand;
 use dapper_proxy_server::ControlPlaneStatus;
 use dapper_proxy_server::DapperEvent;
 use dapper_proxy_server::ProxyClient;
@@ -177,13 +178,12 @@ impl DapperControlPlane for DapperControlPlaneServiceImpl {
 
     async fn send_dap_request(
         &self,
-        command: &str,
-        arguments: Option<serde_json::Value>,
+        command: RequestCommand,
         wait_for_event: bool,
         timeout_seconds: u64,
     ) -> anyhow::Result<RawDapResult> {
         self.proxy_client
-            .send_raw_dap_request(command, arguments, wait_for_event, timeout_seconds)
+            .send_raw_dap_request(command, wait_for_event, timeout_seconds)
             .await
     }
 

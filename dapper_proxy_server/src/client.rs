@@ -28,7 +28,6 @@ use dapper_dap_protocol::requests::ScopesArguments;
 use dapper_dap_protocol::requests::SetBreakpointsArguments;
 use dapper_dap_protocol::requests::SetVariableArguments;
 use dapper_dap_protocol::requests::StackTraceArguments;
-use dapper_dap_protocol::requests::UnknownCommand;
 use dapper_dap_protocol::requests::VariablesArguments;
 use dapper_dap_protocol::responses::EvaluateResponseBody;
 use dapper_dap_protocol::responses::ResponseBody;
@@ -835,8 +834,7 @@ impl ProxyClient {
 
     pub async fn send_raw_dap_request(
         &self,
-        command: &str,
-        arguments: Option<serde_json::Value>,
+        command: RequestCommand,
         wait_for_event: bool,
         timeout_seconds: u64,
     ) -> anyhow::Result<dapper_session::RawDapResult> {
@@ -846,7 +844,7 @@ impl ProxyClient {
             Self::DEFAULT_REQUEST_TIMEOUT_SECS
         });
 
-        let request = dap::Request::new(helpers::raw_request_command(command, arguments));
+        let request = dap::Request::new(command);
 
         let (response, mut messages) = self.round_trip_within(request, Some(timeout)).await?;
         let body = response.body;
@@ -957,23 +955,6 @@ pub(crate) mod helpers {
         } else {
             0
         }
-    }
-
-    pub(crate) fn raw_request_command(
-        command: &str,
-        arguments: Option<serde_json::Value>,
-    ) -> RequestCommand {
-        let request = match &arguments {
-            Some(arguments) => serde_json::json!({ "command": command, "arguments": arguments }),
-            None => serde_json::json!({ "command": command }),
-        };
-        serde_json::from_value(request).unwrap_or_else(|_| {
-            RequestCommand::Unknown(UnknownCommand {
-                command: command.to_owned(),
-                arguments,
-                extra: Default::default(),
-            })
-        })
     }
 
     pub(crate) fn select_frames(total: usize, effective_levels: i64) -> (usize, bool) {
@@ -1166,31 +1147,6 @@ mod tests {
             i64::MAX,
             "the probe frame must not overflow"
         );
-    }
-
-    #[test]
-    fn raw_request_command_is_typed_only_when_it_parses() {
-        let RequestCommand::Continue(args) =
-            helpers::raw_request_command("continue", Some(serde_json::json!({"threadId": 1})))
-        else {
-            panic!("a well-formed continue should parse as `RequestCommand::Continue`");
-        };
-        assert_eq!(args.thread_id, ThreadId(1));
-
-        for (command, arguments) in [
-            ("customCommand", Some(serde_json::json!({"a": 1}))),
-            ("continue", Some(serde_json::json!({"threadId": "main"}))),
-        ] {
-            assert_eq!(
-                helpers::raw_request_command(command, arguments.clone()),
-                RequestCommand::Unknown(UnknownCommand {
-                    command: command.to_owned(),
-                    arguments,
-                    extra: Default::default(),
-                }),
-                "`{command}` should be sent verbatim"
-            );
-        }
     }
 
     #[test]
@@ -1918,8 +1874,7 @@ mod tests {
         let (err, _, received) = unanswered_with_caps(Some(cancellable()), async |client| {
             client
                 .send_raw_dap_request(
-                    "cancel",
-                    Some(serde_json::json!({"requestId": 1})),
+                    RequestCommand::from_raw("cancel", Some(serde_json::json!({"requestId": 1}))),
                     false,
                     5,
                 )
@@ -1974,7 +1929,7 @@ mod tests {
     async fn a_raw_request_uses_its_own_timeout_not_the_default() {
         let (_, elapsed) = unanswered(async |client| {
             client
-                .send_raw_dap_request("threads", None, false, 180)
+                .send_raw_dap_request(RequestCommand::Threads, false, 180)
                 .await
         })
         .await;
@@ -1999,7 +1954,7 @@ mod tests {
         let (client, rx) = make_client_with_caps(None);
         spawn_next_response_mock(rx);
         client
-            .send_raw_dap_request("continue", None, true, 0)
+            .send_raw_dap_request(RequestCommand::from_raw("continue", None), true, 0)
             .await
             .expect_err("a raw request should fail instead of reporting a timeout");
     }

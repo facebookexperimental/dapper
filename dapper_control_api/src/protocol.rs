@@ -7,6 +7,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_dap_protocol::requests::RequestCommand;
 use dapper_session::CapabilitiesResult;
 use dapper_session::Expansion;
 use dapper_session::NavigationResult;
@@ -110,11 +111,10 @@ pub trait DapperControlPlane: Send + Sync {
         clear_existing: bool,
     ) -> anyhow::Result<ControlPlaneResult<SetExceptionBreakpointsResult>>;
 
-    /// Send a raw DAP request with the given command and JSON arguments
+    /// Send a DAP request to the debug adapter as given
     async fn send_dap_request(
         &self,
-        command: &str,
-        arguments: Option<serde_json::Value>,
+        command: RequestCommand,
         wait_for_event: bool,
         timeout_seconds: u64,
     ) -> anyhow::Result<RawDapResult>;

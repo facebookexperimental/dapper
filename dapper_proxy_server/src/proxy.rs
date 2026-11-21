@@ -815,8 +815,7 @@ mod tests {
         let raw = tokio::spawn(async move {
             proxy_client
                 .send_raw_dap_request(
-                    "continue",
-                    Some(serde_json::json!({"threadId": 1})),
+                    RequestCommand::from_raw("continue", Some(serde_json::json!({"threadId": 1}))),
                     false,
                     0,
                 )

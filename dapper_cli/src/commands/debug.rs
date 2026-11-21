@@ -20,6 +20,7 @@ use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_dap_protocol::requests::RequestCommand;
 use dapper_session::Expansion;
 use dapper_session::NavigationType;
 use dapper_session::SessionStore;
@@ -408,7 +409,11 @@ impl Debug {
                     })
                     .transpose()?;
                 let result = client
-                    .send_dap_request(&command, args, wait_for_event, timeout)
+                    .send_dap_request(
+                        RequestCommand::from_raw(&command, args),
+                        wait_for_event,
+                        timeout,
+                    )
                     .await
                     .with_context(|| format!("Error executing DAP request '{}'", command))?;
                 let output = match config.output_format {

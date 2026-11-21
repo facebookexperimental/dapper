@@ -48,6 +48,7 @@ use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
 use dapper_dap_protocol::protocol::DapRequestRejected;
+use dapper_dap_protocol::requests::RequestCommand;
 use dapper_session::CapabilitiesResult;
 use dapper_session::Expansion;
 use dapper_session::Port;
@@ -356,7 +357,11 @@ where
 
             match self
                 .control_plane
-                .send_dap_request(&command, arguments, wait_for_event, timeout_seconds)
+                .send_dap_request(
+                    RequestCommand::from_raw(&command, arguments),
+                    wait_for_event,
+                    timeout_seconds,
+                )
                 .await
             {
                 Ok(raw_dap_result) => {
@@ -923,13 +928,15 @@ impl DapperControlPlane for DapperControlPlaneClient {
 
     async fn send_dap_request(
         &self,
-        command: &str,
-        arguments: Option<serde_json::Value>,
+        command: RequestCommand,
         wait_for_event: bool,
         timeout_seconds: u64,
     ) -> anyhow::Result<dapper_session::RawDapResult> {
         let mut client = self.get_client().await?;
 
+        let (command, arguments) = command
+            .into_raw()
+            .context("Failed to serialize the DAP request")?;
         let arguments_json = match arguments {
             Some(v) => v.to_string(),
             None => String::new(),
@@ -941,7 +948,7 @@ impl DapperControlPlane for DapperControlPlaneClient {
             error_message,
         } = client
             .send_dap_request(RawDapRequest {
-                command: command.to_owned(),
+                command,
                 arguments_json,
                 wait_for_event,
                 timeout_seconds,
@@ -1283,14 +1290,13 @@ mod tests {
 
         async fn send_dap_request(
             &self,
-            command: &str,
-            _arguments: Option<serde_json::Value>,
+            command: RequestCommand,
             _wait_for_event: bool,
             _timeout_seconds: u64,
         ) -> anyhow::Result<dapper_session::RawDapResult> {
             let body = match command {
-                "pause" => dapper_dap_protocol::responses::ResponseBody::Pause,
-                "threads" => {
+                RequestCommand::Pause(_) => dapper_dap_protocol::responses::ResponseBody::Pause,
+                RequestCommand::Threads => {
                     dapper_dap_protocol::responses::ResponseBody::Threads(ThreadsResponseBody {
                         threads: vec![Thread {
                             id: 1.into(),
@@ -1299,13 +1305,16 @@ mod tests {
                         ..Default::default()
                     })
                 }
-                _ => dapper_dap_protocol::responses::ResponseBody::Unknown(
-                    dapper_dap_protocol::responses::UnknownResponseBody {
-                        command: command.to_owned(),
-                        body: None,
-                        extra: Default::default(),
-                    },
-                ),
+                other => {
+                    let (command, arguments) = other.into_raw()?;
+                    dapper_dap_protocol::responses::ResponseBody::Unknown(
+                        dapper_dap_protocol::responses::UnknownResponseBody {
+                            command,
+                            body: arguments,
+                            extra: Default::default(),
+                        },
+                    )
+                }
             };
 
             Ok(dapper_session::RawDapResult {
@@ -1571,20 +1580,47 @@ mod tests {
         assert_eq!(exc_clear.existing_count, 0);
 
         let dap_request_result = client
-            .send_dap_request("pause", Some(serde_json::json!({"threadId": 1})), false, 60)
+            .send_dap_request(
+                RequestCommand::from_raw("pause", Some(serde_json::json!({"threadId": 1}))),
+                false,
+                60,
+            )
             .await?;
-        assert!(matches!(
-            dap_request_result.body,
-            dapper_dap_protocol::responses::ResponseBody::Pause
-        ));
+        assert!(
+            matches!(
+                dap_request_result.body,
+                dapper_dap_protocol::responses::ResponseBody::Pause
+            ),
+            "a request that parses on the client should reach the server typed"
+        );
         assert!(dap_request_result.event.is_none());
 
-        let dap_request_no_args = client.send_dap_request("threads", None, false, 60).await?;
+        let dap_request_no_args = client
+            .send_dap_request(RequestCommand::Threads, false, 60)
+            .await?;
         assert!(matches!(
             dap_request_no_args.body,
             dapper_dap_protocol::responses::ResponseBody::Threads(_)
         ));
         assert!(dap_request_no_args.event.is_none());
+
+        let custom_arguments = serde_json::json!({"a": [1, "two"]});
+        let custom = client
+            .send_dap_request(
+                RequestCommand::from_raw("customCommand", Some(custom_arguments.clone())),
+                false,
+                60,
+            )
+            .await?;
+        let dapper_dap_protocol::responses::ResponseBody::Unknown(custom) = custom.body else {
+            panic!("the server should answer an unknown command as unknown");
+        };
+        assert_eq!(custom.command, "customCommand");
+        assert_eq!(
+            custom.body,
+            Some(custom_arguments),
+            "an unknown command's arguments should reach the server verbatim"
+        );
 
         // The blob crosses the wire byte for byte, so a caller that forwards it
         // verbatim sees the key order the adapter chose.

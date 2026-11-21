@@ -25,6 +25,7 @@ use dapper_control_api::render;
 use dapper_control_api::resolve_unique_session;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
 use dapper_dap_protocol::requests::ReadMemoryArguments;
+use dapper_dap_protocol::requests::RequestCommand;
 use dapper_dap_protocol::requests::WriteMemoryArguments;
 use dapper_dap_protocol::responses::ResponseBody;
 use dapper_session::Expansion;
@@ -194,12 +195,6 @@ fn extract_reason(
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> Option<String> {
     normalize_reason(arguments?.get("reason")?.as_str()?)
-}
-
-/// Render typed DAP request arguments for the raw-request transport, which
-/// carries them as JSON. Infallible: the argument types are plain data.
-fn dap_args(args: &impl serde::Serialize) -> serde_json::Value {
-    serde_json::to_value(args).expect("DAP request arguments are plain serializable")
 }
 
 /// Render a control-plane result in `config`'s output format.
@@ -919,7 +914,11 @@ Response is JSON from the debug adapter."#
 
         Ok(
             match client
-                .send_dap_request(&command, arguments, wait_for_event, timeout_seconds)
+                .send_dap_request(
+                    RequestCommand::from_raw(&command, arguments),
+                    wait_for_event,
+                    timeout_seconds,
+                )
                 .await
             {
                 Ok(result) => {
@@ -958,21 +957,16 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(e),
         };
 
-        let args = ReadMemoryArguments {
+        let request = RequestCommand::ReadMemory(ReadMemoryArguments {
             memory_reference,
             offset,
             count: count.get(),
             extra: Default::default(),
-        };
+        });
 
         Ok(
             match client
-                .send_dap_request(
-                    "readMemory",
-                    Some(dap_args(&args)),
-                    false,
-                    default_timeout(),
-                )
+                .send_dap_request(request, false, default_timeout())
                 .await
             {
                 Ok(result) => match &result.body {
@@ -1020,22 +1014,17 @@ Response is JSON from the debug adapter."#
             Err(e) => return Ok(e),
         };
 
-        let args = WriteMemoryArguments {
-            memory_reference,
+        let request = RequestCommand::WriteMemory(WriteMemoryArguments {
+            memory_reference: memory_reference.clone(),
             offset,
             allow_partial: None,
             data: base64::engine::general_purpose::STANDARD.encode(&raw_bytes),
             extra: Default::default(),
-        };
+        });
 
         Ok(
             match client
-                .send_dap_request(
-                    "writeMemory",
-                    Some(dap_args(&args)),
-                    false,
-                    default_timeout(),
-                )
+                .send_dap_request(request, false, default_timeout())
                 .await
             {
                 Ok(result) => match &result.body {
@@ -1043,11 +1032,11 @@ Response is JSON from the debug adapter."#
                         let written = body.bytes_written.unwrap_or(raw_bytes.len() as i64);
                         ok_text(format!(
                             "Successfully wrote {} byte(s) to {}.",
-                            written, args.memory_reference
+                            written, memory_reference
                         ))
                     }
                     ResponseBody::WriteMemory(None) => {
-                        ok_text(format!("Write completed to {}.", args.memory_reference))
+                        ok_text(format!("Write completed to {}.", memory_reference))
                     }
                     _ => ok_text(Self::bounded_dap_text(result.to_string()).await),
                 },

@@ -27,9 +27,11 @@ use serde::Serialize;
 // resolving.
 pub use crate::child_session::*;
 
-/// Configuration for starting a debug session via dapper proxy.
+/// Configuration for starting a debug session via dapper proxy. Other crates
+/// build it with [`DebugSessionConfig::builder`].
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct DebugSessionConfig {
     /// How to spawn/connect to the DAP backend
     pub spawn_config: SpawnConfig,

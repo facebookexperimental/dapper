@@ -41,7 +41,7 @@ impl Mcp {
                 "Using tools from CLI --enable-tool flags: {:?}",
                 self.enable_tools
             );
-            Toolset::custom("custom".to_string(), self.enable_tools)
+            Toolset::Custom(self.enable_tools.into_iter().collect())
         } else {
             self.toolset.into()
         };

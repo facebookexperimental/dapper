@@ -10,7 +10,6 @@ use dapper_e2e_support::parse_thread_id_from_threads_response;
 use dapper_e2e_support::setup_stopped_debug_session;
 use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
-use dapper_mcp_server::Toolset;
 use regex::Regex;
 use rmcp::model::CallToolRequestParams;
 use rmcp::serde_json;
@@ -21,7 +20,7 @@ async fn read_write_memory() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let toolset: Toolset = BuiltinToolset::Full.into();
+    let toolset = BuiltinToolset::Full;
     let mcp_client = create_mcp_client_with_toolset(Some(scope_id), Some(toolset)).await?;
 
     // Need a frame to evaluate expressions in. lldb-dap interprets a

@@ -13,7 +13,6 @@ use dapper_e2e_support::real_adapter_profile;
 use dapper_e2e_support::setup_stopped_debug_session;
 use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
-use dapper_mcp_server::Toolset;
 use rmcp::model::CallToolRequestParams;
 
 /// An expression the adapter can evaluate, paired with a substring its result
@@ -41,7 +40,7 @@ async fn evaluate_expression() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let toolset: Toolset = BuiltinToolset::Full.into();
+    let toolset = BuiltinToolset::Full;
     let mcp_client = create_mcp_client_with_toolset(Some(scope_id), Some(toolset)).await?;
 
     let threads_result = mcp_client
@@ -115,7 +114,7 @@ async fn evaluate_and_stop_json_output() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let toolset: Toolset = BuiltinToolset::Full.into();
+    let toolset = BuiltinToolset::Full;
     let mcp_client = create_mcp_client_with_json(Some(scope_id), Some(toolset)).await?;
 
     let (expression, expected_substr) = eval_probe(adapter_profile);
@@ -168,7 +167,7 @@ async fn evaluate_expression_with_frame_id() -> anyhow::Result<()> {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    let toolset: Toolset = BuiltinToolset::Full.into();
+    let toolset = BuiltinToolset::Full;
     let mcp_client = create_mcp_client_with_toolset(Some(scope_id), Some(toolset)).await?;
 
     let threads_result = mcp_client

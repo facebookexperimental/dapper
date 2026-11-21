@@ -34,6 +34,7 @@ use dapper_session::StatusResult;
 use dapper_session::ThreadsResult;
 use dapper_session::VariablesResult;
 use dapper_session::WaitedEvent;
+use enumset::EnumSet;
 use serde_json::Value;
 use serde_json::from_value;
 use serde_json::json;
@@ -183,8 +184,7 @@ fn full_toolset_handler() -> McpHandler {
 }
 
 fn full_toolset_handler_with(env: McpServerEnv) -> McpHandler {
-    let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
-    McpHandler::new(env, &toolset)
+    McpHandler::new(env, BuiltinToolset::Full.into())
 }
 
 // -- render_result: plaintext vs json --
@@ -544,14 +544,13 @@ fn resolve_session_scans_the_store_without_holding_the_last_session_lock() {
 /// name sessions missing from the empty store.
 #[test]
 fn get_client_skips_fast_path_when_control_port_set() {
-    let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Full);
     // Port 1: no dapper session listens here, so resolve-by-port fails.
     let handler = McpHandler::new(
         McpServerEnv {
             control_port: Some(Port::try_new(1).unwrap()),
             ..isolated_env()
         },
-        &toolset,
+        BuiltinToolset::Full.into(),
     );
     let sid = SessionId::from("control-port-session");
     let client = Arc::new(DapperControlPlaneClient::discover(isolated_store(), None));
@@ -598,6 +597,23 @@ fn all_tool_routes() -> ToolRouter<McpHandler> {
         "the tool router must expose routes; an empty map makes every router guard vacuous"
     );
     router
+}
+
+#[test]
+fn every_debug_tool_has_a_route() {
+    let routed: EnumSet<DebugTool> = all_tool_routes()
+        .map
+        .keys()
+        .map(|name| {
+            name.parse::<DebugTool>()
+                .unwrap_or_else(|_| panic!("route `{name}` should name a `DebugTool`"))
+        })
+        .collect();
+    assert_eq!(
+        routed,
+        EnumSet::all(),
+        "every `DebugTool` should have a route"
+    );
 }
 
 #[test]
@@ -1316,28 +1332,24 @@ fn extract_reason_trims_surrounding_whitespace() {
 
 #[test]
 fn always_available_tools_are_in_every_toolset() {
-    let empty = Toolset::custom("empty".to_owned(), Vec::new());
+    let empty = Toolset::Custom(EnumSet::empty());
     let toolsets = BuiltinToolset::value_variants()
         .iter()
         .copied()
         .map(Toolset::from)
-        .chain([empty.clone()]);
+        .chain([empty]);
     for toolset in toolsets {
-        let handler = McpHandler::new(isolated_env(), &toolset);
+        let handler = McpHandler::new(isolated_env(), toolset);
         for tool in ALWAYS_AVAILABLE {
             assert!(
                 handler.tool_router.map.contains_key(tool.as_ref()),
-                "{tool} should be available in the {} toolset",
-                toolset.name
+                "{tool} should be available in the {toolset} toolset"
             );
         }
     }
 
     assert_eq!(
-        McpHandler::new(isolated_env(), &empty)
-            .tool_router
-            .map
-            .len(),
+        McpHandler::new(isolated_env(), empty).tool_router.map.len(),
         ALWAYS_AVAILABLE.len(),
         "an empty toolset must expose exactly the always-available tools"
     );
@@ -1348,7 +1360,7 @@ fn sessions_tool_not_in_any_toolset_definition() {
     // Sessions is always-available, not part of any toolset definition
     for builtin in BuiltinToolset::value_variants() {
         assert!(
-            !builtin.tools().contains(&DebugTool::Sessions),
+            !builtin.tools().contains(DebugTool::Sessions),
             "Sessions should not be in {builtin:?} toolset definition"
         );
     }
@@ -1865,14 +1877,13 @@ impl FakeSession {
         full_toolset_handler_with(self.env())
     }
 
-    fn handler_with(&self, toolset: &Toolset) -> McpHandler {
+    fn handler_with(&self, toolset: Toolset) -> McpHandler {
         McpHandler::new(self.env(), toolset)
     }
 
     /// `debug_dap_request` exists only in the raw toolset.
     fn raw_handler(&self) -> McpHandler {
-        let toolset = crate::toolsets::Toolset::from(crate::toolsets::BuiltinToolset::Raw);
-        McpHandler::new(self.env(), &toolset)
+        McpHandler::new(self.env(), BuiltinToolset::Raw.into())
     }
 
     fn env(&self) -> McpServerEnv {
@@ -1955,7 +1966,7 @@ async fn thread_snapshot_keeps_thread_order_when_stacks_arrive_out_of_order() {
 
 /// Call `threads` then `stack_trace` through a handler built from `toolset`
 /// and return the expansions the control plane received.
-async fn expansions_requested_by(toolset: &Toolset) -> Vec<(&'static str, Expansion)> {
+async fn expansions_requested_by(toolset: Toolset) -> Vec<(&'static str, Expansion)> {
     let fake = FakeControlPlane {
         threads: vec![Thread {
             id: 1.into(),
@@ -1985,7 +1996,7 @@ async fn expansions_requested_by(toolset: &Toolset) -> Vec<(&'static str, Expans
 #[tokio::test]
 async fn inspection_tools_request_the_expansion_their_toolset_can_use() {
     assert_eq!(
-        expansions_requested_by(&Toolset::from(BuiltinToolset::Full)).await,
+        expansions_requested_by(BuiltinToolset::Full.into()).await,
         [("threads", Expansion::ALL), ("stack_trace", Expansion::ALL)],
         "a toolset with every inspection tool should leave expansion to the proxy"
     );
@@ -1996,11 +2007,7 @@ async fn inspection_tools_request_the_expansion_their_toolset_can_use() {
         locals: false,
     };
     assert_eq!(
-        expansions_requested_by(&Toolset::custom(
-            "no_scopes".to_owned(),
-            vec![DebugTool::Threads, DebugTool::StackTrace],
-        ))
-        .await,
+        expansions_requested_by(Toolset::Custom(DebugTool::Threads | DebugTool::StackTrace)).await,
         [("threads", without_scopes), ("stack_trace", without_scopes)],
         "without the scopes and variables tools, neither should be inlined"
     );

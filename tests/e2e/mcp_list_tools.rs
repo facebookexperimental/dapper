@@ -7,7 +7,6 @@ use dapper_e2e_support::create_mcp_client;
 use dapper_e2e_support::create_mcp_client_with_toolset;
 use dapper_mcp_server::ALWAYS_AVAILABLE;
 use dapper_mcp_server::BuiltinToolset;
-use dapper_mcp_server::Toolset;
 
 #[tokio::test]
 async fn list_tools() -> anyhow::Result<()> {
@@ -35,15 +34,9 @@ async fn list_tools() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn list_tools_minimal_toolset() -> anyhow::Result<()> {
-    let toolset: Toolset = BuiltinToolset::Minimal.into();
-    let mut expected_tools = toolset.to_tool_names();
-    for tool in ALWAYS_AVAILABLE.map(|tool| tool.to_string()) {
-        if !expected_tools.contains(&tool) {
-            expected_tools.push(tool);
-        }
-    }
+    let expected_tools = BuiltinToolset::Minimal.tools() | ALWAYS_AVAILABLE;
 
-    let mcp_client = create_mcp_client_with_toolset(None, Some(toolset)).await?;
+    let mcp_client = create_mcp_client_with_toolset(None, Some(BuiltinToolset::Minimal)).await?;
 
     let tools_result = mcp_client.list_tools(Default::default()).await?;
 
@@ -55,14 +48,13 @@ async fn list_tools_minimal_toolset() -> anyhow::Result<()> {
         tools_result.tools.len()
     );
 
-    for expected_tool in &expected_tools {
+    for expected_tool in expected_tools {
         assert!(
             tools_result
                 .tools
                 .iter()
-                .any(|t| t.name == expected_tool.as_str()),
-            "Expected tool '{}' not found in minimal toolset",
-            expected_tool
+                .any(|t| t.name == expected_tool.as_ref()),
+            "Expected tool '{expected_tool}' not found in minimal toolset"
         );
     }
 

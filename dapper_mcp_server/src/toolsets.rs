@@ -5,18 +5,22 @@
 
 use clap::ValueEnum;
 use dapper_session::Expansion;
+use enumset::EnumSet;
+use enumset::EnumSetType;
+use enumset::enum_set;
 use strum::AsRefStr;
 use strum::Display;
 use strum::EnumString;
 use strum::IntoStaticStr;
 use strum::VariantNames;
 
-/// Represents a debug tool that can be included in a toolset
+/// Represents a debug tool that can be included in a toolset.
+///
+/// Declared in the order the help topics list tools, since an `EnumSet`
+/// iterates in declaration order.
 #[derive(
     Debug,
-    Clone,
-    PartialEq,
-    Eq,
+    EnumSetType,
     Display,
     EnumString,
     VariantNames,
@@ -24,6 +28,8 @@ use strum::VariantNames;
     IntoStaticStr
 )]
 pub enum DebugTool {
+    #[strum(serialize = "debug_status_command")]
+    Status,
     #[strum(serialize = "debug_threads_command")]
     Threads,
     #[strum(serialize = "debug_stack_trace_command")]
@@ -32,26 +38,24 @@ pub enum DebugTool {
     Scopes,
     #[strum(serialize = "debug_variables_command")]
     Variables,
+    #[strum(serialize = "debug_navigate_command")]
+    Navigate,
     #[strum(serialize = "debug_set_breakpoints_command")]
     SetBreakpoints,
     #[strum(serialize = "debug_set_exception_breakpoints_command")]
     SetExceptionBreakpoints,
-    #[strum(serialize = "debug_set_variable_command")]
-    SetVariable,
-    #[strum(serialize = "debug_navigate_command")]
-    Navigate,
     #[strum(serialize = "debug_evaluate_command")]
     Evaluate,
-    #[strum(serialize = "debug_stop_command")]
-    Stop,
+    #[strum(serialize = "debug_set_variable_command")]
+    SetVariable,
     #[strum(serialize = "debug_read_memory_command")]
     ReadMemory,
     #[strum(serialize = "debug_write_memory_command")]
     WriteMemory,
     #[strum(serialize = "debug_dap_request")]
     DapRequest,
-    #[strum(serialize = "debug_status_command")]
-    Status,
+    #[strum(serialize = "debug_stop_command")]
+    Stop,
     #[strum(serialize = "debug_capabilities_command")]
     Capabilities,
     #[strum(serialize = "debug_sessions_command")]
@@ -69,19 +73,9 @@ impl From<DebugTool> for std::borrow::Cow<'static, str> {
 }
 
 /// Tools the MCP server exposes whatever the toolset, custom ones included.
-pub const ALWAYS_AVAILABLE: [DebugTool; 4] = [
-    DebugTool::Status,
-    DebugTool::Capabilities,
-    DebugTool::Sessions,
-    DebugTool::Config,
-];
-
-/// A toolset defining which debugging tools are available
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Toolset {
-    pub name: String,
-    pub tools: Vec<DebugTool>,
-}
+pub const ALWAYS_AVAILABLE: EnumSet<DebugTool> = enum_set!(
+    DebugTool::Status | DebugTool::Capabilities | DebugTool::Sessions | DebugTool::Config
+);
 
 /// Builtin, predefined toolsets
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Display, ValueEnum)]
@@ -96,82 +90,83 @@ pub enum BuiltinToolset {
 }
 
 impl BuiltinToolset {
-    pub fn tools(&self) -> Vec<DebugTool> {
+    pub const fn tools(self) -> EnumSet<DebugTool> {
         match self {
-            Self::Minimal => vec![
-                DebugTool::Status,
-                DebugTool::Threads,
-                DebugTool::StackTrace,
-                DebugTool::Scopes,
-                DebugTool::Variables,
-                DebugTool::Capabilities,
-            ],
-            Self::Standard => vec![
-                DebugTool::Status,
-                DebugTool::Threads,
-                DebugTool::StackTrace,
-                DebugTool::Scopes,
-                DebugTool::Variables,
-                DebugTool::Navigate,
-                DebugTool::SetBreakpoints,
-                DebugTool::SetExceptionBreakpoints,
-                DebugTool::Stop,
-                DebugTool::Capabilities,
-            ],
-            Self::Full => vec![
-                DebugTool::Status,
-                DebugTool::Threads,
-                DebugTool::StackTrace,
-                DebugTool::Scopes,
-                DebugTool::Variables,
-                DebugTool::Navigate,
-                DebugTool::SetBreakpoints,
-                DebugTool::SetExceptionBreakpoints,
-                DebugTool::Evaluate,
-                DebugTool::SetVariable,
-                DebugTool::ReadMemory,
-                DebugTool::WriteMemory,
-                DebugTool::Stop,
-                DebugTool::Capabilities,
-                DebugTool::ThreadSnapshot,
-            ],
-            Self::Raw => vec![DebugTool::DapRequest, DebugTool::Stop],
+            Self::Minimal => enum_set!(
+                DebugTool::Status
+                    | DebugTool::Threads
+                    | DebugTool::StackTrace
+                    | DebugTool::Scopes
+                    | DebugTool::Variables
+                    | DebugTool::Capabilities
+            ),
+            Self::Standard => enum_set!(
+                DebugTool::Status
+                    | DebugTool::Threads
+                    | DebugTool::StackTrace
+                    | DebugTool::Scopes
+                    | DebugTool::Variables
+                    | DebugTool::Navigate
+                    | DebugTool::SetBreakpoints
+                    | DebugTool::SetExceptionBreakpoints
+                    | DebugTool::Stop
+                    | DebugTool::Capabilities
+            ),
+            Self::Full => enum_set!(
+                DebugTool::Status
+                    | DebugTool::Threads
+                    | DebugTool::StackTrace
+                    | DebugTool::Scopes
+                    | DebugTool::Variables
+                    | DebugTool::Navigate
+                    | DebugTool::SetBreakpoints
+                    | DebugTool::SetExceptionBreakpoints
+                    | DebugTool::Evaluate
+                    | DebugTool::SetVariable
+                    | DebugTool::ReadMemory
+                    | DebugTool::WriteMemory
+                    | DebugTool::Stop
+                    | DebugTool::Capabilities
+                    | DebugTool::ThreadSnapshot
+            ),
+            Self::Raw => enum_set!(DebugTool::DapRequest | DebugTool::Stop),
         }
     }
 }
 
-impl From<BuiltinToolset> for Toolset {
-    fn from(builtin: BuiltinToolset) -> Self {
-        Self {
-            name: builtin.to_string(),
-            tools: builtin.tools(),
-        }
-    }
+/// The tools an MCP server exposes on top of [`ALWAYS_AVAILABLE`].
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    derive_more::Display,
+    derive_more::From
+)]
+pub enum Toolset {
+    #[display("{_0}")]
+    Builtin(BuiltinToolset),
+    #[display("custom")]
+    Custom(EnumSet<DebugTool>),
 }
 
 impl Toolset {
-    /// Create a custom toolset with the given name and tools
-    pub fn custom(name: String, tools: Vec<DebugTool>) -> Self {
-        Self { name, tools }
-    }
-
-    /// Check if this toolset contains a specific tool
-    pub fn contains_tool(&self, tool_name: &str) -> bool {
-        self.tools.iter().any(|t| t.as_ref() == tool_name)
-    }
-
-    /// Convert the toolset's tools to a Vec<String>
-    pub fn to_tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.to_string()).collect()
+    pub fn tools(self) -> EnumSet<DebugTool> {
+        match self {
+            Self::Builtin(builtin) => builtin.tools(),
+            Self::Custom(tools) => tools,
+        }
     }
 
     /// The auto-expansion to ask the proxy for: a nested result is inlined
     /// only when this toolset has the tool that fetches it on its own.
-    pub fn expansion(&self) -> Expansion {
+    pub fn expansion(self) -> Expansion {
+        let tools = self.tools();
         Expansion {
-            stack_trace: self.tools.contains(&DebugTool::StackTrace),
-            scopes: self.tools.contains(&DebugTool::Scopes),
-            locals: self.tools.contains(&DebugTool::Variables),
+            stack_trace: tools.contains(DebugTool::StackTrace),
+            scopes: tools.contains(DebugTool::Scopes),
+            locals: tools.contains(DebugTool::Variables),
         }
     }
 }
@@ -181,22 +176,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_contains_tool() {
-        let toolset = Toolset::custom(
-            "test".to_string(),
-            vec![
+    fn builtin_toolsets_build_on_each_other() {
+        assert_eq!(
+            BuiltinToolset::Minimal.tools()
+                | DebugTool::Navigate
+                | DebugTool::SetBreakpoints
+                | DebugTool::SetExceptionBreakpoints
+                | DebugTool::Stop,
+            BuiltinToolset::Standard.tools(),
+            "standard is minimal plus navigation, breakpoints and stop"
+        );
+        assert_eq!(
+            BuiltinToolset::Standard.tools()
+                | DebugTool::Evaluate
+                | DebugTool::SetVariable
+                | DebugTool::ReadMemory
+                | DebugTool::WriteMemory
+                | DebugTool::ThreadSnapshot,
+            BuiltinToolset::Full.tools(),
+            "only `full` has the tools that run code in or write to the debuggee, plus memory reads and thread snapshots"
+        );
+        assert_eq!(
+            BuiltinToolset::Raw.tools(),
+            DebugTool::DapRequest | DebugTool::Stop
+        );
+    }
+
+    #[test]
+    fn toolsets_list_tools_in_help_order() {
+        assert_eq!(
+            BuiltinToolset::Standard.tools().iter().collect::<Vec<_>>(),
+            [
+                DebugTool::Status,
                 DebugTool::Threads,
                 DebugTool::StackTrace,
+                DebugTool::Scopes,
                 DebugTool::Variables,
-            ],
+                DebugTool::Navigate,
+                DebugTool::SetBreakpoints,
+                DebugTool::SetExceptionBreakpoints,
+                DebugTool::Stop,
+                DebugTool::Capabilities,
+            ]
         );
+        assert_eq!(
+            ALWAYS_AVAILABLE.iter().collect::<Vec<_>>(),
+            [
+                DebugTool::Status,
+                DebugTool::Capabilities,
+                DebugTool::Sessions,
+                DebugTool::Config,
+            ]
+        );
+    }
 
-        assert!(toolset.contains_tool("debug_threads_command"));
-        assert!(toolset.contains_tool("debug_stack_trace_command"));
-        assert!(toolset.contains_tool("debug_variables_command"));
-
-        assert!(!toolset.contains_tool("debug_evaluate_command"));
-        assert!(!toolset.contains_tool("nonexistent"));
+    #[test]
+    fn toolsets_display_their_name() {
+        assert_eq!(
+            Toolset::from(BuiltinToolset::Minimal).to_string(),
+            "minimal"
+        );
+        assert_eq!(Toolset::Custom(EnumSet::empty()).to_string(), "custom");
     }
 
     #[test]
@@ -213,64 +253,21 @@ mod tests {
             );
         }
 
-        let no_scopes = Toolset::custom(
-            "no_scopes".to_string(),
-            vec![DebugTool::Threads, DebugTool::StackTrace],
-        );
         assert_eq!(
-            no_scopes.expansion(),
+            Toolset::Custom(enum_set!(DebugTool::Threads | DebugTool::StackTrace)).expansion(),
             Expansion {
                 stack_trace: true,
                 scopes: false,
                 locals: false,
             }
         );
-
-        let no_stack_trace = Toolset::custom(
-            "no_stack_trace".to_string(),
-            vec![DebugTool::Threads, DebugTool::Scopes],
-        );
         assert_eq!(
-            no_stack_trace.expansion(),
+            Toolset::Custom(enum_set!(DebugTool::Threads | DebugTool::Scopes)).expansion(),
             Expansion {
                 stack_trace: false,
                 scopes: true,
                 locals: false,
             }
         );
-    }
-
-    #[test]
-    fn test_to_tool_names() {
-        let minimal: Toolset = BuiltinToolset::Minimal.into();
-        let minimal_tools = minimal.to_tool_names();
-        assert_eq!(minimal.name, "minimal");
-        assert_eq!(minimal_tools.len(), 6);
-        assert!(minimal_tools.contains(&"debug_status_command".to_string()));
-        assert!(minimal_tools.contains(&"debug_threads_command".to_string()));
-        assert!(minimal_tools.contains(&"debug_variables_command".to_string()));
-        assert!(minimal_tools.contains(&"debug_capabilities_command".to_string()));
-
-        let standard: Toolset = BuiltinToolset::Standard.into();
-        let standard_tools = standard.to_tool_names();
-        assert_eq!(standard_tools.len(), 10);
-        assert!(standard_tools.contains(&"debug_navigate_command".to_string()));
-        assert!(standard_tools.contains(&"debug_set_exception_breakpoints_command".to_string()));
-
-        let custom = Toolset::custom(
-            "test".to_string(),
-            vec![DebugTool::Threads, DebugTool::Navigate],
-        );
-        let tool_names = custom.to_tool_names();
-        assert_eq!(tool_names.len(), 2);
-        assert_eq!(tool_names[0], "debug_threads_command");
-        assert_eq!(tool_names[1], "debug_navigate_command");
-
-        let raw: Toolset = BuiltinToolset::Raw.into();
-        let raw_tools = raw.to_tool_names();
-        assert_eq!(raw.name, "raw");
-        assert_eq!(raw_tools.len(), 2);
-        assert!(raw_tools.contains(&"debug_dap_request".to_string()));
-        assert!(raw_tools.contains(&"debug_stop_command".to_string()));
     }
 }

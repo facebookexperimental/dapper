@@ -63,6 +63,7 @@ use tracing::Instrument as _;
 use tracing::Span;
 
 use crate::toolsets::ALWAYS_AVAILABLE;
+use crate::toolsets::DebugTool;
 use crate::toolsets::Toolset;
 
 mod format;
@@ -213,10 +214,12 @@ fn render_result<T: std::fmt::Display + serde::Serialize>(
 
 #[tool_router]
 impl McpHandler {
-    pub fn new(env: McpServerEnv, toolset: &Toolset) -> Self {
+    pub fn new(env: McpServerEnv, toolset: Toolset) -> Self {
+        let exposed = toolset.tools() | ALWAYS_AVAILABLE;
         let mut tool_router = Self::tool_router();
         tool_router.map.retain(|name, _| {
-            toolset.contains_tool(name) || ALWAYS_AVAILABLE.iter().any(|tool| tool.as_ref() == name)
+            name.parse::<DebugTool>()
+                .is_ok_and(|tool| exposed.contains(tool))
         });
 
         Self {

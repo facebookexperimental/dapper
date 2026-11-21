@@ -8,21 +8,15 @@ use dapper_e2e_support::McpClient;
 use dapper_e2e_support::create_mcp_client_with_toolset;
 use dapper_e2e_support::extract_text_content;
 use dapper_e2e_support::setup_stopped_debug_session;
+use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
-use dapper_mcp_server::Toolset;
 use rmcp::model::CallToolRequestParams;
-
-fn raw_toolset() -> Toolset {
-    Toolset {
-        name: "raw".to_string(),
-        tools: vec![DebugTool::DapRequest, DebugTool::Stop],
-    }
-}
 
 async fn setup_raw_mcp_session(test_name: &str) -> anyhow::Result<(DapClient, McpClient)> {
     let (scope_id, dap_client) = setup_stopped_debug_session(test_name)?;
 
-    let mcp_client = create_mcp_client_with_toolset(Some(scope_id), Some(raw_toolset())).await?;
+    let mcp_client =
+        create_mcp_client_with_toolset(Some(scope_id), Some(BuiltinToolset::Raw)).await?;
 
     Ok((dap_client, mcp_client))
 }

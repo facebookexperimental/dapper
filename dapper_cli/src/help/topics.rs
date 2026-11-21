@@ -132,11 +132,10 @@ fn render_toolset_table() -> String {
 ///
 /// `DebugTool` derives `strum::AsRefStr`, so `tool.as_ref()` yields the
 /// serialize-spelled form (e.g. `"debug_threads_command"`,
-/// `"debug_dap_request"`) without requiring the variant to be `Copy`.
-/// We then strip the `debug_` prefix and the `_command` suffix (when
-/// present) and replace underscores with hyphens to land on
-/// `"threads"`, `"stack-trace"`, `"dap-request"`, and so on.
-fn display_tool_name(tool: &DebugTool) -> String {
+/// `"debug_dap_request"`). We then strip the `debug_` prefix and the
+/// `_command` suffix (when present) and replace underscores with hyphens to
+/// land on `"threads"`, `"stack-trace"`, `"dap-request"`, and so on.
+fn display_tool_name(tool: DebugTool) -> String {
     let raw: &str = tool.as_ref();
     let trimmed = raw.strip_prefix("debug_").unwrap_or(raw);
     let trimmed = trimmed.strip_suffix("_command").unwrap_or(trimmed);
@@ -222,7 +221,7 @@ mod tests {
                     "rendered mcp body missing row for toolset `{ts}`:\n{rendered}"
                 );
                 for tool in ts.tools() {
-                    let display = display_tool_name(&tool);
+                    let display = display_tool_name(tool);
                     assert!(
                         rendered.contains(&display),
                         "rendered mcp body missing tool `{display}` for toolset `{ts}`"
@@ -241,7 +240,7 @@ mod tests {
                 .expect("mcp topic registered");
             let rendered = mcp.body.render(ctx);
             assert!(!rendered.contains("{{always_available_tools}}"));
-            for tool in &ALWAYS_AVAILABLE {
+            for tool in ALWAYS_AVAILABLE {
                 let display = format!("`{}`", display_tool_name(tool));
                 assert!(
                     rendered.contains(&display),
@@ -289,15 +288,15 @@ mod tests {
 
     #[test]
     fn display_tool_name_strips_prefix_and_suffix() {
-        assert_eq!(display_tool_name(&DebugTool::Threads), "threads");
-        assert_eq!(display_tool_name(&DebugTool::StackTrace), "stack-trace");
+        assert_eq!(display_tool_name(DebugTool::Threads), "threads");
+        assert_eq!(display_tool_name(DebugTool::StackTrace), "stack-trace");
         assert_eq!(
-            display_tool_name(&DebugTool::SetBreakpoints),
+            display_tool_name(DebugTool::SetBreakpoints),
             "set-breakpoints"
         );
-        assert_eq!(display_tool_name(&DebugTool::SetVariable), "set-variable");
+        assert_eq!(display_tool_name(DebugTool::SetVariable), "set-variable");
         // `dap_request` lacks the `_command` suffix in its strum
         // serialize; the trim still produces the expected result.
-        assert_eq!(display_tool_name(&DebugTool::DapRequest), "dap-request");
+        assert_eq!(display_tool_name(DebugTool::DapRequest), "dap-request");
     }
 }

@@ -9,8 +9,8 @@ use dapper_config::OutputFormat;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::ThreadId;
 use dapper_dap_protocol::data_types::VariablesReference;
+use dapper_mcp_server::BuiltinToolset;
 use dapper_mcp_server::DebugTool;
-use dapper_mcp_server::Toolset;
 pub use dapper_proxy_server::ProgressEvent;
 use dapper_session::NavigationType;
 use dapper_session::ScopeId;
@@ -62,7 +62,7 @@ pub async fn create_mcp_client(scope_id: Option<ScopeId>) -> Result<McpClient> {
 /// Starts Dapper's MCP server with an optional scope and toolset.
 pub async fn create_mcp_client_with_toolset(
     scope_id: Option<ScopeId>,
-    toolset: Option<Toolset>,
+    toolset: Option<BuiltinToolset>,
 ) -> Result<McpClient> {
     create_mcp_client_with_binary(&dapper_executable()?, scope_id, toolset).await
 }
@@ -70,7 +70,7 @@ pub async fn create_mcp_client_with_toolset(
 /// Starts Dapper's MCP server with `--json`, so tool results render as JSON.
 pub async fn create_mcp_client_with_json(
     scope_id: Option<ScopeId>,
-    toolset: Option<Toolset>,
+    toolset: Option<BuiltinToolset>,
 ) -> Result<McpClient> {
     spawn_mcp_client(&dapper_executable()?, scope_id, toolset, OutputFormat::Json).await
 }
@@ -79,7 +79,7 @@ pub async fn create_mcp_client_with_json(
 pub async fn create_mcp_client_with_binary(
     dapper_path: &str,
     scope_id: Option<ScopeId>,
-    toolset: Option<Toolset>,
+    toolset: Option<BuiltinToolset>,
 ) -> Result<McpClient> {
     spawn_mcp_client(dapper_path, scope_id, toolset, OutputFormat::Plaintext).await
 }
@@ -87,7 +87,7 @@ pub async fn create_mcp_client_with_binary(
 async fn spawn_mcp_client(
     dapper_path: &str,
     scope_id: Option<ScopeId>,
-    toolset: Option<Toolset>,
+    toolset: Option<BuiltinToolset>,
     output_format: OutputFormat,
 ) -> Result<McpClient> {
     let dapper_path = dapper_path.to_owned();
@@ -99,7 +99,7 @@ async fn spawn_mcp_client(
                     command.arg("--scope-id").arg(scope.as_str());
                 }
                 if let Some(toolset) = toolset {
-                    command.arg("--toolset").arg(toolset.name);
+                    command.arg("--toolset").arg(toolset.to_string());
                 }
                 match output_format {
                     OutputFormat::Json => {

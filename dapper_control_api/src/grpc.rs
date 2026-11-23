@@ -1171,6 +1171,14 @@ mod tests {
                         debugger_args: None,
                         parent_session_id: None,
                     }),
+                    output: dapper_session::BufferedOutput {
+                        head: vec![dapper_session::OutputEvent {
+                            output: "charging card 4111\n".to_string(),
+                            ..Default::default()
+                        }],
+                        total_count: 1,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }),
             })
@@ -1999,6 +2007,27 @@ mod tests {
                     ..Expansion::ALL
                 }],
                 "under {preset}, locals should be expanded only with read_values"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_policy_without_read_values_keeps_values_out_of_answers() -> anyhow::Result<()> {
+        for (preset, reveals_values) in [(Preset::Structure, false), (Preset::Minimal, true)] {
+            let (_server, client, _) = served_under(Policy::try_new(preset.operations())?).await?;
+
+            let (_, context) = client.threads(Expansion::ALL).await?.into_parts();
+
+            let context = context.expect("the test server answers threads with a context");
+            assert_eq!(
+                context.output.is_empty(),
+                !reveals_values,
+                "under {preset}, the program's output should be shown only with read_values"
+            );
+            assert!(
+                context.session.is_some(),
+                "under {preset}, the session stays: it is not the program's data"
             );
         }
         Ok(())

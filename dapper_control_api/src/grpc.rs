@@ -1979,6 +1979,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_policy_without_read_values_expands_no_locals() -> anyhow::Result<()> {
+        for (preset, reveals_values) in [(Preset::Structure, false), (Preset::Minimal, true)] {
+            let server = TestServer::new(Arc::new(AtomicBool::new(false)));
+            let recorded = Arc::clone(&server.expansions);
+            let control_plane_server =
+                serve(None, server, Policy::try_new(preset.operations())?).await?;
+            let client = DapperControlPlaneClient::for_port(control_plane_server.port);
+
+            client.threads(Expansion::ALL).await?;
+
+            assert_eq!(
+                recorded
+                    .lock()
+                    .expect("expansion recorder mutex should not be poisoned")
+                    .as_slice(),
+                [Expansion {
+                    locals: reveals_values,
+                    ..Expansion::ALL
+                }],
+                "under {preset}, locals should be expanded only with read_values"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_refused_raw_request_fails_the_call() -> anyhow::Result<()> {
         let (_server, client, _) =
             served_under(Policy::try_new(Preset::Standard.operations())?).await?;

@@ -33,7 +33,8 @@ use crate::ControlPlaneResult;
 use crate::DapperControlPlane;
 
 /// A control plane that refuses the calls `policy` does not allow before they
-/// reach `inner`.
+/// reach `inner`, and asks `inner` for no locals when `policy` does not allow
+/// `read_values`.
 pub(crate) struct Enforced<T> {
     pub(crate) inner: T,
     pub(crate) policy: Policy,
@@ -51,6 +52,23 @@ impl<T> Enforced<T> {
                     "{refusal}"
                 );
             })
+    }
+
+    /// `value`, or what `strip` leaves of it when the policy withholds the
+    /// program's values.
+    fn shown<V>(&self, value: V, strip: impl FnOnce(V) -> V) -> V {
+        if self.policy.allowed().contains(Operation::ReadValues) {
+            value
+        } else {
+            strip(value)
+        }
+    }
+}
+
+fn without_locals(expansion: Expansion) -> Expansion {
+    Expansion {
+        locals: false,
+        ..expansion
     }
 }
 
@@ -74,7 +92,9 @@ where
         expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<ThreadsResult>> {
         self.check("threads", Operation::Inspect)?;
-        self.inner.threads(expansion).await
+        self.inner
+            .threads(self.shown(expansion, without_locals))
+            .await
     }
 
     async fn stack_trace(
@@ -86,7 +106,12 @@ where
     ) -> anyhow::Result<ControlPlaneResult<StackTraceResult>> {
         self.check("stack_trace", Operation::Inspect)?;
         self.inner
-            .stack_trace(thread_id, start_frame, levels, expansion)
+            .stack_trace(
+                thread_id,
+                start_frame,
+                levels,
+                self.shown(expansion, without_locals),
+            )
             .await
     }
 
@@ -96,7 +121,9 @@ where
         expansion: Expansion,
     ) -> anyhow::Result<ControlPlaneResult<ScopesResult>> {
         self.check("scopes", Operation::Inspect)?;
-        self.inner.scopes(frame_id, expansion).await
+        self.inner
+            .scopes(frame_id, self.shown(expansion, without_locals))
+            .await
     }
 
     async fn variables(

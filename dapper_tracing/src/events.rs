@@ -22,7 +22,8 @@ pub enum TelemetryEvent {
     ToolCallSuccess,
     /// An MCP tool call ran but its result reported an error. When the debug
     /// adapter rejected the tool's request, the event also carries
-    /// `rejected_by_debugger = true`.
+    /// `rejected_by_debugger = true`; when the session's access policy refused
+    /// it, `denied_by_access_policy = true`.
     ToolCallError,
     /// An MCP tool call failed at the protocol level, e.g. an unknown tool.
     ToolCallFailed,

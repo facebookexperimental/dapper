@@ -19,6 +19,7 @@ use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::DapperControlPlane;
 use dapper_control_api::DapperControlPlaneClient;
+use dapper_control_api::DeniedByAccessPolicy;
 use dapper_control_api::RejectedByDebugger;
 use dapper_control_api::RenderedResponse;
 use dapper_control_api::render;
@@ -159,6 +160,9 @@ enum ToolCallFlag {
     /// The debug adapter answered the tool's request with `success: false`, e.g.
     /// an lldb command that failed on its input. Set with the tool's error result.
     RejectedByDebugger,
+    /// The session's access policy refused the tool's call before it reached
+    /// the debug adapter. Set with the tool's error result.
+    DeniedByAccessPolicy,
 }
 
 /// The span `call_tool` runs each tool in; it declares the outcome flags.
@@ -168,6 +172,7 @@ fn tool_call_span() -> Span {
         timed_out = tracing::field::Empty,
         truncated = tracing::field::Empty,
         rejected_by_debugger = tracing::field::Empty,
+        denied_by_access_policy = tracing::field::Empty,
     )
 }
 
@@ -276,6 +281,10 @@ impl McpHandler {
         flag_tool_call(
             ToolCallFlag::RejectedByDebugger,
             e.is::<RejectedByDebugger>(),
+        );
+        flag_tool_call(
+            ToolCallFlag::DeniedByAccessPolicy,
+            e.is::<DeniedByAccessPolicy>(),
         );
         self.err(format!("{ctx}: {e:#}"))
     }

@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 use clap::ValueEnum;
 use dapper_access::Policy;
+use dapper_access::Preset;
 use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneServer;
 use dapper_dap_protocol::data_types::FrameId;
@@ -1102,6 +1103,38 @@ async fn a_control_plane_failure_is_not_flagged_as_rejected() {
         None,
         "a failure that is not the adapter refusing the request leaves the flag unset; got {event}"
     );
+    assert_eq!(
+        event_field(&event, "denied_by_access_policy"),
+        None,
+        "a failure under no policy is not a refusal; got {event}"
+    );
+}
+
+/// The refusal crosses the real gRPC control plane, so this also covers its
+/// classification surviving the wire.
+#[tokio::test(flavor = "current_thread")]
+async fn a_call_the_access_policy_refuses_is_flagged_on_its_tool_call_error() {
+    let structure =
+        Policy::try_new(Preset::Structure.operations()).expect("a preset is a whole policy");
+    let fake = FakeSession::start_under(FakeControlPlane::default(), structure).await;
+    let events = events_from_call(
+        fake.handler(),
+        "debug_evaluate_command",
+        json!({"expression": "1 + 1"}),
+    )
+    .await;
+    let event = find_event(&events, "tool_call_error");
+
+    assert_eq!(
+        event_field(event, "denied_by_access_policy"),
+        Some("true"),
+        "a refusal must be flagged; got {event}"
+    );
+    assert_eq!(
+        event_field(event, "rejected_by_debugger"),
+        None,
+        "the debugger was never asked; got {event}"
+    );
 }
 
 /// The rendered value of `field` in a captured event, e.g. `duration_ms=3`.
@@ -1139,6 +1172,11 @@ async fn every_tool_call_event_carries_a_duration_and_no_unearned_flags() {
             event_field(event, "rejected_by_debugger"),
             None,
             "{event_name}: no adapter was asked, so nothing was rejected; got {event}"
+        );
+        assert_eq!(
+            event_field(event, "denied_by_access_policy"),
+            None,
+            "{event_name}: no policy refused anything; got {event}"
         );
     }
 }
@@ -1264,6 +1302,10 @@ async fn every_tool_call_flag_names_a_declared_span_field() {
         (ToolCallFlag::TimedOut, "timed_out"),
         (ToolCallFlag::Truncated, "truncated"),
         (ToolCallFlag::RejectedByDebugger, "rejected_by_debugger"),
+        (
+            ToolCallFlag::DeniedByAccessPolicy,
+            "denied_by_access_policy",
+        ),
     ] {
         assert_eq!(flag.as_ref(), field);
         let (_, event) = flags_recorded_by(async {
@@ -1274,7 +1316,12 @@ async fn every_tool_call_flag_names_a_declared_span_field() {
         .await;
 
         assert_eq!(event_field(&event, field), Some("true"), "got {event}");
-        for other in ["timed_out", "truncated", "rejected_by_debugger"] {
+        for other in [
+            "timed_out",
+            "truncated",
+            "rejected_by_debugger",
+            "denied_by_access_policy",
+        ] {
             if other != field {
                 assert_eq!(event_field(&event, other), None, "got {event}");
             }
@@ -1288,10 +1335,16 @@ async fn tool_call_flags_can_be_raised_together() {
         flag_tool_call(ToolCallFlag::TimedOut, true);
         flag_tool_call(ToolCallFlag::Truncated, true);
         flag_tool_call(ToolCallFlag::RejectedByDebugger, true);
+        flag_tool_call(ToolCallFlag::DeniedByAccessPolicy, true);
     })
     .await;
 
-    for field in ["timed_out", "truncated", "rejected_by_debugger"] {
+    for field in [
+        "timed_out",
+        "truncated",
+        "rejected_by_debugger",
+        "denied_by_access_policy",
+    ] {
         assert_eq!(event_field(&event, field), Some("true"), "got {event}");
     }
 }
@@ -1861,7 +1914,11 @@ struct FakeSession {
 
 impl FakeSession {
     async fn start(fake: FakeControlPlane) -> Self {
-        let server = dapper_control_api::serve(None, fake, Policy::UNRESTRICTED)
+        Self::start_under(fake, Policy::UNRESTRICTED).await
+    }
+
+    async fn start_under(fake: FakeControlPlane, policy: Policy) -> Self {
+        let server = dapper_control_api::serve(None, fake, policy)
             .await
             .expect("serve the fake control plane");
         let session = SessionInfo::generate("fake".into(), Some(server.port), None, None, None);

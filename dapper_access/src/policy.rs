@@ -5,6 +5,7 @@
 
 use enumset::EnumSet;
 
+use crate::Grant;
 use crate::Operation;
 use crate::operation::operation_names;
 
@@ -30,6 +31,12 @@ impl Policy {
             }),
             None => Ok(Policy(allowed)),
         }
+    }
+
+    /// The policy allowing what `grants` grant. Each grant's operations are a
+    /// whole policy, and so is any union of whole policies.
+    pub fn from_grants(grants: impl IntoIterator<Item = Grant>) -> Self {
+        Policy(grants.into_iter().map(Grant::operations).collect())
     }
 
     pub fn allowed(self) -> EnumSet<Operation> {
@@ -76,7 +83,44 @@ pub struct IncompletePolicy {
 
 #[cfg(test)]
 mod tests {
+    use strum::IntoEnumIterator;
+
     use super::*;
+    use crate::Preset;
+
+    fn grants(names: &[&str]) -> Vec<Grant> {
+        names
+            .iter()
+            .map(|name| name.parse().expect("test grants should be known names"))
+            .collect()
+    }
+
+    #[test]
+    fn every_grant_is_a_whole_policy() {
+        let grants = Preset::iter()
+            .map(Grant::from)
+            .chain(EnumSet::<Operation>::all().iter().map(Grant::from));
+        for grant in grants {
+            assert_eq!(
+                Policy::try_new(grant.operations()).map(Policy::allowed),
+                Ok(grant.operations()),
+                "`{grant}` should be a policy on its own"
+            );
+        }
+    }
+
+    #[test]
+    fn a_policy_allows_what_its_grants_grant() {
+        assert_eq!(
+            Policy::from_grants(grants(&["minimal", "navigate", "inspect"])).allowed(),
+            Operation::Inspect | Operation::ReadValues | Operation::Navigate
+        );
+        assert_eq!(
+            Policy::from_grants(grants(&["structure", "set_variable"])).allowed(),
+            Operation::Inspect | Operation::SetVariable | Operation::ReadValues,
+            "set_variable comes with read_values, which it reveals"
+        );
+    }
 
     #[test]
     fn a_policy_may_allow_nothing() {
@@ -132,6 +176,7 @@ mod tests {
     fn the_unrestricted_policy_allows_everything() {
         assert_eq!(Policy::UNRESTRICTED.allowed(), EnumSet::all());
         assert_eq!(Policy::try_new(EnumSet::all()), Ok(Policy::UNRESTRICTED));
+        assert_eq!(Policy::from_grants(grants(&["full"])), Policy::UNRESTRICTED);
     }
 
     #[test]

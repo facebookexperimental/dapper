@@ -8,8 +8,10 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+derive_more = { version = "2.1.1", features = ["full"] }
 enumset = { version = "1.1.15", features = ["alloc", "serde"], default-features = false }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_with = { version = "3.24.0", features = ["base64", "hex", "json"] }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
 

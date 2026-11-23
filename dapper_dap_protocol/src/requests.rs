@@ -557,6 +557,10 @@ pub struct LocationsArguments {
     pub extra: IndexMap<String, Value>,
 }
 
+/// The command and arguments of a DAP request. A command name parses to its
+/// [`RequestCommandDiscriminants`] kind ignoring ASCII case, because some
+/// adapters dispatch that way: debugpy finds a request's handler by its
+/// lowercased command name.
 #[derive(
     Debug,
     Clone,
@@ -566,7 +570,8 @@ pub struct LocationsArguments {
     AsRefStr,
     strum::EnumDiscriminants
 )]
-#[strum_discriminants(derive(strum::EnumIter, Hash))]
+#[strum_discriminants(derive(strum::EnumIter, strum::EnumString, Hash))]
+#[strum_discriminants(strum(serialize_all = "camelCase", ascii_case_insensitive))]
 #[serde(tag = "command", content = "arguments", rename_all = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum RequestCommand {

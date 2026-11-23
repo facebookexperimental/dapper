@@ -991,6 +991,26 @@ fn request_command_inventory_is_exhaustive() {
 }
 
 #[test]
+fn every_command_name_parses_to_its_kind_in_any_case() {
+    for command in all_request_commands() {
+        let kind = RequestCommandDiscriminants::from(&command);
+        let name = command.command_name();
+        assert_eq!(name.parse(), Ok(kind), "`{name}` should name {kind:?}");
+        assert_eq!(
+            name.to_ascii_uppercase().parse(),
+            Ok(kind),
+            "`{name}` in upper case should still name {kind:?}"
+        );
+    }
+    assert!(
+        "notADapCommand"
+            .parse::<RequestCommandDiscriminants>()
+            .is_err(),
+        "a name outside the DAP specification should name no kind"
+    );
+}
+
+#[test]
 fn response_body_inventory_is_exhaustive() {
     use strum::IntoEnumIterator;
     let covered: std::collections::HashSet<ResponseBodyDiscriminants> = all_response_bodies()

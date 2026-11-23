@@ -6,6 +6,7 @@
 #![warn(clippy::all)]
 
 mod grpc;
+pub use grpc::AccessControl;
 pub use grpc::ControlPlaneServer;
 pub use grpc::DapperControlPlaneClient;
 pub use grpc::DeniedByAccessPolicy;
@@ -14,6 +15,9 @@ pub use grpc::resolve_unique_session;
 pub use grpc::serve;
 
 mod enforced;
+
+#[cfg(test)]
+mod test_log;
 
 mod envelope;
 

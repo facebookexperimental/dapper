@@ -345,7 +345,7 @@ impl Proxy {
             session_id: session_id.clone(),
             scope_id: self.scope_id.clone(),
             child_teardown: child_teardown_hook.clone(),
-            policy,
+            access: policy.into(),
         })
         .await;
 

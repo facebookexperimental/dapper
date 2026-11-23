@@ -13,6 +13,7 @@ use std::sync::PoisonError;
 
 use anyhow::Context;
 use dapper_access::NotPermitted;
+use dapper_access::OverrideToken;
 use dapper_access::Policy;
 use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
@@ -58,6 +59,7 @@ use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
+use dapper_tracing::events::TelemetryEvent;
 use strum::EnumString;
 use strum::IntoStaticStr;
 use tokio::task::JoinHandle;
@@ -66,8 +68,11 @@ use tonic::Code;
 use tonic::Request;
 use tonic::Response;
 use tonic::Status;
+use tonic::metadata::Ascii;
 use tonic::metadata::MetadataMap;
 use tonic::metadata::MetadataValue;
+use tonic::service::Interceptor;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::transport::Server;
@@ -81,11 +86,30 @@ pub struct ControlPlaneServer {
     pub port: Port,
 }
 
-/// Serve the control plane on port, refusing the calls `policy` does not allow
+/// What callers of a control plane may do: its policy, and the token that
+/// lets a call skip it.
+#[derive(Debug, Clone)]
+pub struct AccessControl {
+    pub policy: Policy,
+    /// The token a call carries to skip `policy`; without one, every call is
+    /// held to it.
+    pub override_token: Option<OverrideToken>,
+}
+
+impl From<Policy> for AccessControl {
+    fn from(policy: Policy) -> Self {
+        Self {
+            policy,
+            override_token: None,
+        }
+    }
+}
+
+/// Serve the control plane on port, refusing the calls `access` does not allow
 pub async fn serve<T>(
     port: Option<Port>,
     control_plane: T,
-    policy: Policy,
+    access: impl Into<AccessControl>,
 ) -> anyhow::Result<ControlPlaneServer>
 where
     T: DapperControlPlane + 'static,
@@ -99,13 +123,9 @@ where
     tracing::info!("Bound control plane port: {}", bound_port);
     let actual_port = Port::try_new(bound_port).context("bound port should be non-zero")?;
 
+    let handler = DapperControlPlaneHandler::new(control_plane, access.into());
+
     let handle = tokio::spawn(async move {
-        let handler = DapperControlPlaneHandler {
-            control_plane: Enforced {
-                inner: control_plane,
-                policy,
-            },
-        };
         let incoming = TcpListenerStream::new(listener);
         Server::builder()
             .add_service(DapperControlPlaneServer::new(handler))
@@ -121,11 +141,56 @@ where
     })
 }
 
-struct DapperControlPlaneHandler<T>
-where
-    T: DapperControlPlane,
-{
-    control_plane: T,
+struct DapperControlPlaneHandler<T> {
+    /// The control plane as a call without the override token sees it.
+    enforced: Enforced<T>,
+    /// The same control plane as a call with the override token sees it.
+    overridden: Enforced<T>,
+    override_token: Option<OverrideToken>,
+}
+
+impl<T> DapperControlPlaneHandler<T> {
+    fn new(control_plane: T, access: AccessControl) -> Self {
+        let AccessControl {
+            policy,
+            override_token,
+        } = access;
+        let control_plane = Arc::new(control_plane);
+        Self {
+            enforced: Enforced {
+                inner: Arc::clone(&control_plane),
+                policy,
+                overridden: false,
+            },
+            overridden: Enforced {
+                inner: control_plane,
+                policy,
+                overridden: true,
+            },
+            override_token,
+        }
+    }
+
+    /// The control plane `request` reaches: past the policy only when it
+    /// carries this session's override token. A token the session did not
+    /// issue is logged, never its value.
+    fn control_plane<M>(&self, request: &Request<M>) -> &Enforced<T> {
+        let Some(presented) = request.metadata().get(OVERRIDE_TOKEN_KEY) else {
+            return &self.enforced;
+        };
+        if let Some(token) = &self.override_token
+            && presented
+                .to_str()
+                .is_ok_and(|presented| token.matches(presented))
+        {
+            return &self.overridden;
+        }
+        tracing::warn!(
+            dapper_event = %TelemetryEvent::OverrideTokenRejected,
+            "A control-plane call presented an override token this session did not issue; the access policy applies to it"
+        );
+        &self.enforced
+    }
 }
 
 #[async_trait::async_trait]
@@ -138,9 +203,9 @@ where
         request: Request<EvalRequest>,
     ) -> Result<Response<EvalResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let EvalRequest { command, frame_id } = request.into_inner();
-            let response = self
-                .control_plane
+            let response = control_plane
                 .eval_repl(&command, frame_id.map(Into::into))
                 .await?;
             Ok(EvalResponse { response })
@@ -148,9 +213,10 @@ where
         .await
     }
 
-    async fn stop(&self, _request: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
+    async fn stop(&self, request: Request<StopRequest>) -> Result<Response<StopResponse>, Status> {
         to_tonic(async {
-            self.control_plane.stop().await?;
+            let control_plane = self.control_plane(&request);
+            control_plane.stop().await?;
             Ok(StopResponse {})
         })
         .await
@@ -161,9 +227,9 @@ where
         request: Request<ThreadsRequest>,
     ) -> Result<Response<ThreadsResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let ThreadsRequest { expansion } = request.into_inner();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .threads(expansion_from_proto(expansion))
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -180,14 +246,14 @@ where
         request: Request<StackTraceRequest>,
     ) -> Result<Response<StackTraceResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let StackTraceRequest {
                 thread_id,
                 start_frame,
                 levels,
                 expansion,
             } = request.into_inner();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .stack_trace(
                     thread_id.into(),
                     start_frame,
@@ -209,12 +275,12 @@ where
         request: Request<ScopesRequest>,
     ) -> Result<Response<ScopesResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let ScopesRequest {
                 frame_id,
                 expansion,
             } = request.into_inner();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .scopes(frame_id.into(), expansion_from_proto(expansion))
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -231,13 +297,11 @@ where
         request: Request<VariablesRequest>,
     ) -> Result<Response<VariablesResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let VariablesRequest {
                 variables_reference,
             } = request.into_inner();
-            let cp_result = self
-                .control_plane
-                .variables(variables_reference.into())
-                .await?;
+            let cp_result = control_plane.variables(variables_reference.into()).await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(VariablesResponse {
                 result_json,
@@ -251,6 +315,7 @@ where
         request: Request<NavigateRequest>,
     ) -> Result<Response<NavigateResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let NavigateRequest {
                 thread_id,
                 navigation_type,
@@ -259,8 +324,7 @@ where
             let navigation_type_enum = NavigationType::try_from(navigation_type)
                 .map(navigation_type_from_proto)
                 .context("Invalid navigation type")?;
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .navigate(navigation_type_enum, thread_id.into(), single_thread)
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -277,13 +341,13 @@ where
         request: Request<SetVariableRequest>,
     ) -> Result<Response<SetVariableResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let SetVariableRequest {
                 variables_reference,
                 name,
                 value,
             } = request.into_inner();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .set_variable(variables_reference.into(), &name, &value)
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -300,6 +364,7 @@ where
         request: Request<SetBreakpointsRequest>,
     ) -> Result<Response<SetBreakpointsResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let SetBreakpointsRequest {
                 source_path,
                 clear_existing,
@@ -316,8 +381,7 @@ where
                     mode: bp.mode,
                 })
                 .collect();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .set_breakpoints(&source_path, clear_existing, &breakpoint_specs)
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -334,12 +398,12 @@ where
         request: Request<SetExceptionBreakpointsRequest>,
     ) -> Result<Response<SetExceptionBreakpointsResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let SetExceptionBreakpointsRequest {
                 filters,
                 clear_existing,
             } = request.into_inner();
-            let cp_result = self
-                .control_plane
+            let cp_result = control_plane
                 .set_exception_breakpoints(&filters, clear_existing)
                 .await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
@@ -356,6 +420,7 @@ where
         request: Request<RawDapRequest>,
     ) -> Result<Response<RawDapResponse>, Status> {
         to_tonic(async {
+            let control_plane = self.control_plane(&request);
             let RawDapRequest {
                 command,
                 arguments_json,
@@ -369,8 +434,7 @@ where
                 Some(serde_json::from_str(&arguments_json).context("Invalid JSON arguments")?)
             };
 
-            match self
-                .control_plane
+            match control_plane
                 .send_dap_request(
                     RequestCommand::from_raw(&command, arguments),
                     wait_for_event,
@@ -402,10 +466,11 @@ where
 
     async fn capabilities(
         &self,
-        _request: Request<CapabilitiesRequest>,
+        request: Request<CapabilitiesRequest>,
     ) -> Result<Response<CapabilitiesResponse>, Status> {
         to_tonic(async {
-            let result = self.control_plane.capabilities().await?;
+            let control_plane = self.control_plane(&request);
+            let result = control_plane.capabilities().await?;
             // Dual-write while older clients are still deployed: they only read
             // `capabilities_json`, and treat empty as "not yet available". Stop
             // populating it once every deployed dapper reads `result_json`.
@@ -425,10 +490,11 @@ where
 
     async fn status(
         &self,
-        _request: Request<StatusRequest>,
+        request: Request<StatusRequest>,
     ) -> Result<Response<StatusResponse>, Status> {
         to_tonic(async {
-            let cp_result = self.control_plane.status().await?;
+            let control_plane = self.control_plane(&request);
+            let cp_result = control_plane.status().await?;
             let (result_json, context_json) = cp_result.to_json_fields()?;
             Ok(StatusResponse {
                 result_json,
@@ -443,6 +509,9 @@ where
 /// not a distinct status code, so clients built before a kind existed still
 /// read the error text unchanged.
 const ERROR_KIND_KEY: &str = "dapper-error-kind";
+
+/// Metadata carrying the override token, when a call presents one.
+const OVERRIDE_TOKEN_KEY: &str = "dapper-override-token";
 
 /// How `to_tonic` classifies an error, as its [`ERROR_KIND_KEY`] value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr)]
@@ -528,11 +597,37 @@ fn status_error(status: Status) -> anyhow::Error {
 /// rejects legitimately large debugger output such as `thread backtrace all`.
 const MAX_DECODING_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-fn control_plane_client(
-    channel: Channel,
-) -> dapper_control_plane_client::DapperControlPlaneClient<Channel> {
-    dapper_control_plane_client::DapperControlPlaneClient::new(channel)
+type GrpcClient = dapper_control_plane_client::DapperControlPlaneClient<
+    InterceptedService<Channel, OverrideTokenInterceptor>,
+>;
+
+fn control_plane_client(channel: Channel, interceptor: OverrideTokenInterceptor) -> GrpcClient {
+    dapper_control_plane_client::DapperControlPlaneClient::with_interceptor(channel, interceptor)
         .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE)
+}
+
+/// Attaches a client's override token, when it has one, to every call.
+#[derive(Clone, Default)]
+struct OverrideTokenInterceptor(Option<MetadataValue<Ascii>>);
+
+impl OverrideTokenInterceptor {
+    fn carrying(token: &OverrideToken) -> Self {
+        let mut value = MetadataValue::try_from(token.expose())
+            .expect("an override token should be visible ASCII, which metadata accepts");
+        value.set_sensitive(true);
+        Self(Some(value))
+    }
+}
+
+impl Interceptor for OverrideTokenInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        if let Some(token) = &self.0 {
+            request
+                .metadata_mut()
+                .insert(OVERRIDE_TOKEN_KEY, token.clone());
+        }
+        Ok(request)
+    }
 }
 
 struct CachedConnection {
@@ -715,6 +810,7 @@ pub struct DapperControlPlaneClient {
     target: ClientTarget,
     /// Cached gRPC channel for connection reuse. Invalidated when port changes.
     cached_connection: Arc<Mutex<Option<CachedConnection>>>,
+    interceptor: OverrideTokenInterceptor,
 }
 
 impl DapperControlPlaneClient {
@@ -733,6 +829,16 @@ impl DapperControlPlaneClient {
         Self {
             target,
             cached_connection: Arc::new(Mutex::new(None)),
+            interceptor: OverrideTokenInterceptor::default(),
+        }
+    }
+
+    /// This client with every call carrying `token`, so the session's access
+    /// policy does not apply to it.
+    pub fn with_override_token(self, token: &OverrideToken) -> Self {
+        Self {
+            interceptor: OverrideTokenInterceptor::carrying(token),
+            ..self
         }
     }
 
@@ -757,9 +863,7 @@ impl DapperControlPlaneClient {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn get_client(
-        &self,
-    ) -> anyhow::Result<dapper_control_plane_client::DapperControlPlaneClient<Channel>> {
+    async fn get_client(&self) -> anyhow::Result<GrpcClient> {
         let (port, proxy_session_id) = self.resolve_port()?;
 
         // Reuse cached connection if port matches
@@ -768,7 +872,10 @@ impl DapperControlPlaneClient {
             if let Some(cached) = cache.as_ref()
                 && cached.port == port.get()
             {
-                return Ok(control_plane_client(cached.channel.clone()));
+                return Ok(control_plane_client(
+                    cached.channel.clone(),
+                    self.interceptor.clone(),
+                ));
             }
         }
 
@@ -789,7 +896,7 @@ impl DapperControlPlaneClient {
             });
         }
 
-        Ok(control_plane_client(channel))
+        Ok(control_plane_client(channel, self.interceptor.clone()))
     }
 }
 
@@ -1069,6 +1176,7 @@ mod tests {
     use enumset::EnumSet;
 
     use super::*;
+    use crate::test_log::logged_by;
 
     #[test]
     fn navigation_type_proto_round_trip_preserves_variants() {
@@ -1852,14 +1960,14 @@ mod tests {
     /// A control-plane client for a [`TestServer`] served under `policy`, and
     /// whether the server's `stop` ran.
     async fn served_under(
-        policy: Policy,
+        access: impl Into<AccessControl>,
     ) -> anyhow::Result<(
         ControlPlaneServer,
         DapperControlPlaneClient,
         Arc<AtomicBool>,
     )> {
         let stop_was_called = Arc::new(AtomicBool::new(false));
-        let server = serve(None, TestServer::new(Arc::clone(&stop_was_called)), policy).await?;
+        let server = serve(None, TestServer::new(Arc::clone(&stop_was_called)), access).await?;
         let client = DapperControlPlaneClient::for_port(server.port);
         Ok((server, client, stop_was_called))
     }
@@ -2046,6 +2154,119 @@ mod tests {
                 Some(policy.allowed())
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_override_token_lets_a_call_past_the_policy() -> anyhow::Result<()> {
+        let structure = Policy::try_new(Preset::Structure.operations())?;
+        let token = OverrideToken::generate()?;
+        let (server, client, stop_was_called) = served_under(AccessControl {
+            policy: structure,
+            override_token: Some(token.clone()),
+        })
+        .await?;
+
+        assert_refused(client.stop().await, "`stop` needs stop,");
+        let wrong = OverrideToken::generate()?;
+        assert_refused(
+            DapperControlPlaneClient::for_port(server.port)
+                .with_override_token(&wrong)
+                .stop()
+                .await,
+            "`stop` needs stop,",
+        );
+        assert!(!stop_was_called.load(Ordering::Relaxed));
+
+        let overriding =
+            DapperControlPlaneClient::for_port(server.port).with_override_token(&token);
+        overriding.stop().await?;
+        assert!(
+            stop_was_called.load(Ordering::Relaxed),
+            "the token should let `stop` through"
+        );
+        let (_, context) = overriding.threads(Expansion::ALL).await?.into_parts();
+        assert!(
+            !context
+                .expect("the test server answers threads with a context")
+                .output
+                .is_empty(),
+            "the token should let the program's output through"
+        );
+        let (status, _) = overriding.status().await?.into_parts();
+        assert_eq!(
+            status.access.map(|report| report.known_operations()),
+            Some(structure.allowed()),
+            "status should report the session's policy, not the override"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_override_token_the_session_did_not_issue_is_logged() {
+        let issued = OverrideToken::generate().expect("the OS should provide randomness");
+        let other = OverrideToken::generate().expect("the OS should provide randomness");
+        let structure =
+            Policy::try_new(Preset::Structure.operations()).expect("a preset is a whole policy");
+        let with_token = DapperControlPlaneHandler::new(
+            TestServer::new(Arc::new(AtomicBool::new(false))),
+            AccessControl {
+                policy: structure,
+                override_token: Some(issued.clone()),
+            },
+        );
+        let without_token = DapperControlPlaneHandler::new(
+            TestServer::new(Arc::new(AtomicBool::new(false))),
+            AccessControl::from(structure),
+        );
+        let presenting = |token: &OverrideToken| {
+            let mut request = Request::new(StopRequest {});
+            request.metadata_mut().insert(
+                OVERRIDE_TOKEN_KEY,
+                MetadataValue::try_from(token.expose()).expect("a token is valid metadata"),
+            );
+            request
+        };
+
+        let logged = logged_by(|| {
+            assert!(
+                !with_token
+                    .control_plane(&Request::new(StopRequest {}))
+                    .overridden
+            );
+            assert!(with_token.control_plane(&presenting(&issued)).overridden);
+            assert!(!with_token.control_plane(&presenting(&other)).overridden);
+            assert!(!without_token.control_plane(&presenting(&issued)).overridden);
+        });
+
+        assert_eq!(
+            logged
+                .lines()
+                .filter(|line| line.contains("dapper_event=override_token_rejected"))
+                .count(),
+            2,
+            "a wrong token and a token for a session without one should be logged: {logged}"
+        );
+        assert!(
+            !logged.contains(issued.expose()) && !logged.contains(other.expose()),
+            "the log should hold no token: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_without_an_override_token_takes_none() -> anyhow::Result<()> {
+        let (server, _, stop_was_called) =
+            served_under(Policy::try_new(Preset::Structure.operations())?).await?;
+
+        let presented = OverrideToken::generate()?;
+        assert_refused(
+            DapperControlPlaneClient::for_port(server.port)
+                .with_override_token(&presented)
+                .stop()
+                .await,
+            "`stop` needs stop,",
+        );
+        assert!(!stop_was_called.load(Ordering::Relaxed));
         Ok(())
     }
 

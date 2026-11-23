@@ -33,6 +33,15 @@ pub enum TelemetryEvent {
     /// The session's access policy refused a control-plane call. The event
     /// carries the refused `call` and the `missing` operations.
     ControlPlaneCallRefused,
+    /// A control-plane call carried the session's override token, so its access
+    /// policy did not apply. The event carries the `call` and the `missing`
+    /// operations the policy would have refused.
+    /// A call that fails before it reaches the control plane, such as one with
+    /// malformed arguments, gains nothing from the token and logs no event.
+    ControlPlaneCallOverridden,
+    /// A control-plane call presented an override token the session did not
+    /// issue, and was held to the access policy.
+    OverrideTokenRejected,
 }
 
 impl TelemetryEvent {

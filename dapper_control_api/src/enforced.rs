@@ -4,6 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::convert::identity;
+use std::sync::Arc;
 
 use dapper_access::NotPermitted;
 use dapper_access::Operation;
@@ -48,28 +49,42 @@ use crate::DapperControlPlane;
 /// reach `inner`, and keeps the program's values out of what it answers when
 /// `policy` does not allow `read_values`.
 pub(crate) struct Enforced<T> {
-    pub(crate) inner: T,
+    pub(crate) inner: Arc<T>,
     pub(crate) policy: Policy,
+    /// The call carried the session's override token: `policy` is reported
+    /// but not enforced.
+    pub(crate) overridden: bool,
 }
 
 impl<T> Enforced<T> {
     fn check(&self, call: &str, needed: impl Into<EnumSet<Operation>>) -> Result<(), NotPermitted> {
-        self.policy
-            .check(call, needed.into())
-            .inspect_err(|refusal| {
-                tracing::warn!(
-                    dapper_event = %TelemetryEvent::ControlPlaneCallRefused,
-                    call,
-                    missing = %operation_names(&refusal.missing),
-                    "{refusal}"
-                );
-            })
+        let checked = self.policy.check(call, needed.into());
+        if self.overridden {
+            let missing = checked
+                .err()
+                .map_or(EnumSet::empty(), |refusal| refusal.missing);
+            tracing::info!(
+                dapper_event = %TelemetryEvent::ControlPlaneCallOverridden,
+                call,
+                missing = %operation_names(&missing),
+                "`{call}` carried the override token, so the access policy does not apply to it"
+            );
+            return Ok(());
+        }
+        checked.inspect_err(|refusal| {
+            tracing::warn!(
+                dapper_event = %TelemetryEvent::ControlPlaneCallRefused,
+                call,
+                missing = %operation_names(&refusal.missing),
+                "{refusal}"
+            );
+        })
     }
 
     /// `value`, or what `strip` leaves of it when the policy withholds the
     /// program's values.
     fn shown<V>(&self, value: V, strip: impl FnOnce(V) -> V) -> V {
-        if self.policy.allowed().contains(Operation::ReadValues) {
+        if self.overridden || self.policy.allowed().contains(Operation::ReadValues) {
             value
         } else {
             strip(value)
@@ -377,11 +392,13 @@ where
     }
 
     async fn capabilities(&self) -> anyhow::Result<ControlPlaneResult<CapabilitiesResult>> {
+        self.check("capabilities", EnumSet::empty())?;
         let result = self.inner.capabilities().await?;
         Ok(self.shown(result, |result| result_without_values(result, identity)))
     }
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>> {
+        self.check("status", EnumSet::empty())?;
         let ControlPlaneResult { result, context } = self.inner.status().await?;
         let result = StatusResult {
             access: Some(self.policy.into()),
@@ -398,9 +415,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::Write;
-    use std::sync::Arc;
-    use std::sync::Mutex;
 
     use dapper_dap_protocol::data_types::BreakpointId;
     use dapper_dap_protocol::enums::StoppedReason;
@@ -414,24 +428,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    /// Everything `tracing` formats, for asserting what a refusal logs.
-    #[derive(Clone, Default)]
-    struct Logged(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Logged {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("the log buffer should not be poisoned")
-                .extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::test_log::logged_by;
 
     fn stop_with_a_message() -> StoppedEventBody {
         StoppedEventBody {
@@ -629,19 +626,14 @@ mod tests {
 
     #[test]
     fn a_refusal_is_logged_as_a_telemetry_event() {
-        let logged = Logged::default();
-        let writer = logged.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
         let enforced = Enforced {
-            inner: (),
+            inner: Arc::new(()),
             policy: Policy::try_new(EnumSet::only(Operation::Inspect))
                 .expect("inspect alone is a whole policy"),
+            overridden: false,
         };
 
-        tracing::subscriber::with_default(subscriber, || {
+        let logged = logged_by(|| {
             enforced
                 .check("threads", Operation::Inspect)
                 .expect("inspect is allowed");
@@ -650,8 +642,6 @@ mod tests {
                 .expect_err("write_memory is not allowed");
         });
 
-        let logged = String::from_utf8(logged.0.lock().expect("not poisoned").clone())
-            .expect("the log should be UTF-8");
         assert_eq!(
             logged.lines().count(),
             1,
@@ -663,6 +653,44 @@ mod tests {
             "missing=write_memory",
         ] {
             assert!(logged.contains(field), "`{field}` should be in: {logged}");
+        }
+    }
+
+    #[test]
+    fn every_call_made_with_the_override_token_is_logged() {
+        let overridden = Enforced {
+            inner: Arc::new(()),
+            policy: Policy::try_new(EnumSet::only(Operation::Inspect))
+                .expect("inspect alone is a whole policy"),
+            overridden: true,
+        };
+
+        let logged = logged_by(|| {
+            for (call, needed) in [
+                ("status", EnumSet::empty()),
+                ("threads", EnumSet::only(Operation::Inspect)),
+                ("stop", EnumSet::only(Operation::Stop)),
+            ] {
+                overridden
+                    .check(call, needed)
+                    .expect("the override token lets every call through");
+            }
+        });
+
+        let lines: Vec<&str> = logged.lines().collect();
+        assert_eq!(lines.len(), 3, "each call should be logged: {logged}");
+        for (line, call, missing) in [
+            (lines[0], "status", "nothing"),
+            (lines[1], "threads", "nothing"),
+            (lines[2], "stop", "stop"),
+        ] {
+            for field in [
+                "dapper_event=control_plane_call_overridden".to_owned(),
+                format!("call=\"{call}\""),
+                format!("missing={missing}"),
+            ] {
+                assert!(line.contains(&field), "`{field}` should be in: {line}");
+            }
         }
     }
 }

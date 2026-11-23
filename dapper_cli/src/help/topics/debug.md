@@ -164,6 +164,16 @@ Lists every active proxy. Output and pinning rules: `{{program}} help sessions`.
 
 Stops the proxy and disconnects the adapter.
 
+## Access policies
+
+A session started with an access policy refuses the calls it does not allow (`{{program}} help proxy`). The launcher that started a headless session can still make them with the override token the session reported in its `DAPPER_READY` event, passed in `DAPPER_OVERRIDE_TOKEN`. The same token works for the child sessions it spawned:
+
+```bash
+DAPPER_OVERRIDE_TOKEN="$TOKEN" {{program}} debug stop
+```
+
+Set the variable for that one command, as above: an exported variable reaches every process started after it, the agent's included. The token is the launcher's alone: never hand it to an agent or log it. An MCP server never takes one. The proxy logs each call the token lets past the policy, and each call that presents a token the session did not issue.
+
 ## Tips
 
 - Examine the current state (`threads` → `stack-trace` → `variables`) before stepping. Stepping blind on an unknown program is the slow path.

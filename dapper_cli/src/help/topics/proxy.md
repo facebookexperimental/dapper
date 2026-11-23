@@ -57,6 +57,33 @@ Config keys are **camelCase** (the schema is `dapper_session::DebugSessionConfig
 
 `spawnConfig.type` is the *transport* (`stdio` / `tcp` / `uds`), not the language; the adapter in `cmd` must already be installed (e.g. `pip install debugpy`). Use `"console": "internalConsole"` for headless runs — `integratedTerminal` relies on a `runInTerminal` client capability the headless driver does not advertise. Fields inside `debugRequest` (other than `request`) pass through verbatim as DAP arguments, mirroring an IDE `launch.json`.
 
+## Access policies
+
+By default, any caller of the control plane, `{{program}} debug` or an MCP server, may do anything with the session. `--allow` limits callers to the presets and operations it names, comma-separated or repeated. A session config's `access` takes the same list, as `"access": {"allow": ["standard", "read_memory"]}`; set one or the other, since setting both refuses to start.
+
+```bash
+{{program}} proxy --allow minimal,navigate process /path/to/lldb-dap
+```
+
+| Operation | Lets a caller |
+|-----------|---------------|
+| `inspect` | list threads, stack frames, scopes, modules and sources |
+| `read_values` | read variables, and see locals, program output and why the program stopped |
+| `navigate` | continue, step, step back, pause and jump |
+| `breakpoints` | set breakpoints of any kind |
+| `evaluate` | evaluate expressions and debugger commands |
+| `set_variable` | change the value of a variable or expression |
+| `read_memory` | read and disassemble memory |
+| `write_memory` | write memory |
+| `stop` | stop the session or its threads |
+| `unclassified` | send any other request, such as `launch`, `restart` or an adapter's custom request |
+
+The presets build on each other: `structure` is `inspect`, `minimal` adds `read_values`, `standard` adds `navigate`, `breakpoints` and `stop`, and `full` is every operation. Naming an operation also allows what it needs: `evaluate`, `set_variable` and `read_memory` need `read_values`, and `unclassified` needs everything. An operation allows its own requests and no more, even where those reach further: an expression or debugger command can write memory or end the session (lldb's `memory write`, any code in debugpy), and the adapter evaluates a variable's new value and a breakpoint's condition or log message the same way. A policy limits which requests a caller makes, not what the code in them does. A list that names something Dapper does not know refuses to start.
+
+A refused call fails with what it needs and what the session allows, e.g. `` `eval_repl` needs evaluate, which this session's access policy does not allow; it allows inspect ``. Without `read_values`, the session also keeps the program's values out of its answers: it expands no locals, and drops program output and stop descriptions from the response context. `{{program}} debug status` reports the policy in force, and child sessions spawned for `startDebugging` get the parent's policy and override token.
+
+A headless session reports its policy in its `DAPPER_READY` event and, when it has one, an override token that lets its launcher past it (`{{program}} help debug`). A proxy started with `DAPPER_OVERRIDE_TOKEN` set takes that token instead of making one. A launcher that asked for a policy should refuse to go on unless `DAPPER_READY` reports that policy. A proxy that predates access policies reports none and enforces nothing, and a misspelled `access` key is ignored like any other unknown config key, so that session runs unrestricted and reports every operation.
+
 ## Options
 
 | Option | Description |
@@ -64,5 +91,6 @@ Config keys are **camelCase** (the schema is `dapper_session::DebugSessionConfig
 | `--control-port PORT` | Port for the gRPC control plane (default `0` — OS picks an ephemeral port) |
 | `--client-port PORT` | TCP port for external DAP client connections (default: stdio) |
 | `--scope-id ID` | Scope identifier for this session (e.g., `vscode-54196`); defaults to `DAPPER_SCOPE_ID` |
+| `--allow GRANTS` | Presets and operations control-plane callers may use (default: everything); see above |
 
 When `from-config` is used, an extra `--events-fd FD` flag (Unix only) redirects the progress event stream to that file descriptor as bare JSON lines, instead of `[DAPPER_SESSION] `-prefixed lines on stdout, giving the driver a dedicated event channel.

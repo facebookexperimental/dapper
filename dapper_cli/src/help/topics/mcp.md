@@ -22,6 +22,8 @@ The `raw` toolset is the escape hatch for DAP commands that the typed tools don'
 
 The MCP handler also exposes these tools **regardless of `--toolset` or `--enable-tool`**: {{always_available_tools}}. Agents should still prefer the `--session-id` / `--scope-id` / `--control-port` startup plumbing over enumerating sessions in an MCP loop.
 
+A toolset only chooses what the server lists. What a session lets its callers do is its access policy, which the proxy enforces (`{{program}} help proxy`): the server lists its whole toolset whatever the policies of the sessions it reaches, and a call a session's policy refuses fails with what it needs and what the session allows.
+
 ## Custom tool selection
 
 Instead of a builtin toolset, enable specific tools individually. When `--enable-tool` is used it overrides `--toolset` entirely:

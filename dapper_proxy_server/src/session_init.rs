@@ -22,6 +22,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
+use dapper_access::Policy;
+use dapper_access::PolicyReport;
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::capabilities::apply_capabilities_event;
 use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
@@ -135,6 +137,10 @@ pub enum ProgressEvent {
     DapperReady {
         session_id: SessionId,
         control_port: Port,
+        /// The access policy the control plane enforces. A dapper that
+        /// predates access policies reports none and enforces none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access: Option<PolicyReport>,
         #[serde(rename = "elapsed_ms", with = "duration_ms")]
         elapsed: Duration,
     },
@@ -300,6 +306,9 @@ pub struct SessionInitializer {
     event_writer: EventWriter,
     adapter_pid: Option<u32>,
     adapter_exit: Option<oneshot::Receiver<ExitStatus>>,
+    /// The access policy this proxy's control plane enforces, reported in
+    /// that control plane's `DAPPER_READY`.
+    policy: Option<OwnPolicy>,
     /// Capabilities reported by the adapter in the `initialize` response.
     /// Captured eagerly so later steps (e.g. `set_exception_breakpoints`)
     /// can consult `exceptionBreakpointFilters` without re-issuing the
@@ -313,6 +322,13 @@ pub struct SessionInitializer {
     /// during the handshake also ends the post-init receive loop.
     debuggee_ended: bool,
     channel_closed: bool,
+}
+
+/// The access policy this proxy's control plane enforces, and that control
+/// plane's session id.
+struct OwnPolicy {
+    session_id: SessionId,
+    policy: Policy,
 }
 
 impl SessionInitializer {
@@ -332,6 +348,7 @@ impl SessionInitializer {
             event_writer: EventWriter::stdout(),
             adapter_pid: None,
             adapter_exit: None,
+            policy: None,
             adapter_capabilities: None,
             child_spawn_tx: None,
             debuggee_ended: false,
@@ -360,6 +377,16 @@ impl SessionInitializer {
     /// first, as `ADAPTER_STARTED`.
     pub fn with_adapter_pid(mut self, pid: u32) -> Self {
         self.adapter_pid = Some(pid);
+        self
+    }
+
+    /// The access policy `session_id`'s control plane, this proxy's own,
+    /// enforces. `run` reports it in that control plane's `DAPPER_READY`, so a
+    /// launcher can tell its policy is in force. A backend that is itself a
+    /// dapper proxy relays its own control plane's status too, and the
+    /// `DAPPER_READY` for that one reports no policy: it enforces its own.
+    pub fn with_policy(mut self, session_id: SessionId, policy: Policy) -> Self {
+        self.policy = Some(OwnPolicy { session_id, policy });
         self
     }
 
@@ -689,9 +716,15 @@ impl SessionInitializer {
         }
 
         let port = status.port.context("control plane status missing port")?;
+        let access = self
+            .policy
+            .as_ref()
+            .filter(|own| own.session_id == status.session_id)
+            .map(|own| PolicyReport::from(own.policy));
         self.event_writer.emit(&ProgressEvent::DapperReady {
             session_id: status.session_id,
             control_port: port,
+            access,
             elapsed: self.elapsed(),
         });
         Ok(())
@@ -1480,6 +1513,68 @@ mod tests {
 
         backend_handle.await.expect("backend panicked").unwrap();
         json_lines(&events)
+    }
+
+    /// The `DAPPER_READY` `initializer` emits for `session_id`'s control plane.
+    fn dapper_ready_of(initializer: SessionInitializer, session_id: &str) -> serde_json::Value {
+        let events = SharedBuf::default();
+        let mut initializer =
+            initializer.with_event_writer(EventWriter::Writer(Box::new(events.clone())));
+        initializer
+            .handle_control_plane_status(ControlPlaneStatus::success(
+                session_id.into(),
+                Port::try_new(4711).expect("4711 is not zero"),
+            ))
+            .expect("a successful control plane status should be handled");
+        let mut events = json_lines(&events);
+        assert_eq!(events.len(), 1, "got {events:?}");
+        events.remove(0)
+    }
+
+    #[test]
+    fn test_dapper_ready_reports_the_access_policy() {
+        let minimal = Policy::try_new(dapper_access::Preset::Minimal.operations())
+            .expect("a preset is a whole policy");
+        let ready = dapper_ready_of(
+            SessionInitializer::new(launch_config(vec![], false))
+                .with_policy(SessionId::new("session-1"), minimal),
+            "session-1",
+        );
+
+        assert_eq!(ready["stage"], "DAPPER_READY");
+        assert_eq!(ready["control_port"], 4711);
+        assert_eq!(
+            ready["access"],
+            serde_json::json!({ "allow": ["inspect", "read_values"] }),
+            "a launcher reads the policy in force here"
+        );
+    }
+
+    #[test]
+    fn test_dapper_ready_without_a_policy_reports_none() {
+        let ready = dapper_ready_of(
+            SessionInitializer::new(launch_config(vec![], false)),
+            "session-1",
+        );
+        assert_eq!(ready.get("access"), None, "got {ready}");
+    }
+
+    #[test]
+    fn test_dapper_ready_reports_no_policy_for_a_relayed_control_plane() {
+        let minimal = Policy::try_new(dapper_access::Preset::Minimal.operations())
+            .expect("a preset is a whole policy");
+        let ready = dapper_ready_of(
+            SessionInitializer::new(launch_config(vec![], false))
+                .with_policy(SessionId::new("session-1"), minimal),
+            "backend-session",
+        );
+
+        assert_eq!(ready["session_id"], "backend-session");
+        assert_eq!(
+            ready.get("access"),
+            None,
+            "a backend that is itself a dapper proxy enforces its own policy, not this one; got {ready}"
+        );
     }
 
     #[tokio::test]

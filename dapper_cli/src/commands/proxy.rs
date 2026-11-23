@@ -307,9 +307,11 @@ impl Proxy {
                 None
             };
             // Spawn SessionInitializer with the client side of the channel
+            let own_session_id = session_id.clone();
             let handle = tokio::spawn(async move {
-                let mut initializer =
-                    SessionInitializer::new(session_config).with_event_writer(event_writer);
+                let mut initializer = SessionInitializer::new(session_config)
+                    .with_event_writer(event_writer)
+                    .with_policy(own_session_id, policy);
                 if let Some(pid) = adapter_pid {
                     initializer = initializer.with_adapter_pid(pid);
                 }

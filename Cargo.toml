@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "dapper_access",
   "dapper_cli",
   "dapper_config",
   "dapper_control_api",

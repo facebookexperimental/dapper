@@ -657,14 +657,22 @@ pub async fn spawn_proxy_from_config(
     config: &DebugSessionConfig,
     scope_id: &ScopeId,
 ) -> Result<(Child, NamedTempFile, AdapterLog)> {
+    spawn_proxy_from_config_with_binary(&dapper_executable()?, config, scope_id).await
+}
+
+/// [`spawn_proxy_from_config`] with an explicit Dapper executable.
+pub async fn spawn_proxy_from_config_with_binary(
+    dapper_path: &str,
+    config: &DebugSessionConfig,
+    scope_id: &ScopeId,
+) -> Result<(Child, NamedTempFile, AdapterLog)> {
     let mut config_file = NamedTempFile::new()?;
     serde_json::to_writer(&mut config_file, config)?;
     config_file.flush()?;
 
-    let dapper_path = dapper_executable()?;
     let adapter_log = AdapterLog::new()?;
 
-    let child = TokioCommand::new(&dapper_path)
+    let child = TokioCommand::new(dapper_path)
         .arg("proxy")
         .arg("--scope-id")
         .arg(scope_id.as_str())

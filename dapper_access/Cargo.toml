@@ -11,6 +11,7 @@ license = "MIT"
 enumset = { version = "1.1.15", features = ["alloc", "serde"], default-features = false }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 strum = { version = "0.28.0", features = ["derive"] }
+thiserror = "2.0.21"
 
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }

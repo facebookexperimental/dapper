@@ -13,6 +13,7 @@
 mod grant;
 mod operation;
 mod policy;
+mod report;
 mod request;
 
 pub use grant::Grant;
@@ -23,4 +24,6 @@ pub use operation::operation_names;
 pub use policy::IncompletePolicy;
 pub use policy::NotPermitted;
 pub use policy::Policy;
+pub use report::PolicyReport;
+pub use report::ReportedOperation;
 pub use request::operations_needed_by;

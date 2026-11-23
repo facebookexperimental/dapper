@@ -382,8 +382,16 @@ where
     }
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>> {
-        let result = self.inner.status().await?;
-        Ok(self.shown(result, |result| result_without_values(result, identity)))
+        let ControlPlaneResult { result, context } = self.inner.status().await?;
+        let result = StatusResult {
+            access: Some(self.policy.into()),
+            ..result
+        };
+        Ok(
+            self.shown(ControlPlaneResult { result, context }, |result| {
+                result_without_values(result, identity)
+            }),
+        )
     }
 }
 

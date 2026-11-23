@@ -2034,6 +2034,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_reports_the_policy_in_force() -> anyhow::Result<()> {
+        for policy in [
+            Policy::try_new(Preset::Structure.operations())?,
+            Policy::UNRESTRICTED,
+        ] {
+            let (_server, client, _) = served_under(policy).await?;
+            let (status, _) = client.status().await?.into_parts();
+            assert_eq!(
+                status.access.map(|report| report.known_operations()),
+                Some(policy.allowed())
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_refused_raw_request_fails_the_call() -> anyhow::Result<()> {
         let (_server, client, _) =
             served_under(Policy::try_new(Preset::Standard.operations())?).await?;

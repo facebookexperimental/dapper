@@ -6,6 +6,7 @@
 use std::fmt;
 use std::fmt::Write as _;
 
+use dapper_access::PolicyReport;
 use dapper_dap_protocol::capabilities::Capabilities;
 use dapper_dap_protocol::data_types::ExceptionBreakpointsFilter;
 use dapper_dap_protocol::data_types::FrameId;
@@ -578,13 +579,20 @@ impl fmt::Display for NavigationResult {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusResult {
+    /// The access policy the proxy enforces. A proxy that predates access
+    /// policies reports none and enforces none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<PolicyReport>,
     #[serde(flatten, skip_serializing_if = "IndexMap::is_empty")]
     pub extra: IndexMap<String, Value>,
 }
 
 impl fmt::Display for StatusResult {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.access {
+            Some(access) => writeln!(f, "Access policy: allows {access}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -692,6 +700,8 @@ impl fmt::Display for SetExceptionBreakpointsResult {
 
 #[cfg(test)]
 mod tests {
+    use dapper_access::Policy;
+    use dapper_access::Preset;
     use dapper_dap_protocol::data_types::FrameId;
     use dapper_dap_protocol::data_types::Scope;
     use dapper_dap_protocol::data_types::StackFrame;
@@ -2091,6 +2101,39 @@ mod tests {
         assert_eq!(
             result.extra.get("newField"),
             Some(&serde_json::json!("value"))
+        );
+    }
+
+    #[test]
+    fn a_status_from_a_proxy_without_access_policies_reports_none() {
+        let status: StatusResult =
+            serde_json::from_str("{}").expect("an old proxy's status should parse");
+        assert_eq!(status.access, None);
+        assert_eq!(status.to_string(), "");
+    }
+
+    #[test]
+    fn a_status_reports_the_access_policy() {
+        let status = StatusResult {
+            access: Some(
+                Policy::try_new(Preset::Minimal.operations())
+                    .expect("a preset is a whole policy")
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&status).expect("a status should serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "access": { "allow": ["inspect", "read_values"] } })
+        );
+        assert_eq!(
+            serde_json::from_value::<StatusResult>(json).expect("it should parse back"),
+            status
+        );
+        assert_eq!(
+            status.to_string(),
+            "Access policy: allows inspect, read_values\n"
         );
     }
 }

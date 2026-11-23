@@ -16,6 +16,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use bon::Builder;
+use dapper_access::Grant;
+use dapper_access::Policy;
 use dapper_dap_protocol::requests::AttachRequestArguments;
 use dapper_dap_protocol::requests::LaunchRequestArguments;
 use dapper_dap_protocol::requests::RequestCommand;
@@ -83,13 +85,40 @@ pub struct DebugSessionConfig {
     /// (headless mode). Absent means no child-session support is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_sessions: Option<ChildSessionConfig>,
+    /// What callers of this session's control plane may do; absent, anything.
+    /// Child sessions inherit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<AccessConfig>,
 }
 
 fn default_install_default_exception_breakpoints() -> bool {
     true
 }
 
+/// What callers of a session's control plane may do. A field this dapper does
+/// not know could narrow the policy, so it is an error instead of ignored.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessConfig {
+    /// The presets and operations allowed; any call that needs another
+    /// operation is refused.
+    pub allow: Vec<Grant>,
+}
+
+impl AccessConfig {
+    pub fn policy(&self) -> Policy {
+        Policy::from_grants(self.allow.iter().copied())
+    }
+}
+
 impl DebugSessionConfig {
+    /// The policy this session's control plane enforces.
+    pub fn policy(&self) -> Policy {
+        self.access
+            .as_ref()
+            .map_or(Policy::UNRESTRICTED, AccessConfig::policy)
+    }
+
     /// Load a debug session configuration from a JSON file.
     ///
     /// For stdio spawn configs, `new_session` is forced to `true` so that the
@@ -250,6 +279,9 @@ impl std::fmt::Display for BreakpointSpec {
 
 #[cfg(test)]
 mod tests {
+    use dapper_access::Operation;
+    use dapper_access::Preset;
+
     use super::*;
 
     #[test]
@@ -276,6 +308,7 @@ mod tests {
             init_timeout_secs: None,
             install_default_exception_breakpoints: false,
             child_sessions: None,
+            access: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -515,6 +548,77 @@ mod tests {
         }"#;
         let config: DebugSessionConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.init_timeout_secs, Some(900));
+    }
+
+    fn parse(json: serde_json::Value) -> serde_json::Result<DebugSessionConfig> {
+        serde_json::from_value(json)
+    }
+
+    #[test]
+    fn a_config_without_access_allows_everything() {
+        let config = parse(serde_json::json!({
+            "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" }
+        }))
+        .expect("a config without access should parse");
+        assert_eq!(config.access, None);
+        assert_eq!(config.policy(), Policy::UNRESTRICTED);
+        assert!(
+            !serde_json::to_string(&config)
+                .expect("a config should serialize")
+                .contains("access"),
+            "an absent policy should stay absent when the config is written for a child"
+        );
+    }
+
+    #[test]
+    fn a_config_allows_what_its_access_grants() {
+        let config = parse(serde_json::json!({
+            "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" },
+            "access": { "allow": ["standard", "read_memory"] }
+        }))
+        .expect("known grants should parse");
+        assert_eq!(
+            config.policy().allowed(),
+            Preset::Standard.operations() | Operation::ReadMemory
+        );
+        let written = serde_json::to_value(&config).expect("a config should serialize");
+        assert_eq!(
+            written["access"],
+            serde_json::json!({ "allow": ["standard", "read_memory"] }),
+            "a child session's config should carry the same allow list"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_access_fails_the_config() {
+        for access in [
+            serde_json::json!({ "allow": ["everything"] }),
+            serde_json::json!({ "allow": ["minimal"], "deny": ["read_values"] }),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                parse(serde_json::json!({
+                    "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" },
+                    "access": access.clone()
+                }))
+                .is_err(),
+                "{access} should fail the config instead of being ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn an_access_grants_what_its_operations_require() {
+        let config = parse(serde_json::json!({
+            "spawnConfig": { "type": "stdio", "cmd": "lldb-dap" },
+            "access": { "allow": ["structure", "evaluate"] }
+        }))
+        .expect("known grants should parse");
+        assert_eq!(
+            config.policy().allowed(),
+            Operation::Inspect | Operation::Evaluate | Operation::ReadValues,
+            "evaluate comes with read_values, which it reveals"
+        );
     }
 
     #[test]

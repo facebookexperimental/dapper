@@ -391,6 +391,7 @@ pub fn resolve_child_session(
         init_timeout_secs: parent.init_timeout_secs,
         install_default_exception_breakpoints: parent.install_default_exception_breakpoints,
         child_sessions: Some(child_child_sessions),
+        access: parent.access.clone(),
     })
 }
 
@@ -655,6 +656,7 @@ fn dotted_to_pointer(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AccessConfig;
     use crate::config::DebugSessionConfig;
 
     #[test]
@@ -1055,6 +1057,25 @@ mod tests {
             }
             other => panic!("expected NoMatchingRule with custom message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_child_session_inherits_the_access_policy() {
+        let mut parent = debugpy_parent();
+        parent.access = Some(AccessConfig {
+            allow: vec!["minimal".parse().expect("minimal is a preset")],
+        });
+        let args = start_debugging_args(serde_json::json!({
+            "request": "attach",
+            "configuration": { "connect": { "host": "127.0.0.1", "port": 5678 } }
+        }));
+
+        let child = resolve_child_session(&parent, &args).expect("the connect-back rule matches");
+
+        assert_eq!(
+            child.access, parent.access,
+            "a child must not let its callers do more than the parent's"
+        );
     }
 
     #[test]

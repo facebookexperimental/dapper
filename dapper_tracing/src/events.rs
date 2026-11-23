@@ -30,6 +30,9 @@ pub enum TelemetryEvent {
     DapInitSuccess,
     /// A headless debug session ended in failure; see [`SessionFailureKind`].
     DapSessionFailed,
+    /// The session's access policy refused a control-plane call. The event
+    /// carries the refused `call` and the `missing` operations.
+    ControlPlaneCallRefused,
 }
 
 impl TelemetryEvent {

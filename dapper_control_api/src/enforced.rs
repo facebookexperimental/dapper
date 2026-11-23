@@ -6,6 +6,7 @@
 use dapper_access::NotPermitted;
 use dapper_access::Operation;
 use dapper_access::Policy;
+use dapper_access::operation_names;
 use dapper_access::operations_needed_by;
 use dapper_dap_protocol::data_types::FrameId;
 use dapper_dap_protocol::data_types::SourceBreakpoint;
@@ -25,6 +26,7 @@ use dapper_session::StackTraceResult;
 use dapper_session::StatusResult;
 use dapper_session::ThreadsResult;
 use dapper_session::VariablesResult;
+use dapper_tracing::events::TelemetryEvent;
 use enumset::EnumSet;
 
 use crate::ControlPlaneResult;
@@ -39,7 +41,16 @@ pub(crate) struct Enforced<T> {
 
 impl<T> Enforced<T> {
     fn check(&self, call: &str, needed: impl Into<EnumSet<Operation>>) -> Result<(), NotPermitted> {
-        self.policy.check(call, needed.into())
+        self.policy
+            .check(call, needed.into())
+            .inspect_err(|refusal| {
+                tracing::warn!(
+                    dapper_event = %TelemetryEvent::ControlPlaneCallRefused,
+                    call,
+                    missing = %operation_names(&refusal.missing),
+                    "{refusal}"
+                );
+            })
     }
 }
 
@@ -161,5 +172,71 @@ where
 
     async fn status(&self) -> anyhow::Result<ControlPlaneResult<StatusResult>> {
         self.inner.status().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Everything `tracing` formats, for asserting what a refusal logs.
+    #[derive(Clone, Default)]
+    struct Logged(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Logged {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("the log buffer should not be poisoned")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_refusal_is_logged_as_a_telemetry_event() {
+        let logged = Logged::default();
+        let writer = logged.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let enforced = Enforced {
+            inner: (),
+            policy: Policy::try_new(EnumSet::only(Operation::Inspect))
+                .expect("inspect alone is a whole policy"),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            enforced
+                .check("threads", Operation::Inspect)
+                .expect("inspect is allowed");
+            enforced
+                .check("writeMemory", Operation::WriteMemory)
+                .expect_err("write_memory is not allowed");
+        });
+
+        let logged = String::from_utf8(logged.0.lock().expect("not poisoned").clone())
+            .expect("the log should be UTF-8");
+        assert_eq!(
+            logged.lines().count(),
+            1,
+            "only the refusal is logged: {logged}"
+        );
+        for field in [
+            "dapper_event=control_plane_call_refused",
+            "call=\"writeMemory\"",
+            "missing=write_memory",
+        ] {
+            assert!(logged.contains(field), "`{field}` should be in: {logged}");
+        }
     }
 }

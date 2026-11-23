@@ -12,9 +12,8 @@ use crate::Operation;
 
 /// The operations sending `command` to the debug adapter needs, leaving out
 /// what they require, which a [`Policy`](crate::Policy) allows along with
-/// them: the most a command of its kind can need, whatever its arguments. A
-/// command the DAP specification names needs what its name implies even
-/// when its arguments did not parse and it reached dapper as
+/// them. A command the DAP specification names needs what its name implies
+/// even when its arguments did not parse and it reached dapper as
 /// [`RequestCommand::Unknown`], since the adapter may still accept it.
 pub fn operations_needed_by(command: &RequestCommand) -> EnumSet<Operation> {
     match command {
@@ -22,6 +21,18 @@ pub fn operations_needed_by(command: &RequestCommand) -> EnumSet<Operation> {
             .command
             .parse()
             .map_or(EnumSet::only(Operation::Unclassified), most_needed_by),
+        // Asked to, the adapter puts argument values in frame names.
+        RequestCommand::StackTrace(arguments) => {
+            if arguments
+                .format
+                .as_ref()
+                .is_some_and(|format| format.parameter_values == Some(true))
+            {
+                Operation::Inspect | Operation::ReadValues
+            } else {
+                EnumSet::only(Operation::Inspect)
+            }
+        }
         typed => most_needed_by(Kind::from(typed)),
     }
 }
@@ -104,6 +115,11 @@ mod tests {
         for (command, arguments, operations) in [
             ("threads", None, EnumSet::only(Operation::Inspect)),
             (
+                "stackTrace",
+                Some(json!({"threadId": 1})),
+                EnumSet::only(Operation::Inspect),
+            ),
+            (
                 "variables",
                 Some(json!({"variablesReference": 7})),
                 EnumSet::only(Operation::ReadValues),
@@ -173,6 +189,24 @@ mod tests {
     }
 
     #[test]
+    fn a_stack_trace_with_parameter_values_needs_read_values() {
+        assert_eq!(
+            needed(
+                "stackTrace",
+                Some(json!({"threadId": 1, "format": {"parameterNames": true}}))
+            ),
+            EnumSet::only(Operation::Inspect)
+        );
+        assert_eq!(
+            needed(
+                "stackTrace",
+                Some(json!({"threadId": 1, "format": {"parameterValues": true}}))
+            ),
+            Operation::Inspect | Operation::ReadValues
+        );
+    }
+
+    #[test]
     fn a_known_command_that_did_not_parse_needs_what_its_name_implies() {
         for name in ["writeMemory", "WriteMemory", "WRITEMEMORY"] {
             let command = RequestCommand::from_raw(name, Some(json!({"memoryReference": 7})));
@@ -191,5 +225,35 @@ mod tests {
             EnumSet::only(Operation::Breakpoints),
             "an unparsed `setBreakpoints` should still need breakpoints"
         );
+    }
+
+    #[test]
+    fn arguments_never_add_to_what_the_name_implies() {
+        for (command, arguments) in [
+            (
+                "setBreakpoints",
+                json!({"source": {"path": "/a.py"}, "breakpoints": [{"line": 1, "logMessage": "{x}"}]}),
+            ),
+            (
+                "setDataBreakpoints",
+                json!({"breakpoints": [{"dataId": "x", "hitCondition": "3"}]}),
+            ),
+            (
+                "setInstructionBreakpoints",
+                json!({"breakpoints": [{"instructionReference": "0x10", "condition": "1"}]}),
+            ),
+            ("dataBreakpointInfo", json!({"name": "x"})),
+            (
+                "stackTrace",
+                json!({"threadId": 1, "format": {"parameterValues": true}}),
+            ),
+        ] {
+            let command = RequestCommand::from_raw(command, Some(arguments));
+            let kind = Kind::from(&command);
+            assert!(
+                most_needed_by(kind).is_superset(operations_needed_by(&command)),
+                "{kind:?} with arguments should need no more than its name implies"
+            );
+        }
     }
 }

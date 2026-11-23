@@ -144,7 +144,21 @@ impl DapClient {
             dapper_path,
             control_port,
             scope_id,
+            &[],
             adapter_args,
+        )?)
+    }
+
+    /// Starts the proxy with `proxy_args`, such as `--allow minimal`, before
+    /// its backend.
+    pub fn new_with_proxy_args(scope_id: Option<ScopeId>, proxy_args: &[&str]) -> Result<Self> {
+        let dapper_path = dapper_executable()?;
+        Self::spawn(proxy_process_command(
+            &dapper_path,
+            None,
+            scope_id,
+            proxy_args,
+            &[],
         )?)
     }
 
@@ -152,7 +166,7 @@ impl DapClient {
     /// its `config.toml` replaces the defaults.
     pub fn new_with_config_dir(scope_id: Option<ScopeId>, config_dir: &Path) -> Result<Self> {
         let dapper_path = dapper_executable()?;
-        let mut command = proxy_process_command(&dapper_path, None, scope_id, &[])?;
+        let mut command = proxy_process_command(&dapper_path, None, scope_id, &[], &[])?;
         command.env("DAPPER_CONFIG_DIR", config_dir);
         Self::spawn(command)
     }
@@ -358,6 +372,7 @@ fn proxy_process_command(
     dapper_path: &str,
     control_port: Option<u16>,
     scope_id: Option<ScopeId>,
+    proxy_args: &[&str],
     adapter_args: &[&str],
 ) -> Result<Command> {
     let adapter = adapter_command()?;
@@ -369,6 +384,7 @@ fn proxy_process_command(
     if let Some(scope) = scope_id {
         command.arg("--scope-id").arg(scope.as_str());
     }
+    command.args(proxy_args);
     command.arg("process").arg(adapter.executable);
     command.args(adapter.arguments);
     command.args(adapter_args);
@@ -530,6 +546,14 @@ pub fn setup_stopped_debug_session(test_name: &str) -> Result<(ScopeId, DapClien
 /// Starts a stopped real-adapter session in a caller-provided scope.
 pub fn start_stopped_debug_session(scope_id: ScopeId) -> Result<DapClient> {
     launch_stopped(DapClient::new(Some(scope_id))?)
+}
+
+/// [`start_stopped_debug_session`] with `proxy_args` given to the proxy.
+pub fn start_stopped_debug_session_with_proxy_args(
+    scope_id: ScopeId,
+    proxy_args: &[&str],
+) -> Result<DapClient> {
+    launch_stopped(DapClient::new_with_proxy_args(Some(scope_id), proxy_args)?)
 }
 
 /// [`start_stopped_debug_session`] with the proxy reading its config from

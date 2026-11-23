@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use clap::Subcommand;
-use dapper_access::Policy;
+use dapper_access::Grant;
+use dapper_access::operation_names;
 use dapper_config::DapperConfig;
 use dapper_control_server as control_plane_server;
 use dapper_control_server::ControlPlaneParams;
@@ -27,6 +28,7 @@ use dapper_session::Port;
 use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionStore;
+use dapper_session::config::AccessConfig;
 use dapper_session::config::DebugSessionConfig;
 use dapper_session::config::SpawnConfig;
 use dapper_session::config::StdioSpawnConfig;
@@ -159,9 +161,34 @@ pub struct Proxy {
     /// session's `SessionInfo` so the parent/child relationship is discoverable.
     #[arg(long)]
     parent_session_id: Option<SessionId>,
+    /// Let callers of this session's control plane do only what these presets
+    /// (structure, minimal, standard, full) and operations (inspect,
+    /// read_values, navigate, breakpoints, evaluate, set_variable,
+    /// read_memory, write_memory, stop, unclassified) allow, comma-separated
+    /// or repeated. A session config's `access` sets the same, so use one or
+    /// the other. Without either, callers may do anything.
+    #[arg(long, value_delimiter = ',')]
+    allow: Option<Vec<Grant>>,
     /// Backend configuration
     #[command(subcommand)]
     backend: BackendMode,
+}
+
+/// `config` with the allow list `--allow` gave, refused when the config has
+/// its own: one policy must not silently replace the other.
+fn with_allow_list(
+    mut config: DebugSessionConfig,
+    allow: Option<Vec<Grant>>,
+) -> anyhow::Result<DebugSessionConfig> {
+    let Some(allow) = allow else {
+        return Ok(config);
+    };
+    anyhow::ensure!(
+        config.access.is_none(),
+        "--allow and the session config's `access` both set an access policy; set it in one place"
+    );
+    config.access = Some(AccessConfig { allow });
+    Ok(config)
 }
 
 async fn create_backend(spawn_config: &SpawnConfig) -> anyhow::Result<Backend> {
@@ -217,8 +244,15 @@ impl Proxy {
         #[cfg(not(unix))]
         let event_writer = EventWriter::stdout();
 
-        let session_config = self.backend.into_session_config()?;
+        let session_config = with_allow_list(self.backend.into_session_config()?, self.allow)?;
         tracing::debug!("Session config: {:?}", session_config);
+        let policy = session_config.policy();
+        if session_config.access.is_some() {
+            tracing::info!(
+                allowed = %operation_names(&policy.allowed()),
+                "Enforcing an access policy on control-plane calls"
+            );
+        }
 
         let mut backend = create_backend(&session_config.spawn_config).await?;
         let adapter_pid = backend.process_id();
@@ -309,7 +343,7 @@ impl Proxy {
             session_id: session_id.clone(),
             scope_id: self.scope_id.clone(),
             child_teardown: child_teardown_hook.clone(),
-            policy: Policy::UNRESTRICTED,
+            policy,
         })
         .await;
 
@@ -502,6 +536,98 @@ mod tests {
     use crate::cli::Cli;
     use crate::cli::Commands;
     use crate::cli::tests::CapturedEvents;
+
+    fn tcp_config() -> DebugSessionConfig {
+        DebugSessionConfig::builder()
+            .spawn_config(SpawnConfig::Tcp(TcpSpawnConfig {
+                addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4711),
+            }))
+            .build()
+    }
+
+    #[test]
+    fn allow_takes_presets_and_operations_comma_separated_or_repeated() {
+        let cli = Cli::try_parse_from([
+            "dapper",
+            "proxy",
+            "--allow",
+            "minimal,navigate",
+            "--allow",
+            "stop",
+            "tcp",
+            "127.0.0.1:4711",
+        ])
+        .expect("known grants should parse");
+        let Commands::Proxy(proxy) = cli.command else {
+            panic!("expected the proxy subcommand");
+        };
+        let config =
+            with_allow_list(tcp_config(), proxy.allow).expect("only --allow sets a policy");
+
+        assert_eq!(
+            config.policy().allowed(),
+            dapper_access::Preset::Minimal.operations()
+                | dapper_access::Operation::Navigate
+                | dapper_access::Operation::Stop
+        );
+    }
+
+    #[test]
+    fn allow_refuses_an_unknown_name() {
+        let error = Cli::try_parse_from([
+            "dapper",
+            "proxy",
+            "--allow",
+            "everything",
+            "tcp",
+            "127.0.0.1:4711",
+        ])
+        .map(drop)
+        .expect_err("an unknown grant should not parse");
+        assert!(
+            error
+                .to_string()
+                .contains("`everything` is neither a preset"),
+            "the error should list the valid names; got: {error}"
+        );
+    }
+
+    #[test]
+    fn without_allow_the_config_keeps_its_own_access() {
+        assert_eq!(
+            with_allow_list(tcp_config(), None)
+                .expect("nothing to merge")
+                .access,
+            None
+        );
+        let mut config = tcp_config();
+        config.access = Some(AccessConfig {
+            allow: vec!["structure".parse().expect("structure is a preset")],
+        });
+        assert_eq!(
+            with_allow_list(config.clone(), None)
+                .expect("nothing to merge")
+                .access,
+            config.access
+        );
+    }
+
+    #[test]
+    fn allow_refuses_a_config_that_sets_its_own_access() {
+        let mut config = tcp_config();
+        config.access = Some(AccessConfig {
+            allow: vec!["full".parse().expect("full is a preset")],
+        });
+        let error = with_allow_list(
+            config,
+            Some(vec!["structure".parse().expect("structure is a preset")]),
+        )
+        .expect_err("two policies should not be merged");
+        assert!(
+            error.to_string().contains("set it in one place"),
+            "got: {error}"
+        );
+    }
 
     /// `BackendMode::Process` takes the adapter command as a
     /// `trailing_var_arg` with `allow_hyphen_values`, so everything after it

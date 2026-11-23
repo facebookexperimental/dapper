@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use clap::ValueEnum;
+use dapper_access::Policy;
 use dapper_config::OutputFormat;
 use dapper_control_api::ControlPlaneServer;
 use dapper_dap_protocol::data_types::FrameId;
@@ -1860,7 +1861,7 @@ struct FakeSession {
 
 impl FakeSession {
     async fn start(fake: FakeControlPlane) -> Self {
-        let server = dapper_control_api::serve(None, fake)
+        let server = dapper_control_api::serve(None, fake, Policy::UNRESTRICTED)
             .await
             .expect("serve the fake control plane");
         let session = SessionInfo::generate("fake".into(), Some(server.port), None, None, None);

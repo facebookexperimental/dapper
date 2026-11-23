@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use clap::Subcommand;
+use dapper_access::Policy;
 use dapper_config::DapperConfig;
 use dapper_control_server as control_plane_server;
 use dapper_control_server::ControlPlaneParams;
@@ -308,6 +309,7 @@ impl Proxy {
             session_id: session_id.clone(),
             scope_id: self.scope_id.clone(),
             child_teardown: child_teardown_hook.clone(),
+            policy: Policy::UNRESTRICTED,
         })
         .await;
 

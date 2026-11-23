@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dapper_access::Policy;
 use dapper_control_api::ControlPlaneResult;
 use dapper_control_api::ControlPlaneServer;
 use dapper_control_api::DapperControlPlane;
@@ -233,6 +234,8 @@ pub struct ControlPlaneParams {
     pub scope_id: Option<ScopeId>,
     /// Tears down child sessions before `stop` stops this one.
     pub child_teardown: Option<ChildTeardownHook>,
+    /// What control-plane callers may do.
+    pub policy: Policy,
 }
 
 pub async fn start_control_plane(params: ControlPlaneParams) -> anyhow::Result<ControlPlaneServer> {
@@ -243,6 +246,7 @@ pub async fn start_control_plane(params: ControlPlaneParams) -> anyhow::Result<C
         session_id,
         scope_id,
         child_teardown,
+        policy,
     } = params;
     let handler = DapperControlPlaneServiceImpl {
         proxy_server_abort,
@@ -250,7 +254,7 @@ pub async fn start_control_plane(params: ControlPlaneParams) -> anyhow::Result<C
         child_teardown,
     };
 
-    let result = dapper_control_api::serve(port, handler).await;
+    let result = dapper_control_api::serve(port, handler, policy).await;
 
     let port = result.as_ref().ok().map(|server| server.port);
     proxy_client

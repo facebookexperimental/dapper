@@ -15,6 +15,7 @@ dapper_config = { path = "../dapper_config" }
 dapper_control_proto = { path = "../dapper_control_proto" }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_session = { path = "../dapper_session" }
+enumset = { version = "1.1.15", features = ["alloc", "serde"], default-features = false }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 strum = { version = "0.28.0", features = ["derive"] }

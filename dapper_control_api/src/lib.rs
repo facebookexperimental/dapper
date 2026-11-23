@@ -13,6 +13,8 @@ pub use grpc::RejectedByDebugger;
 pub use grpc::resolve_unique_session;
 pub use grpc::serve;
 
+mod enforced;
+
 mod envelope;
 
 mod response_context_output;

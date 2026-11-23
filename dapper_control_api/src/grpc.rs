@@ -13,6 +13,7 @@ use std::sync::PoisonError;
 
 use anyhow::Context;
 use dapper_access::NotPermitted;
+use dapper_access::Policy;
 use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
 use dapper_control_proto::EvalRequest;
@@ -72,6 +73,7 @@ use tonic::transport::Endpoint;
 use tonic::transport::Server;
 
 use crate::ControlPlaneResult;
+use crate::enforced::Enforced;
 use crate::protocol::DapperControlPlane;
 
 pub struct ControlPlaneServer {
@@ -79,8 +81,12 @@ pub struct ControlPlaneServer {
     pub port: Port,
 }
 
-/// Serve the control plane on port
-pub async fn serve<T>(port: Option<Port>, control_plane: T) -> anyhow::Result<ControlPlaneServer>
+/// Serve the control plane on port, refusing the calls `policy` does not allow
+pub async fn serve<T>(
+    port: Option<Port>,
+    control_plane: T,
+    policy: Policy,
+) -> anyhow::Result<ControlPlaneServer>
 where
     T: DapperControlPlane + 'static,
 {
@@ -94,7 +100,12 @@ where
     let actual_port = Port::try_new(bound_port).context("bound port should be non-zero")?;
 
     let handle = tokio::spawn(async move {
-        let handler = DapperControlPlaneHandler { control_plane };
+        let handler = DapperControlPlaneHandler {
+            control_plane: Enforced {
+                inner: control_plane,
+                policy,
+            },
+        };
         let incoming = TcpListenerStream::new(listener);
         Server::builder()
             .add_service(DapperControlPlaneServer::new(handler))
@@ -1047,6 +1058,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use dapper_access::Operation;
+    use dapper_access::Preset;
     use dapper_dap_protocol::data_types::Scope;
     use dapper_dap_protocol::data_types::StackFrame;
     use dapper_dap_protocol::data_types::Thread;
@@ -1054,6 +1066,7 @@ mod tests {
     use dapper_dap_protocol::enums::ScopePresentationHint;
     use dapper_dap_protocol::responses::ThreadsResponseBody;
     use dapper_session::SessionInfo;
+    use enumset::EnumSet;
 
     use super::*;
 
@@ -1328,14 +1341,6 @@ mod tests {
             _timeout_seconds: u64,
         ) -> anyhow::Result<dapper_session::RawDapResult> {
             let body = match command {
-                RequestCommand::WriteMemory(_) => {
-                    return Err(NotPermitted {
-                        call: "writeMemory".to_owned(),
-                        missing: Operation::WriteMemory.into(),
-                        allowed: Operation::Inspect.into(),
-                    }
-                    .into());
-                }
                 RequestCommand::Pause(_) => dapper_dap_protocol::responses::ResponseBody::Pause,
                 RequestCommand::Threads => {
                     dapper_dap_protocol::responses::ResponseBody::Threads(ThreadsResponseBody {
@@ -1387,7 +1392,7 @@ mod tests {
     ) -> anyhow::Result<Vec<SourceBreakpoint>> {
         let server = TestServer::new(Arc::new(AtomicBool::new(false)));
         let recorded_specs = Arc::clone(&server.breakpoint_specs);
-        let control_plane_server = serve(None, server).await?;
+        let control_plane_server = serve(None, server, Policy::UNRESTRICTED).await?;
         tokio::task::yield_now().await;
 
         let client = DapperControlPlaneClient::for_port(control_plane_server.port);
@@ -1408,7 +1413,7 @@ mod tests {
     async fn expansion_survives_the_grpc_round_trip() -> anyhow::Result<()> {
         let server = TestServer::new(Arc::new(AtomicBool::new(false)));
         let recorded = Arc::clone(&server.expansions);
-        let control_plane_server = serve(None, server).await?;
+        let control_plane_server = serve(None, server, Policy::UNRESTRICTED).await?;
         tokio::task::yield_now().await;
 
         let client = DapperControlPlaneClient::for_port(control_plane_server.port);
@@ -1496,7 +1501,7 @@ mod tests {
 
         let stop_was_called_for_server = Arc::clone(&stop_was_called);
         let server = TestServer::new(stop_was_called_for_server);
-        let control_plane_server = serve(None, server).await?;
+        let control_plane_server = serve(None, server, Policy::UNRESTRICTED).await?;
 
         // give the server task a chance to run
         tokio::task::yield_now().await;
@@ -1676,8 +1681,12 @@ mod tests {
 
     #[tokio::test]
     async fn client_error_is_the_server_error_text() -> anyhow::Result<()> {
-        let control_plane_server =
-            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let control_plane_server = serve(
+            None,
+            TestServer::new(Arc::new(AtomicBool::new(false))),
+            Policy::UNRESTRICTED,
+        )
+        .await?;
         let client = DapperControlPlaneClient::for_port(control_plane_server.port);
         let result = client.eval_repl(FAILING_EVAL_COMMAND, None).await;
         control_plane_server.handle.abort();
@@ -1689,8 +1698,12 @@ mod tests {
 
     #[tokio::test]
     async fn client_receives_responses_larger_than_the_tonic_default() -> anyhow::Result<()> {
-        let control_plane_server =
-            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let control_plane_server = serve(
+            None,
+            TestServer::new(Arc::new(AtomicBool::new(false))),
+            Policy::UNRESTRICTED,
+        )
+        .await?;
         let client = DapperControlPlaneClient::for_port(control_plane_server.port);
         let large = client.eval_repl(LARGE_EVAL_COMMAND, None).await;
         let cached = client.eval_repl(LARGE_EVAL_COMMAND, None).await;
@@ -1707,8 +1720,12 @@ mod tests {
 
     #[tokio::test]
     async fn navigate_names_the_rejected_navigation_type() -> anyhow::Result<()> {
-        let control_plane_server =
-            serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let control_plane_server = serve(
+            None,
+            TestServer::new(Arc::new(AtomicBool::new(false))),
+            Policy::UNRESTRICTED,
+        )
+        .await?;
         let channel = Endpoint::try_from(format!(
             "http://127.0.0.1:{}",
             control_plane_server.port.get()
@@ -1740,7 +1757,7 @@ mod tests {
         let port = occupied.local_addr()?.port();
 
         let server = TestServer::new(Arc::new(AtomicBool::new(false)));
-        let Err(err) = serve(Port::try_new(port), server).await else {
+        let Err(err) = serve(Port::try_new(port), server, Policy::UNRESTRICTED).await else {
             panic!("binding an occupied port should fail");
         };
         let message = format!("{err:#}");
@@ -1824,12 +1841,149 @@ mod tests {
         assert_eq!(err.to_string(), "a newer proxy refused this");
     }
 
+    /// A control-plane client for a [`TestServer`] served under `policy`, and
+    /// whether the server's `stop` ran.
+    async fn served_under(
+        policy: Policy,
+    ) -> anyhow::Result<(
+        ControlPlaneServer,
+        DapperControlPlaneClient,
+        Arc<AtomicBool>,
+    )> {
+        let stop_was_called = Arc::new(AtomicBool::new(false));
+        let server = serve(None, TestServer::new(Arc::clone(&stop_was_called)), policy).await?;
+        let client = DapperControlPlaneClient::for_port(server.port);
+        Ok((server, client, stop_was_called))
+    }
+
+    fn assert_refused(result: anyhow::Result<()>, refusal: &str) {
+        let err = result.expect_err(refusal);
+        assert!(
+            err.is::<DeniedByAccessPolicy>(),
+            "`{refusal}` should be a refusal; got {err:?}"
+        );
+        assert!(
+            err.to_string().starts_with(refusal),
+            "the refusal should start with `{refusal}`; got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_policy_that_allows_nothing_refuses_every_call_that_needs_something()
+    -> anyhow::Result<()> {
+        let (_server, client, stop_was_called) =
+            served_under(Policy::try_new(EnumSet::empty())?).await?;
+        let breakpoint = SourceBreakpoint {
+            line: 1,
+            ..Default::default()
+        };
+
+        for (result, refusal) in [
+            (
+                client.eval_repl("x", None).await.map(drop),
+                "`eval_repl` needs evaluate,",
+            ),
+            (client.stop().await, "`stop` needs stop,"),
+            (
+                client.threads(Expansion::ALL).await.map(drop),
+                "`threads` needs inspect,",
+            ),
+            (
+                client
+                    .stack_trace(1.into(), None, None, Expansion::ALL)
+                    .await
+                    .map(drop),
+                "`stack_trace` needs inspect,",
+            ),
+            (
+                client.scopes(1.into(), Expansion::ALL).await.map(drop),
+                "`scopes` needs inspect,",
+            ),
+            (
+                client.variables(1.into()).await.map(drop),
+                "`variables` needs read_values,",
+            ),
+            (
+                client
+                    .navigate(dapper_session::NavigationType::Continue, 1.into(), None)
+                    .await
+                    .map(drop),
+                "`navigate` needs navigate,",
+            ),
+            (
+                client.set_variable(1.into(), "x", "1").await.map(drop),
+                "`set_variable` needs set_variable,",
+            ),
+            (
+                client
+                    .set_breakpoints("/src/a.py", false, std::slice::from_ref(&breakpoint))
+                    .await
+                    .map(drop),
+                "`set_breakpoints` needs breakpoints,",
+            ),
+            (
+                client
+                    .set_exception_breakpoints(&["uncaught".to_owned()], false)
+                    .await
+                    .map(drop),
+                "`set_exception_breakpoints` needs breakpoints,",
+            ),
+            (
+                client
+                    .send_dap_request(RequestCommand::Threads, false, 60)
+                    .await
+                    .map(drop),
+                "`threads` needs inspect,",
+            ),
+        ] {
+            assert_refused(result, refusal);
+        }
+        assert!(
+            !stop_was_called.load(Ordering::Relaxed),
+            "a refused call must not reach the control plane"
+        );
+
+        client.status().await?;
+        client.capabilities().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_policy_lets_through_calls_that_need_only_what_it_allows() -> anyhow::Result<()> {
+        let (_server, client, stop_was_called) =
+            served_under(Policy::try_new(Preset::Standard.operations())?).await?;
+
+        client.threads(Expansion::ALL).await?;
+        client
+            .send_dap_request(RequestCommand::Threads, false, 60)
+            .await?;
+        client
+            .set_breakpoints(
+                "/src/a.py",
+                false,
+                &[SourceBreakpoint {
+                    line: 1,
+                    condition: Some("x > 1".to_owned()),
+                    ..Default::default()
+                }],
+            )
+            .await?;
+        client.stop().await?;
+        assert!(stop_was_called.load(Ordering::Relaxed));
+
+        assert_refused(
+            client.eval_repl("x", None).await.map(drop),
+            "`eval_repl` needs evaluate,",
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_refused_raw_request_fails_the_call() -> anyhow::Result<()> {
-        let server = serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
-        let client = DapperControlPlaneClient::for_port(server.port);
+        let (_server, client, _) =
+            served_under(Policy::try_new(Preset::Standard.operations())?).await?;
 
-        let err = client
+        let result = client
             .send_dap_request(
                 RequestCommand::from_raw(
                     "writeMemory",
@@ -1839,12 +1993,9 @@ mod tests {
                 60,
             )
             .await
-            .expect_err("the server refuses writeMemory");
+            .map(drop);
 
-        assert!(
-            err.is::<DeniedByAccessPolicy>(),
-            "a refusal should not be reported as a failed DAP request; got {err:?}"
-        );
+        assert_refused(result, "`writeMemory` needs write_memory,");
         Ok(())
     }
 

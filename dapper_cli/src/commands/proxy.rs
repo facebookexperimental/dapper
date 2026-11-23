@@ -7,11 +7,14 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
 use dapper_access::Grant;
+use dapper_access::OverrideToken;
 use dapper_access::operation_names;
 use dapper_config::DapperConfig;
+use dapper_control_api::AccessControl;
 use dapper_control_server as control_plane_server;
 use dapper_control_server::ControlPlaneParams;
 use dapper_dap_protocol::protocol::Request;
@@ -253,6 +256,24 @@ impl Proxy {
                 "Enforcing an access policy on control-plane calls"
             );
         }
+        // With an access policy, a session takes its override token from
+        // DAPPER_OVERRIDE_TOKEN, which is how a child spawned for
+        // `startDebugging` gets its parent's. Otherwise a headless session
+        // makes one for its launcher, which learns it from DAPPER_READY.
+        let override_token = if session_config.access.is_none() {
+            None
+        } else if let Some(token) = OverrideToken::from_env()
+            .with_context(|| format!("{} is not an override token", OverrideToken::ENV_VAR))?
+        {
+            Some(token)
+        } else {
+            session_config
+                .debug_request
+                .is_some()
+                .then(OverrideToken::generate)
+                .transpose()
+                .context("Failed to make an override token")?
+        };
 
         let mut backend = create_backend(&session_config.spawn_config).await?;
         let adapter_pid = backend.process_id();
@@ -289,6 +310,7 @@ impl Proxy {
                 &session_config,
                 session_id,
                 self.scope_id.clone(),
+                override_token.clone(),
                 reentry,
             ) {
                 Some((tx, teardown)) => {
@@ -308,10 +330,14 @@ impl Proxy {
             };
             // Spawn SessionInitializer with the client side of the channel
             let own_session_id = session_id.clone();
+            let reported_token = override_token.clone();
             let handle = tokio::spawn(async move {
                 let mut initializer = SessionInitializer::new(session_config)
                     .with_event_writer(event_writer)
                     .with_policy(own_session_id, policy);
+                if let Some(token) = reported_token {
+                    initializer = initializer.with_override_token(token);
+                }
                 if let Some(pid) = adapter_pid {
                     initializer = initializer.with_adapter_pid(pid);
                 }
@@ -345,7 +371,10 @@ impl Proxy {
             session_id: session_id.clone(),
             scope_id: self.scope_id.clone(),
             child_teardown: child_teardown_hook.clone(),
-            access: policy.into(),
+            access: AccessControl {
+                policy,
+                override_token,
+            },
         })
         .await;
 

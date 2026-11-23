@@ -4,8 +4,9 @@
 // LICENSE file in the root directory of this source tree.
 
 //! A headless proxy reports the access policy in its session config in
-//! `DAPPER_READY` and in `status`, and the child session it spawns for the
-//! adapter's `startDebugging` reverse request enforces the same policy.
+//! `DAPPER_READY` and in `status`, the child session it spawns for the
+//! adapter's `startDebugging` reverse request enforces the same policy, and
+//! the override token `DAPPER_READY` hands the launcher lets it past both.
 //!
 //! Child-session spawning is Unix-only, so the whole crate is gated on Unix.
 
@@ -15,6 +16,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
+use dapper_access::OverrideToken;
 use dapper_access::Policy;
 use dapper_access::PolicyReport;
 use dapper_access::Preset;
@@ -22,6 +24,7 @@ use dapper_e2e_support::ProgressEvent;
 use dapper_e2e_support::generate_test_scope_id;
 use dapper_e2e_support::parse_progress_event;
 use dapper_e2e_support::run_debug_command;
+use dapper_e2e_support::run_debug_command_with_env;
 use dapper_e2e_support::spawn_proxy_from_config;
 use dapper_session::ScopeId;
 use dapper_session::config::AccessConfig;
@@ -82,18 +85,20 @@ async fn a_headless_session_and_its_child_enforce_the_same_access_policy() -> an
             if let Some(ProgressEvent::DapperReady {
                 control_port,
                 access,
+                override_token,
                 ..
             }) = parse_progress_event(&line)
                 && let Some(tx) = ready_tx.take()
             {
-                let _ = tx.send((control_port, access));
+                let _ = tx.send((control_port, access, override_token));
             }
         }
     });
-    let (parent_port, reported) = tokio::time::timeout(Duration::from_secs(60), ready_rx)
-        .await
-        .context("timed out waiting for DAPPER_READY")?
-        .context("the proxy's stdout ended before DAPPER_READY")?;
+    let (parent_port, reported, override_token) =
+        tokio::time::timeout(Duration::from_secs(60), ready_rx)
+            .await
+            .context("timed out waiting for DAPPER_READY")?
+            .context("the proxy's stdout ended before DAPPER_READY")?;
 
     assert_eq!(
         reported,
@@ -136,9 +141,46 @@ async fn a_headless_session_and_its_child_enforce_the_same_access_policy() -> an
         );
     }
 
-    // `stop` needs an operation `minimal` does not allow; the child proxy dies
-    // with its parent.
-    proxy.kill().await?;
+    let override_token: OverrideToken =
+        override_token.context("DAPPER_READY should hand the launcher an override token")?;
+    for args in [&["status", "--json"][..], &["sessions", "--json"]] {
+        let output = run_debug_command(Some(scope_id.clone()), args).await?;
+        assert!(
+            !output.stdout.contains(override_token.expose()),
+            "`{}` should not reveal the override token",
+            args.join(" ")
+        );
+    }
+
+    // Stopping the parent tears its child down, so the child goes first.
+    for port in [child_port, parent_port.get()] {
+        let port = port.to_string();
+        let refused =
+            run_debug_command(Some(scope_id.clone()), &["--control-port", &port, "stop"]).await?;
+        assert!(
+            !refused.success,
+            "minimal does not allow stop on port {port}"
+        );
+        assert!(
+            refused.stderr.contains("`stop` needs stop"),
+            "the refusal should say what stop needs; stderr: {}",
+            refused.stderr
+        );
+        let stopped = run_debug_command_with_env(
+            Some(scope_id.clone()),
+            &[(OverrideToken::ENV_VAR, override_token.expose())],
+            &["--control-port", &port, "stop"],
+        )
+        .await?;
+        assert!(
+            stopped.success,
+            "the parent's override token should stop the session on port {port}; stderr: {}",
+            stopped.stderr
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(30), proxy.wait())
+        .await
+        .context("the proxy should exit once stopped")??;
     Ok(())
 }
 

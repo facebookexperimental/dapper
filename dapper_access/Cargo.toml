@@ -21,3 +21,4 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+temp-env = { version = "0.3.6", features = ["async_closure"] }

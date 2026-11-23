@@ -597,6 +597,24 @@ pub async fn run_debug_command_with_binary(
     scope_id: Option<ScopeId>,
     args: &[&str],
 ) -> Result<DebugCliOutput> {
+    debug_command_output(dapper_path, scope_id, &[], args).await
+}
+
+/// [`run_debug_command`] with `envs` set for this one command.
+pub async fn run_debug_command_with_env(
+    scope_id: Option<ScopeId>,
+    envs: &[(&str, &str)],
+    args: &[&str],
+) -> Result<DebugCliOutput> {
+    debug_command_output(&dapper_executable()?, scope_id, envs, args).await
+}
+
+async fn debug_command_output(
+    dapper_path: &str,
+    scope_id: Option<ScopeId>,
+    envs: &[(&str, &str)],
+    args: &[&str],
+) -> Result<DebugCliOutput> {
     let mut command = TokioCommand::new(dapper_path);
     command.arg("debug");
     if let Some(scope) = scope_id {
@@ -608,6 +626,7 @@ pub async fn run_debug_command_with_binary(
         dapper_session::get_user_temp_dir().join("test_sessions"),
     );
     command.env("DAPPER_DISABLE_SCUBA", "1");
+    command.envs(envs.iter().copied());
     command.kill_on_drop(true);
 
     let output = tokio::time::timeout(DEBUG_COMMAND_TIMEOUT, command.output())

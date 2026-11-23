@@ -37,6 +37,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use async_trait::async_trait;
+use dapper_access::OverrideToken;
 use dapper_control_server::ChildTeardownHook;
 use dapper_proxy_server::ChildSpawnRequest;
 use dapper_proxy_server::ProgressEvent;
@@ -410,6 +411,7 @@ pub(crate) fn setup_child_supervisor(
     config: &DebugSessionConfig,
     parent_session_id: &SessionId,
     scope_id: Option<ScopeId>,
+    override_token: Option<OverrideToken>,
     reentry: Reentry,
 ) -> Option<(mpsc::Sender<ChildSpawnRequest>, ChildTeardown)> {
     let child_sessions = config.child_sessions.as_ref()?;
@@ -431,6 +433,7 @@ pub(crate) fn setup_child_supervisor(
         reentry,
         scope_id,
         parent_session_id: parent_session_id.clone(),
+        override_token,
     });
     let registry = ChildRegistry::default();
     let teardown = ChildTeardown {
@@ -457,6 +460,8 @@ struct OsChildSpawner {
     scope_id: Option<ScopeId>,
     /// The parent proxy's session id, passed to children as `--parent-session-id`.
     parent_session_id: SessionId,
+    /// The parent's override token, which its children take as theirs.
+    override_token: Option<OverrideToken>,
 }
 
 #[async_trait]
@@ -502,20 +507,31 @@ impl OsChildSpawner {
         args
     }
 
-    async fn spawn_proxy(&self, config_path: &Path) -> Result<Box<dyn SpawnedChild>> {
-        // Events pipe: std marks both ends CLOEXEC (no leak into the child);
-        // `pre_exec` clears it on the inherited write end.
-        let (events_reader, events_writer) = std::io::pipe().context("creating events pipe")?;
-        let write_fd = events_writer.as_raw_fd();
-
+    /// The command for a child proxy, before the `pre_exec` setup
+    /// [`OsChildSpawner::spawn_proxy`] adds.
+    fn child_proxy_command(&self, events_fd: RawFd, config_path: &Path) -> Command {
         let mut cmd = Command::new(&self.exe);
-        cmd.args(self.child_proxy_args(write_fd, config_path));
+        cmd.args(self.child_proxy_args(events_fd, config_path));
         // The child must never inherit the parent's stdio: the parent uses its
         // own stdout for `[DAPPER_SESSION]` event lines, and structured child
         // events flow over `--events-fd` instead.
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        match &self.override_token {
+            Some(token) => cmd.env(OverrideToken::ENV_VAR, token.expose()),
+            None => cmd.env_remove(OverrideToken::ENV_VAR),
+        };
+        cmd
+    }
+
+    async fn spawn_proxy(&self, config_path: &Path) -> Result<Box<dyn SpawnedChild>> {
+        // Events pipe: std marks both ends CLOEXEC (no leak into the child);
+        // `pre_exec` clears it on the inherited write end.
+        let (events_reader, events_writer) = std::io::pipe().context("creating events pipe")?;
+        let write_fd = events_writer.as_raw_fd();
+
+        let mut cmd = self.child_proxy_command(write_fd, config_path);
 
         // The supervisor process's pid, captured before fork, so the child can
         // detect a parent death that races the `prctl` below.
@@ -773,6 +789,7 @@ fn spawn_events_drain(reader: std::io::PipeReader, pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::os::unix::process::ExitStatusExt;
     use std::process::ExitStatus;
     use std::sync::atomic::AtomicUsize;
@@ -792,7 +809,39 @@ mod tests {
             reentry,
             scope_id,
             parent_session_id: SessionId::new("parent-1"),
+            override_token: None,
         }
+    }
+
+    #[test]
+    fn a_child_takes_its_parents_override_token_from_its_environment() {
+        let with_token = OsChildSpawner {
+            override_token: Some("d34db33f".parse().expect("hex digits are a valid token")),
+            ..spawner_for(Reentry::Standalone, None)
+        };
+        let command = with_token.child_proxy_command(7, Path::new("/tmp/child.json"));
+        let command = command.as_std();
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == OverrideToken::ENV_VAR
+                    && value == Some(OsStr::new("d34db33f"))),
+            "the child should get the parent's token"
+        );
+        assert!(
+            command.get_args().all(|arg| arg != "d34db33f"),
+            "the token must stay off the child's command line"
+        );
+
+        let without_token = spawner_for(Reentry::Standalone, None)
+            .child_proxy_command(7, Path::new("/tmp/child.json"));
+        assert!(
+            without_token
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == OverrideToken::ENV_VAR && value.is_none()),
+            "a parent without a token should not pass on one from its own environment"
+        );
     }
 
     /// Dropping the prefix spawns `<host> proxy ...`, which the host rejects

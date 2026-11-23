@@ -41,6 +41,7 @@ pub use harness::parse_progress_event;
 pub use harness::real_adapter_profile;
 pub use harness::run_debug_command;
 pub use harness::run_debug_command_with_binary;
+pub use harness::run_debug_command_with_env;
 pub use harness::setup_stopped_debug_session;
 pub use harness::setup_stopped_fake_debug_session;
 pub use harness::spawn_proxy_from_config;

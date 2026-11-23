@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use std::process::Stdio;
 
+use dapper_access::OverrideToken;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::BufReader;
@@ -73,41 +74,7 @@ impl Backend {
     ) -> anyhow::Result<Self> {
         tracing::debug!("Backend: starting {} {:?}", program, args);
 
-        let mut cmd = Command::new(program);
-        cmd.args(args);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Start the debug adapter in a new session so that neither it nor its
-        // descendants (the debuggee) can steal the terminal's foreground
-        // process group via tcsetpgrp(). Without this, the debuggee becomes
-        // the foreground group and Ctrl+C never reaches dapper.
-        //
-        // Only enabled for `from-config` mode (where the proxy is launched by
-        // another tool). In direct `process` mode users may rely on the
-        // debug adapter sharing the terminal session.
-        //
-        // SAFETY: pre_exec runs between fork() and exec(), where only
-        // async-signal-safe functions may be called (See
-        // https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.pre_exec).
-        // Rust marks it unsafe because the compiler can't verify that the closure
-        // only calls async-signal-safe functions, libc::setsid() is on the
-        // POSIX async-signal-safe list (See
-        // https://man7.org/linux/man-pages/man7/signal-safety.7.html)
-        #[cfg(unix)]
-        if new_session {
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-
-        let mut process = cmd.spawn()?;
+        let mut process = adapter_command(program, args, new_session).spawn()?;
         let process_id = process.id();
         tracing::info!("Backend: started {:?}", process_id.unwrap_or_default());
 
@@ -177,6 +144,47 @@ async fn relay_lines(
     Ok(())
 }
 
+/// The command that starts a debug adapter, with its stdio piped to dapper.
+fn adapter_command(program: &str, args: &[String], new_session: bool) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The debuggee inherits the adapter's environment, where a caller allowed
+    // to read the program's values could find the session's override token.
+    cmd.env_remove(OverrideToken::ENV_VAR);
+
+    // Start the debug adapter in a new session so that neither it nor its
+    // descendants (the debuggee) can steal the terminal's foreground
+    // process group via tcsetpgrp(). Without this, the debuggee becomes
+    // the foreground group and Ctrl+C never reaches dapper.
+    //
+    // Only enabled for `from-config` mode (where the proxy is launched by
+    // another tool). In direct `process` mode users may rely on the
+    // debug adapter sharing the terminal session.
+    //
+    // SAFETY: pre_exec runs between fork() and exec(), where only
+    // async-signal-safe functions may be called (See
+    // https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.pre_exec).
+    // Rust marks it unsafe because the compiler can't verify that the closure
+    // only calls async-signal-safe functions, libc::setsid() is on the
+    // POSIX async-signal-safe list (See
+    // https://man7.org/linux/man-pages/man7/signal-safety.7.html)
+    #[cfg(unix)]
+    if new_session {
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +199,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines, ["bad \u{fffd} byte", "next"]);
+    }
+
+    #[test]
+    fn an_adapter_never_inherits_the_override_token() {
+        let command = adapter_command("lldb-dap", &[], false);
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == OverrideToken::ENV_VAR && value.is_none()),
+            "the program being debugged could read the token from its environment"
+        );
     }
 
     #[cfg(target_os = "linux")]

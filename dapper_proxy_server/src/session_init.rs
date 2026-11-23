@@ -22,6 +22,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
+use dapper_access::OverrideToken;
 use dapper_access::Policy;
 use dapper_access::PolicyReport;
 use dapper_dap_protocol::capabilities::Capabilities;
@@ -141,6 +142,10 @@ pub enum ProgressEvent {
         /// predates access policies reports none and enforces none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         access: Option<PolicyReport>,
+        /// The token that lets a control-plane call skip `access`. Only the
+        /// launcher reads this event; it must not hand the token to an agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_token: Option<OverrideToken>,
         #[serde(rename = "elapsed_ms", with = "duration_ms")]
         elapsed: Duration,
     },
@@ -309,6 +314,9 @@ pub struct SessionInitializer {
     /// The access policy this proxy's control plane enforces, reported in
     /// that control plane's `DAPPER_READY`.
     policy: Option<OwnPolicy>,
+    /// The token that lets a control-plane call skip `policy`, reported with
+    /// it in this proxy's control plane's `DAPPER_READY`.
+    override_token: Option<OverrideToken>,
     /// Capabilities reported by the adapter in the `initialize` response.
     /// Captured eagerly so later steps (e.g. `set_exception_breakpoints`)
     /// can consult `exceptionBreakpointFilters` without re-issuing the
@@ -349,6 +357,7 @@ impl SessionInitializer {
             adapter_pid: None,
             adapter_exit: None,
             policy: None,
+            override_token: None,
             adapter_capabilities: None,
             child_spawn_tx: None,
             debuggee_ended: false,
@@ -387,6 +396,14 @@ impl SessionInitializer {
     /// `DAPPER_READY` for that one reports no policy: it enforces its own.
     pub fn with_policy(mut self, session_id: SessionId, policy: Policy) -> Self {
         self.policy = Some(OwnPolicy { session_id, policy });
+        self
+    }
+
+    /// The token that lets a control-plane call skip the policy. `run`
+    /// reports it with the policy in this proxy's control plane's
+    /// `DAPPER_READY`, which only the launcher reads.
+    pub fn with_override_token(mut self, token: OverrideToken) -> Self {
+        self.override_token = Some(token);
         self
     }
 
@@ -716,15 +733,17 @@ impl SessionInitializer {
         }
 
         let port = status.port.context("control plane status missing port")?;
-        let access = self
+        let own = self
             .policy
             .as_ref()
-            .filter(|own| own.session_id == status.session_id)
-            .map(|own| PolicyReport::from(own.policy));
+            .filter(|own| own.session_id == status.session_id);
+        let access = own.map(|own| PolicyReport::from(own.policy));
+        let override_token = own.and(self.override_token.clone());
         self.event_writer.emit(&ProgressEvent::DapperReady {
             session_id: status.session_id,
             control_port: port,
             access,
+            override_token,
             elapsed: self.elapsed(),
         });
         Ok(())
@@ -1557,15 +1576,18 @@ mod tests {
             "session-1",
         );
         assert_eq!(ready.get("access"), None, "got {ready}");
+        assert_eq!(ready.get("override_token"), None, "got {ready}");
     }
 
     #[test]
     fn test_dapper_ready_reports_no_policy_for_a_relayed_control_plane() {
         let minimal = Policy::try_new(dapper_access::Preset::Minimal.operations())
             .expect("a preset is a whole policy");
+        let token: OverrideToken = "d34db33f".parse().expect("hex digits are a valid token");
         let ready = dapper_ready_of(
             SessionInitializer::new(launch_config(vec![], false))
-                .with_policy(SessionId::new("session-1"), minimal),
+                .with_policy(SessionId::new("session-1"), minimal)
+                .with_override_token(token),
             "backend-session",
         );
 
@@ -1575,6 +1597,25 @@ mod tests {
             None,
             "a backend that is itself a dapper proxy enforces its own policy, not this one; got {ready}"
         );
+        assert_eq!(
+            ready.get("override_token"),
+            None,
+            "the token lets calls past this proxy's policy, not the backend's; got {ready}"
+        );
+    }
+
+    #[test]
+    fn test_dapper_ready_reports_the_override_token() {
+        let token: OverrideToken = "d34db33f".parse().expect("hex digits are a valid token");
+        let minimal = Policy::try_new(dapper_access::Preset::Minimal.operations())
+            .expect("a preset is a whole policy");
+        let ready = dapper_ready_of(
+            SessionInitializer::new(launch_config(vec![], false))
+                .with_policy(SessionId::new("session-1"), minimal)
+                .with_override_token(token),
+            "session-1",
+        );
+        assert_eq!(ready["override_token"], "d34db33f", "got {ready}");
     }
 
     #[tokio::test]

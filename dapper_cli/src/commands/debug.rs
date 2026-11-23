@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::ArgGroup;
 use clap::Parser;
 use clap::Subcommand;
+use dapper_access::OverrideToken;
 use dapper_config::DapperConfig;
 use dapper_config::OutputFormat;
 use dapper_control_api::BreakpointArg;
@@ -236,6 +237,12 @@ impl Debug {
         let store = SessionStore::default_location()?;
         let target = self.target.resolve();
         let client = target.client(&store)?;
+        let client = match OverrideToken::from_env()
+            .with_context(|| format!("{} is not an override token", OverrideToken::ENV_VAR))?
+        {
+            Some(token) => client.with_override_token(&token),
+            None => client,
+        };
 
         match self.command {
             DebugCommands::Status {} => {

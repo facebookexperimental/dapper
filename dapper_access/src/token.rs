@@ -19,6 +19,24 @@ use subtle::ConstantTimeEq;
 pub struct OverrideToken(String);
 
 impl OverrideToken {
+    /// The environment variable that carries a session's token: from a
+    /// launcher to `dapper debug`, and from a parent session to the child
+    /// sessions it spawns. Never a command-line argument, which every user on
+    /// the host can read while the command runs.
+    pub const ENV_VAR: &'static str = "DAPPER_OVERRIDE_TOKEN";
+
+    /// The token in [`OverrideToken::ENV_VAR`], if it is set.
+    pub fn from_env() -> Result<Option<Self>, InvalidOverrideToken> {
+        let Some(value) = std::env::var_os(Self::ENV_VAR) else {
+            return Ok(None);
+        };
+        value
+            .to_str()
+            .ok_or(InvalidOverrideToken)?
+            .parse()
+            .map(Some)
+    }
+
     /// A new token of 256 random bits.
     pub fn generate() -> Result<Self, getrandom::Error> {
         let mut bytes = [0u8; 32];
@@ -121,6 +139,30 @@ mod tests {
             token
         );
         assert!(serde_json::from_value::<OverrideToken>(serde_json::json!("")).is_err());
+    }
+
+    #[test]
+    fn a_token_comes_from_the_environment_when_set() {
+        temp_env::with_var(OverrideToken::ENV_VAR, Some("d34db33f"), || {
+            assert_eq!(
+                OverrideToken::from_env(),
+                Ok(Some(
+                    "d34db33f"
+                        .parse::<OverrideToken>()
+                        .expect("hex digits are a valid token")
+                ))
+            );
+        });
+        temp_env::with_var_unset(OverrideToken::ENV_VAR, || {
+            assert_eq!(OverrideToken::from_env(), Ok(None));
+        });
+        temp_env::with_var(OverrideToken::ENV_VAR, Some(""), || {
+            assert_eq!(
+                OverrideToken::from_env(),
+                Err(InvalidOverrideToken),
+                "a variable set to nothing is not a token"
+            );
+        });
     }
 
     #[test]

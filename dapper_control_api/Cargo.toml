@@ -10,12 +10,14 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+dapper_access = { path = "../dapper_access" }
 dapper_config = { path = "../dapper_config" }
 dapper_control_proto = { path = "../dapper_control_proto" }
 dapper_dap_protocol = { path = "../dapper_dap_protocol" }
 dapper_session = { path = "../dapper_session" }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.154", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "test-util", "tracing"] }
 tokio-stream = { version = "0.1.19", features = ["fs", "io-util", "net", "signal", "sync", "time"] }

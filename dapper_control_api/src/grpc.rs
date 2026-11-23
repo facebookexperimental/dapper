@@ -12,6 +12,7 @@ use std::sync::MutexGuard;
 use std::sync::PoisonError;
 
 use anyhow::Context;
+use dapper_access::NotPermitted;
 use dapper_control_proto::CapabilitiesRequest;
 use dapper_control_proto::CapabilitiesResponse;
 use dapper_control_proto::EvalRequest;
@@ -56,6 +57,8 @@ use dapper_session::ScopeId;
 use dapper_session::SessionId;
 use dapper_session::SessionInfo;
 use dapper_session::SessionStore;
+use strum::EnumString;
+use strum::IntoStaticStr;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Code;
@@ -373,6 +376,9 @@ where
                         error_message: String::new(),
                     })
                 }
+                // A refusal fails the call itself, so its classification
+                // reaches the client.
+                Err(e) if e.is::<NotPermitted>() => Err(e),
                 Err(e) => Ok(RawDapResponse {
                     success: false,
                     response_json: String::new(),
@@ -426,8 +432,28 @@ where
 /// not a distinct status code, so clients built before a kind existed still
 /// read the error text unchanged.
 const ERROR_KIND_KEY: &str = "dapper-error-kind";
-/// [`ERROR_KIND_KEY`] value for an error caused by a [`DapRequestRejected`].
-const ERROR_KIND_DAP_REQUEST_REJECTED: &str = "dap-request-rejected";
+
+/// How `to_tonic` classifies an error, as its [`ERROR_KIND_KEY`] value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+enum ErrorKind {
+    /// The debug adapter rejected the request ([`DapRequestRejected`]).
+    DapRequestRejected,
+    /// The session's access policy does not allow the call ([`NotPermitted`]).
+    OperationNotPermitted,
+}
+
+impl ErrorKind {
+    fn of(e: &anyhow::Error) -> Option<Self> {
+        if e.is::<DapRequestRejected>() {
+            Some(Self::DapRequestRejected)
+        } else if e.is::<NotPermitted>() {
+            Some(Self::OperationNotPermitted)
+        } else {
+            None
+        }
+    }
+}
 
 /// A control-plane call failed because the debug adapter rejected the request
 /// it made ([`DapRequestRejected`] on the server side), so callers can tell
@@ -436,6 +462,13 @@ const ERROR_KIND_DAP_REQUEST_REJECTED: &str = "dap-request-rejected";
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct RejectedByDebugger(String);
+
+/// A control-plane call failed because the session's access policy does not
+/// allow it ([`NotPermitted`] on the server side). Displays the server's full
+/// error text, which names what the call needs and what the policy allows.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct DeniedByAccessPolicy(String);
 
 async fn to_tonic<F, T>(fut: F) -> Result<tonic::Response<T>, tonic::Status>
 where
@@ -448,23 +481,21 @@ where
 }
 
 /// The `Unknown` status carrying `e`'s text, classified with
-/// [`ERROR_KIND_KEY`] when the debug adapter rejected the request.
+/// [`ERROR_KIND_KEY`] when it is of an [`ErrorKind`].
 fn error_status(e: &anyhow::Error) -> Status {
     let message = format!("{e:#}");
-    if !e.is::<DapRequestRejected>() {
+    let Some(kind) = ErrorKind::of(e) else {
         return Status::unknown(message);
-    }
+    };
     let mut metadata = MetadataMap::new();
-    metadata.insert(
-        ERROR_KIND_KEY,
-        MetadataValue::from_static(ERROR_KIND_DAP_REQUEST_REJECTED),
-    );
+    metadata.insert(ERROR_KIND_KEY, MetadataValue::from_static(kind.into()));
     Status::with_metadata(Code::Unknown, message, metadata)
 }
 
-/// Unwraps the error text `to_tonic` sends as an `Unknown` status, as a
-/// [`RejectedByDebugger`] when it is classified as one. Any other status (e.g.
-/// a local transport failure, which has a source) keeps tonic's rendering.
+/// Unwraps the error text `to_tonic` sends as an `Unknown` status, as the
+/// error type of its [`ErrorKind`] when it is classified as one. Any other
+/// status (e.g. a local transport failure, which has a source) keeps tonic's
+/// rendering.
 fn status_error(status: Status) -> anyhow::Error {
     if status.code() != Code::Unknown || status.source().is_some() || status.message().is_empty() {
         return anyhow::Error::new(status);
@@ -473,11 +504,12 @@ fn status_error(status: Status) -> anyhow::Error {
     let kind = status
         .metadata()
         .get(ERROR_KIND_KEY)
-        .and_then(|v| v.to_str().ok());
-    if kind == Some(ERROR_KIND_DAP_REQUEST_REJECTED) {
-        anyhow::Error::new(RejectedByDebugger(message))
-    } else {
-        anyhow::Error::msg(message)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok());
+    match kind {
+        Some(ErrorKind::DapRequestRejected) => anyhow::Error::new(RejectedByDebugger(message)),
+        Some(ErrorKind::OperationNotPermitted) => anyhow::Error::new(DeniedByAccessPolicy(message)),
+        None => anyhow::Error::msg(message),
     }
 }
 
@@ -1014,6 +1046,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
 
+    use dapper_access::Operation;
     use dapper_dap_protocol::data_types::Scope;
     use dapper_dap_protocol::data_types::StackFrame;
     use dapper_dap_protocol::data_types::Thread;
@@ -1295,6 +1328,14 @@ mod tests {
             _timeout_seconds: u64,
         ) -> anyhow::Result<dapper_session::RawDapResult> {
             let body = match command {
+                RequestCommand::WriteMemory(_) => {
+                    return Err(NotPermitted {
+                        call: "writeMemory".to_owned(),
+                        missing: Operation::WriteMemory.into(),
+                        allowed: Operation::Inspect.into(),
+                    }
+                    .into());
+                }
                 RequestCommand::Pause(_) => dapper_dap_protocol::responses::ResponseBody::Pause,
                 RequestCommand::Threads => {
                     dapper_dap_protocol::responses::ResponseBody::Threads(ThreadsResponseBody {
@@ -1740,6 +1781,71 @@ mod tests {
             "Error evaluating expression: evaluate request failed: error: invalid address",
             "the text must be the server's full error chain, as before"
         );
+    }
+
+    #[test]
+    fn a_refused_call_crosses_the_wire_as_denied_by_access_policy() {
+        let refused = anyhow::Error::new(NotPermitted {
+            call: "eval_repl".to_owned(),
+            missing: Operation::Evaluate.into(),
+            allowed: Operation::Inspect | Operation::ReadValues,
+        });
+
+        let err = status_error(error_status(&refused));
+
+        assert!(
+            err.is::<DeniedByAccessPolicy>(),
+            "the classification must survive the round trip; got {err:?}"
+        );
+        assert!(!err.is::<RejectedByDebugger>());
+        assert_eq!(
+            err.to_string(),
+            "`eval_repl` needs evaluate, which this session's access policy does not allow; \
+             it allows inspect, read_values",
+            "the text must be the server's, as clients without the kind show it"
+        );
+    }
+
+    #[test]
+    fn a_kind_a_client_does_not_know_keeps_the_text() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            ERROR_KIND_KEY,
+            MetadataValue::from_static("from-the-future"),
+        );
+        let err = status_error(Status::with_metadata(
+            Code::Unknown,
+            "a newer proxy refused this",
+            metadata,
+        ));
+
+        assert!(!err.is::<DeniedByAccessPolicy>(), "got {err:?}");
+        assert!(!err.is::<RejectedByDebugger>(), "got {err:?}");
+        assert_eq!(err.to_string(), "a newer proxy refused this");
+    }
+
+    #[tokio::test]
+    async fn a_refused_raw_request_fails_the_call() -> anyhow::Result<()> {
+        let server = serve(None, TestServer::new(Arc::new(AtomicBool::new(false)))).await?;
+        let client = DapperControlPlaneClient::for_port(server.port);
+
+        let err = client
+            .send_dap_request(
+                RequestCommand::from_raw(
+                    "writeMemory",
+                    Some(serde_json::json!({"memoryReference": "0x10", "data": "AA=="})),
+                ),
+                false,
+                60,
+            )
+            .await
+            .expect_err("the server refuses writeMemory");
+
+        assert!(
+            err.is::<DeniedByAccessPolicy>(),
+            "a refusal should not be reported as a failed DAP request; got {err:?}"
+        );
+        Ok(())
     }
 
     #[test]
